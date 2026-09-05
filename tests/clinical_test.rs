@@ -1,3 +1,5 @@
+mod common;
+
 use open_ontologies::graph::GraphStore;
 use std::sync::Arc;
 
@@ -5,8 +7,8 @@ use std::sync::Arc;
 fn test_crosswalk_lookup() {
     use open_ontologies::clinical::ClinicalCrosswalks;
     let cw = ClinicalCrosswalks::load("data/crosswalks.parquet");
-    if cw.is_err() {
-        eprintln!("Skipping: crosswalks.parquet not found. Run scripts/build_crosswalks.py first.");
+    if common::skip_unless(cw.is_ok(), "data/crosswalks.parquet",
+                           "Run scripts/build_crosswalks.py first.") {
         return;
     }
     let cw = cw.unwrap();
@@ -19,7 +21,10 @@ fn test_crosswalk_lookup() {
 fn test_crosswalk_search_by_label() {
     use open_ontologies::clinical::ClinicalCrosswalks;
     let cw = ClinicalCrosswalks::load("data/crosswalks.parquet");
-    if cw.is_err() { return; }
+    if common::skip_unless(cw.is_ok(), "data/crosswalks.parquet",
+                           "Run scripts/build_crosswalks.py first.") {
+        return;
+    }
     let cw = cw.unwrap();
 
     let results = cw.search_label("hypertension");
@@ -30,7 +35,10 @@ fn test_crosswalk_search_by_label() {
 fn test_validate_clinical_terms() {
     use open_ontologies::clinical::ClinicalCrosswalks;
     let cw = ClinicalCrosswalks::load("data/crosswalks.parquet");
-    if cw.is_err() { return; }
+    if common::skip_unless(cw.is_ok(), "data/crosswalks.parquet",
+                           "Run scripts/build_crosswalks.py first.") {
+        return;
+    }
     let cw = cw.unwrap();
 
     let graph = Arc::new(GraphStore::new());
@@ -50,7 +58,10 @@ fn test_validate_clinical_terms() {
 fn test_enrich_adds_skos_mapping() {
     use open_ontologies::clinical::ClinicalCrosswalks;
     let cw = ClinicalCrosswalks::load("data/crosswalks.parquet");
-    if cw.is_err() { return; }
+    if common::skip_unless(cw.is_ok(), "data/crosswalks.parquet",
+                           "Run scripts/build_crosswalks.py first.") {
+        return;
+    }
     let cw = cw.unwrap();
 
     let graph = Arc::new(GraphStore::new());

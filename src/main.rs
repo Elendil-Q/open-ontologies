@@ -1598,7 +1598,20 @@ async fn async_main() -> anyhow::Result<()> {
                                 .headers()
                                 .get("authorization")
                                 .and_then(|v| v.to_str().ok());
-                            if auth == Some(&expected) {
+                            // String equality short-circuits on the first
+                            // differing byte, which leaks the shared prefix
+                            // length through response timing and lets a token
+                            // be recovered byte by byte. Hashing both sides
+                            // first makes the compared values fixed-length and
+                            // unrelated to the token's own bytes, so the
+                            // remaining timing difference reveals nothing, and
+                            // sha2 is already a dependency.
+                            let ok = auth.is_some_and(|got| {
+                                use sha2::{Digest, Sha256};
+                                Sha256::digest(got.as_bytes())
+                                    == Sha256::digest(expected.as_bytes())
+                            });
+                            if ok {
                                 next.run(req).await
                             } else {
                                 axum::http::Response::builder()

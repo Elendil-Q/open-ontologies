@@ -38,7 +38,19 @@ jobs:
       - name: Build
         run: cargo build
       - name: Test
-        run: cargo test
+        run: cargo test -- --nocapture 2>&1 | tee cargo-test.log
+      - name: Report tests that skipped for a missing fixture
+        # Some tests need data this repository does not carry, so they skip
+        # rather than fail. A skip reports `ok`, which means a green run can
+        # hide a suite that quietly shrank. This does not fail the build; it
+        # prints the count and the names so a shrinking suite is visible in the
+        # log instead of invisible in a pass. tests/common/mod.rs emits the
+        # marker, and OO_REQUIRE_FIXTURES=1 turns each skip into a failure for
+        # any job that is supposed to supply the fixtures.
+        run: |
+          n=$(grep -c 'SKIPPED_FIXTURE:' cargo-test.log || true)
+          echo "$n test(s) skipped for a missing fixture"
+          grep 'SKIPPED_FIXTURE:' cargo-test.log | sort -u || true
       - name: Clippy
         run: cargo clippy -- -D warnings
       - name: Audit
