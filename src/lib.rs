@@ -22,7 +22,6 @@ pub mod defects;
 pub mod drift;
 pub mod dynamics;
 pub mod dynamics_bcplus;
-pub mod error;
 pub mod eval_alignment;
 pub mod eval_rag;
 pub mod extract_scaffold;

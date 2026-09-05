@@ -62,19 +62,19 @@ The full **Dynamics → Causal → Planner** stack plus 13 new primitives. Every
 
 ### 13 new primitives
 
-- **`onto_owl_shacl_coevolve_check`** + **`onto_owl_shacl_coevolve_incremental`** — SHACL validation against the OWL-RL closure, with dependency-graph routing so only shapes touching changed IRIs revalidate.
-- **`onto_segment_retrieve`** — TBox-slice retrieval for ontology-grounded RAG.
-- **`onto_extract_scaffold`** + **`onto_extract_validate`** — schema-guided structured extraction with typed datatype validation + conformance scoring.
-- **`onto_cq_run`** + **`onto_verify_cq`** + **`onto_cq_verdicts_list`** — competency-question runner with pitfall hints + LLM-judgement loop.
-- **`onto_classify_el`** — OWL-EL classification (transitive subsumption table, trivial pairs excluded).
-- **`onto_eval_alignment`** — P/R/F1 over reference + computed alignment sets.
-- **`onto_shape_combinatorics`** + **`onto_shape_induce`** — property-combination lattice + data-driven SHACL shape induction with support × confidence ranking.
-- **`borderline_partition`** + **`borderline_record_verdict`** — generalised two-threshold review loop for any candidate set.
-- **`onto_align_fuzzy`** — embedding-free fuzzy-logic adjudication with 10-rule Mamdani inference; HNSW is demoted to a candidate generator.
-- **`onto_align_flora`** — end-to-end alignment pipeline pairing the signal extractor to the fuzzy adjudicator.
-- **`onto_policy_register`** + **`onto_policy_list`** + **`onto_policy_check`** — authorisation gate that composes with `onto_certify_action` (Causal = risk; policy = authorisation).
-- **`eval_rag`** + **`eval_rag_mmrag`** — Hit@k / MRR / faithfulness / token-Jaccard / ROUGE-1 scoring for retriever pipelines, with a dataset adapter.
-- **`graph_projection_lossy_check`** — the auditor that pairs with `onto_segment_retrieve`.
+- **`onto_owl_shacl_coevolve_check`** + **`onto_owl_shacl_coevolve_incremental`**, SHACL validation against the OWL-RL closure, with dependency-graph routing so only shapes touching changed IRIs revalidate.
+- **`onto_segment_retrieve`**, TBox-slice retrieval for ontology-grounded RAG.
+- **`onto_extract_scaffold`** + **`onto_extract_validate`**, schema-guided structured extraction with typed datatype validation + conformance scoring.
+- **`onto_cq_run`** + **`onto_verify_cq`** + **`onto_cq_verdicts_list`**, competency-question runner with pitfall hints + LLM-judgement loop.
+- **`onto_classify_el`**, OWL-EL classification (transitive subsumption table, trivial pairs excluded).
+- **`onto_eval_alignment`**, P/R/F1 over reference + computed alignment sets.
+- **`onto_shape_combinatorics`** + **`onto_shape_induce`**, property-combination lattice + data-driven SHACL shape induction with support × confidence ranking.
+- **`borderline_partition`** + **`borderline_record_verdict`**, generalised two-threshold review loop for any candidate set.
+- **`onto_align_fuzzy`**, embedding-free fuzzy-logic adjudication with 10-rule Mamdani inference; HNSW is demoted to a candidate generator.
+- **`onto_align_flora`**, end-to-end alignment pipeline pairing the signal extractor to the fuzzy adjudicator.
+- **`onto_policy_register`** + **`onto_policy_list`** + **`onto_policy_check`**, authorisation gate that composes with `onto_certify_action` (Causal = risk; policy = authorisation).
+- **`eval_rag`** + **`eval_rag_mmrag`**, Hit@k / MRR / faithfulness / token-Jaccard / ROUGE-1 scoring for retriever pipelines, with a dataset adapter.
+- **`graph_projection_lossy_check`**, the auditor that pairs with `onto_segment_retrieve`.
 
 ### Validating end-to-end
 
@@ -115,7 +115,7 @@ docker pull ghcr.io/fabio-rovai/open-ontologies:latest
 docker run -i ghcr.io/fabio-rovai/open-ontologies serve
 ```
 
-> `serve` starts an **MCP server that speaks JSON-RPC over stdin/stdout** — it is not an interactive CLI, so on launch it will appear to "hang" while it waits for an MCP client to connect. That is expected. To try the tools directly from a terminal instead, use the CLI subcommands (e.g. `open-ontologies validate <file.ttl>`); to use it with an LLM, wire it into an MCP client as shown under [Connect to your MCP client](#connect-to-your-mcp-client).
+> `serve` starts an **MCP server that speaks JSON-RPC over stdin/stdout**, it is not an interactive CLI, so on launch it will appear to "hang" while it waits for an MCP client to connect. That is expected. To try the tools directly from a terminal instead, use the CLI subcommands (e.g. `open-ontologies validate <file.ttl>`); to use it with an LLM, wire it into an MCP client as shown under [Connect to your MCP client](#connect-to-your-mcp-client).
 
 **From source (Rust 1.85+):**
 
@@ -220,21 +220,21 @@ open-ontologies serve-http --host 127.0.0.1 --port 8080
 
 | Route | Auth | Purpose |
 |---|---|---|
-| `/mcp` | bearer, if a token is configured | MCP Streamable HTTP — the `onto_*` tools |
+| `/mcp` | bearer, if a token is configured | MCP Streamable HTTP: the `onto_*` tools |
 | `/api/stats`, `/api/lineage` | bearer, if a token is configured | read-only introspection |
 | `/api/query` | bearer, if a token is configured | SPARQL SELECT |
-| `/api/update`, `/api/load`, `/api/load-turtle`, `/api/save` | bearer, if a token is configured | **mutating** — SPARQL UPDATE, and `/load` / `/save` read and write files on the server at a path taken from the request body |
+| `/api/update`, `/api/load`, `/api/load-turtle`, `/api/save` | bearer, if a token is configured | **mutating**: SPARQL UPDATE, and `/load` / `/save` read and write files on the server at a path taken from the request body |
 | `/health` | never | liveness probe |
 
 > **The HTTP surface is not read-only.** When no token is configured the bearer
-> layer is not installed at all, so every route above — including the ones that
-> write to the server's filesystem — is reachable by anyone who can open the
+> layer is not installed at all, so every route above, including the ones that
+> write to the server's filesystem, is reachable by anyone who can open the
 > port. Set a token, or bind to a loopback address, whenever the port is
 > reachable by anything other than the local process.
 
 `/health` returns `{"status":"ok","version":"<crate version>"}` and is
 deliberately outside the bearer layer, so an orchestrator can probe the process
-without holding API credentials. It reports nothing about loaded state — use
+without holding API credentials. It reports nothing about loaded state, use
 `/api/stats` for that.
 
 </details>
@@ -258,25 +258,25 @@ Every build includes OWL reasoning (materializes inferred triples), design patte
 
 ## Studio (Desktop App)
 
-The Studio is a native desktop application that wraps the same engine in a visual environment — no browser, no server to manage. It runs entirely on your machine: the engine sidecar handles RDF/OWL operations while the UI renders the graph in real time.
+The Studio is a native desktop application that wraps the same engine in a visual environment with no browser and no server to manage. It runs entirely on your machine: the engine sidecar handles RDF/OWL operations while the UI renders the graph in real time.
 
-Think of it as **Protege meets an AI copilot**. Type "build ontology about cats" and watch a 1,400-class ontology appear in the tree — classes, properties, individuals, and axioms built automatically across 13 pipeline steps. Click any node to inspect its triples, trace connections via clickable pills, and follow every change through the lineage panel.
+Think of it as **Protege meets an AI copilot**. Type "build ontology about cats" and watch a 1,400-class ontology appear in the tree: classes, properties, individuals and axioms built automatically across 13 pipeline steps. Click any node to inspect its triples, trace connections via clickable pills, and follow every change through the lineage panel.
 
 ### Why virtualized tree (not 3D graph)
 
 Prior to v0.1.12, the Studio used a D3.js horizontal tree and a 3D force-directed graph (Three.js / WebGL). Both worked for small ontologies (~100 classes) but became unusable at IES-level depth: the D3 tree couldn't handle 500+ nodes without layout thrashing, and the 3D graph froze the WebKit webview above 1,000 nodes.
 
-The v2 deep builder changed the equation — a single `/build` command now produces 1,400+ classes. We replaced both views with a virtualized DOM tree: only visible rows exist in the DOM (constant memory regardless of ontology size), with hierarchy connector lines, type-filtered legend, search, breadcrumb navigation, and a connections panel. This handles the full IES Common (511 classes) and deep-built ontologies (1,400+ classes) without lag.
+The v2 deep builder changed the equation: a single `/build` command now produces 1,400+ classes. We replaced both views with a virtualized DOM tree: only visible rows exist in the DOM (constant memory regardless of ontology size), with hierarchy connector lines, type-filtered legend, search, breadcrumb navigation, and a connections panel. This handles the full IES Common (511 classes) and deep-built ontologies (1,400+ classes) without lag.
 
 ### How it works
 
 The Studio launches three processes that communicate locally:
 
-1. **Tauri 2 shell** — native window (macOS/Linux/Windows) with a WebKit webview
+1. **Tauri 2 shell**, native window (macOS/Linux/Windows) with a WebKit webview
 2. **Engine sidecar**: the same Rust binary, running as an HTTP MCP server on `localhost:8137`, configurable with `OPEN_ONTOLOGIES_STUDIO_PORT`
 3. **Agent sidecar**: a Node.js process that connects a model to the engine over MCP. The Anthropic path calls the raw `@anthropic-ai/sdk` Messages API, not the Claude Agent SDK.
 
-When you type in the chat panel, your message goes to the Agent sidecar, which sends it to whichever provider is configured. The model decides which `onto_*` tools to call, the engine executes them, and the UI refreshes the graph. The whole loop, from prompt to visual update, takes seconds.
+When you type in the chat panel, your message goes to the Agent sidecar, which sends it to whichever provider is configured. The model decides which `onto_*` tools to call: the engine executes them, and the UI refreshes the graph. The whole loop, from prompt to visual update, takes seconds.
 
 ### Install and run
 
@@ -299,7 +299,7 @@ The first launch compiles the Tauri shell (~2 min). Subsequent launches start in
 
 | Feature | Description |
 | --- | --- |
-| **Virtualized Tree** | Ontology explorer that handles 1,500+ classes without lag. Hierarchy connector lines, collapsible branches, type-filtered legend (Class/Property/Individual), search with auto-expand, breadcrumb path navigation, and a connections panel showing domain/range relationships as clickable pills. Only visible rows are in the DOM — constant memory regardless of ontology size. |
+| **Virtualized Tree** | Ontology explorer that handles 1,500+ classes without lag. Hierarchy connector lines, collapsible branches, type-filtered legend (Class/Property/Individual), search with auto-expand, breadcrumb path navigation, and a connections panel showing domain/range relationships as clickable pills. Only visible rows are in the DOM: constant memory regardless of ontology size. |
 | **AI Agent Chat** | Natural language ontology engineering through a provider chosen at runtime. The Anthropic path defaults to `claude-opus-5` on the raw `@anthropic-ai/sdk`, and `ONTO_LLM_MODEL` overrides it. Two build modes: `/build` runs an 11-step pipeline producing IES-level ontologies, `/sketch` runs 5 steps for quick prototyping. Each tool call is shown in real time. |
 | **Property Inspector** | Protege-style inline triple editor. Click any node to see its `rdfs:subClassOf`, `rdfs:label`, `rdfs:domain`, `rdfs:range` and all other triples. Edit in place, hover to delete, `+ Add` for new triples. Changes are immediately reflected in the graph. |
 | **Lineage Panel** | Full audit trail from SQLite: every plan, apply, enforce, drift, monitor, and align event, grouped by session with timestamps. See exactly what Claude did and in what order. |
@@ -332,18 +332,18 @@ The benchmarks below are not a feature tour. Each one exists to answer a specifi
 | **RQ3** | In ontology alignment, which carries the result: how the similarity signals are weighted, or the constraint that the matching be 1-to-1? | [OAEI Anatomy](#oaei-ontology-alignment--anatomy-track), 5 weight configurations vs stable-matching ablation | **The constraint, overwhelmingly.** Removing stable matching as the only variable drops F1 from 0.829 to 0.728; the five-weight-configuration spread is 0.0033, and even that overstates it (the zero-structural-signal branch bypasses the weights entirely). |
 | **RQ4** | How far does an alignment system get on a biomedical track with **no** domain background knowledge (no UMLS, no BioPortal, no LLM oracle)? | [OAEI Anatomy](#oaei-ontology-alignment--anatomy-track) and [Conference](#oaei-ontology-alignment--conference-track), full 2025 field | **Not far enough.** 9th of 13 on Anatomy, level with the lightweight lexical matcher and +0.063 F1 over a string-equality baseline. Below every system and both baselines on Conference. Precision is competitive; recall is the failure. |
 | **RQ5** | Does a closed-world vocabulary check catch generated terms that open-world SHACL validation silently accepts? | [`onto-correctness-bench`](case-studies/onto-correctness-bench/): 3 vocabularies, 418 fabricated terms, 300 graphs | **Yes, completely.** SHACL returned `conforms=true` on **300/300** graphs containing a fabricated term. The closed-world gate flagged **300/300**, with zero false positives on clean graphs. Open-world semantics treat an undeclared predicate as merely unknown, so SHACL is structurally unable to see it. |
-| **RQ6** | Can the SHACL-SPARQL governance rules an ontology ships actually be executed as written at national scale, or does the reference store force a workaround? | [`investment-fund-ontology`](case-studies/investment-fund-ontology/): 1.29M-triple US fund universe, 4 layer-3 rules, rdflib 7.6.0 A/B | **Store-specific.** rdflib finishes the anti-join (0.1s) and nested aggregate (0.8s) but times out (>300s) on both multi-way self-joins — exactly the cross-source reconciliation rules the ontology exists for. This repo's Oxigraph engine runs load + all four rules, unmodified, in 2.1s, reproducing the reference pipeline's published counts (73 / 0 / 214 / 2,148) exactly. The shapes also forced two validator fixes here: `sh:inversePath` support and `sh:severity` reporting. |
+| **RQ6** | Can the SHACL-SPARQL governance rules an ontology ships actually be executed as written at national scale, or does the reference store force a workaround? | [`investment-fund-ontology`](case-studies/investment-fund-ontology/): 1.29M-triple US fund universe, 4 layer-3 rules, rdflib 7.6.0 A/B | **Store-specific.** rdflib finishes the anti-join (0.1s) and nested aggregate (0.8s) but times out (>300s) on both multi-way self-joins: exactly the cross-source reconciliation rules the ontology exists for. This repo's Oxigraph engine runs load + all four rules, unmodified, in 2.1s, reproducing the reference pipeline's published counts (73 / 0 / 214 / 2,148) exactly. The shapes also forced two validator fixes here: `sh:inversePath` support and `sh:severity` reporting. |
 
 | **RQ7** | When the graph is register-scale (276k triples) rather than fund-universe-scale (1.29M), does the reference store still force the set-based workaround, and do the rule counts survive entity resolution? | [`insurance-register-ontology`](case-studies/insurance-register-ontology/): 276,683-triple EEA insurance register, 6 layer-3 rules, rdflib 7.6.0 A/B | **The workaround becomes speed, not survival.** At this scale rdflib completes all six rules (133.2s total, 97s of it in one double anti-join) against 2s to 9s for the Oxigraph engine; nothing times out. Counts match the reference pipeline exactly on R1-R4 (643 / 4 / 118 / 42). R5 falls from 227 to 20 and R6 rises from 283 to 291 because the graph runs the same rule text after entity resolution, which absorbs the legitimate branch shares and attributes 8 more zombie passports via the LEI join; both differences were verified set-based. The shapes forced two more validator fixes: `sh:pattern` and `sh:hasValue`. |
-| **RQ8** | When a published standard ships a validator but no RDF binding, does a green SHACL result mean the data is valid, or that nothing was checked? | [`dcat-us-binding`](case-studies/dcat-us-binding/): DCAT-US 3.0, the US federal metadata profile, 115 published examples from its live repository, pySHACL vs this engine | **It means nothing was checked, and the distinction is invisible without reporting reach.** The corpus as published expands to **76 triples, 1 predicate, 0 DCAT**, so the shapes GSA deleted select **0 focus nodes** and return `conforms=True`. Generating a JSON-LD context from the same JSON Schema that already carries the RDF terms (231 of 270 properties) lifts the corpus to **1,510 triples and 228 DCAT statements**, and the *same deleted shapes*, unchanged, then select **228 focus nodes and report 287 violations**. This is why `onto_shacl` reports `focus_nodes` next to the verdict. The run also found two defects here, both since fixed. `sh:class` and `sh:nodeKind` written directly under `sh:property` were not evaluated at all, which made 287 of pySHACL's 316 findings invisible on that run; both are evaluated now, pinned by `tests/shacl_class_constraint_test.rs`. Where the two appear as members of an `sh:or` list, which is how most of these shapes write them, the disjunction is still recorded in `skipped_constraints` and the verdict is null rather than a pass. `sh:datatype` also rejected `"1024"^^xsd:nonNegativeInteger` against `sh:datatype xsd:nonNegativeInteger`; the store does not preserve that datatype IRI, so the constraint is now recorded as unevaluated instead of answered wrongly. The case-study table has not been re-measured since the fixes. |
+| **RQ8** | When a published standard ships a validator but no RDF binding, does a green SHACL result mean the data is valid, or that nothing was checked? | [`dcat-us-binding`](case-studies/dcat-us-binding/): DCAT-US 3.0, the US federal metadata profile, 115 published examples from its live repository, pySHACL vs this engine | **It means nothing was checked, and the distinction is invisible without reporting reach.** The corpus as published expands to **76 triples, 1 predicate, 0 DCAT**, so the shapes GSA deleted select **0 focus nodes** and return `conforms=True`. Generating a JSON-LD context from the same JSON Schema that already carries the RDF terms (231 of 270 properties) lifts the corpus to **1,510 triples and 228 DCAT statements**, and the *same deleted shapes*, unchanged, then select **228 focus nodes and report 287 violations**. This is why `onto_shacl` reports `focus_nodes` next to the verdict. The run also found two defects here, both since fixed. `sh:class` and `sh:nodeKind` written directly under `sh:property` were not evaluated at all, which made 287 of pySHACL's 316 findings invisible on that run; both are evaluated now, pinned by `tests/shacl_class_constraint_test.rs`. Where the two appear as members of an `sh:or` list, which is how most of these shapes write them: the disjunction is still recorded in `skipped_constraints` and the verdict is null rather than a pass. `sh:datatype` also rejected `"1024"^^xsd:nonNegativeInteger` against `sh:datatype xsd:nonNegativeInteger`; the store does not preserve that datatype IRI, so the constraint is now recorded as unevaluated instead of answered wrongly. The case-study table has not been re-measured since the fixes. |
 
 RQ2 and RQ4 are the ones worth reading if you are deciding whether to trust this repo. Both are negative results about work done here.
 
 ## Benchmarks
 
-> **How to read these numbers.** Unless stated, LLM results are **single-run** (not averaged over seeds) and use **Claude Opus 4.8**. Several benchmark ontologies (Pizza, FOAF, Schema.org, OWL-Time) are widely published and may appear in an LLM's pretraining data, so a *bare-LLM* score is a **contamination-inclusive baseline**, not a clean measure of reasoning — the contribution is the **delta** the MCP tools add on top of that baseline, and whether that delta reproduces across models. To check exactly that, the repo ships a **cross-model ablation** driving the same tasks with a local **Qwen3-Coder-30B** as well as Claude — see [`benchmark/ontoaxiom/`](benchmark/ontoaxiom/). If the tool-augmented gain holds on a second, open model, the gain is a property of the tooling, not of one vendor's model.
+> **How to read these numbers.** Unless stated, LLM results are **single-run** (not averaged over seeds) and use **Claude Opus 4.8**. Several benchmark ontologies (Pizza, FOAF, Schema.org, OWL-Time) are widely published and may appear in an LLM's pretraining data, so a *bare-LLM* score is a **contamination-inclusive baseline**, not a clean measure of reasoning: the contribution is the **delta** the MCP tools add on top of that baseline, and whether that delta reproduces across models. To check exactly that: the repo ships a **cross-model ablation** driving the same tasks with a local **Qwen3-Coder-30B** as well as Claude, see [`benchmark/ontoaxiom/`](benchmark/ontoaxiom/). If the tool-augmented gain holds on a second, open model: the gain is a property of the tooling, not of one vendor's model.
 
-### OntoAxiom — LLM Axiom Identification
+### OntoAxiom, LLM Axiom Identification
 
 [OntoAxiom](https://arxiv.org/abs/2512.05594) tests axiom identification across 9 ontologies and 3,042 ground truth axioms.
 
@@ -351,7 +351,7 @@ All conditions below are scored by a **single evaluator** (`benchmark/ontoaxiom/
 
 | Approach | Input | macro F1 | micro F1 |
 | --- | --- | --- | --- |
-| o1 (paper's best) | Name lists | — | 0.197 |
+| o1 (paper's best) | Name lists |: | 0.197 |
 | Bare Claude Opus | Name lists | 0.451 | 0.397 |
 | Bare Qwen3-Coder-30B | Name lists | 0.223 | 0.176 |
 | Claude Opus, raw OWL file | Full Turtle | **0.768** | 0.686 |
@@ -362,9 +362,9 @@ All conditions below are scored by a **single evaluator** (`benchmark/ontoaxiom/
 
 Rescoring the *same stored predictions* under one evaluator flips the sign on both models and under both averages: Claude 0.451 → **0.768** macro (0.397 → 0.686 micro), Qwen 0.246 → **0.673** macro, winning 33/43 and 33/38 cells respectively. `score_condition_d.py --legacy` reproduces the broken 0.323 exactly, so the bug is demonstrated rather than asserted. The correction moves 0 of 5,083 name-list pairs, so it cannot flatter the baseline, and it still under-credits raw OWL: 51.8% of Claude's pairs are label text no normalizer here can match. Full analysis and reproduction: [`benchmark/ontoaxiom/ONTOAXIOM_SHOWDOWN.md`](benchmark/ontoaxiom/ONTOAXIOM_SHOWDOWN.md).
 
-Corrected, reading the ontology and SPARQL-extracting it are **at parity** — raw OWL wins macro (0.768 vs 0.713), extraction wins micro (0.717 vs 0.686). So the tools' edge is **auditability, not F1**: every MCP pair traces to a query against real triples, whereas an LLM reading a file can still hallucinate a plausible pair and no F1 score will say which.
+Corrected, reading the ontology and SPARQL-extracting it are **at parity**, raw OWL wins macro (0.768 vs 0.713), extraction wins micro (0.717 vs 0.686). So the tools' edge is **auditability, not F1**: every MCP pair traces to a query against real triples, whereas an LLM reading a file can still hallucinate a plausible pair and no F1 score will say which.
 
-### Pizza Ontology — Manchester Tutorial
+### Pizza Ontology, Manchester Tutorial
 
 One sentence input: *"Build a Pizza ontology following the Manchester tutorial specification."*
 
@@ -375,9 +375,9 @@ One sentence input: *"Build a Pizza ontology following the Manchester tutorial s
 | Toppings | 49 | 49 | **100%** |
 | Named Pizzas | 24 | 24 | **100%** |
 
-### `/sketch` vs `/build` — Two Build Modes
+### `/sketch` vs `/build`, Two Build Modes
 
-The Studio provides two build commands for different use cases. Both take the same input — *"build ontology about cats"* — but produce very different results:
+The Studio provides two build commands for different use cases. Both take the same input, *"build ontology about cats"*, but produce very different results:
 
 | Metric | `/sketch` (3 steps, ~2 min) | `/build` (13 steps, ~15 min) | IES Common (reference) |
 | --- | ---: | ---: | ---: |
@@ -385,28 +385,28 @@ The Studio provides two build commands for different use cases. Both take the sa
 | Object properties | 15 | **218** | 162 |
 | Datatype properties | 5 | **101** | 44 |
 | Individuals | 3 | **358** | 1 |
-| Disjoints | 6 | **60+** | — |
+| Disjoints | 6 | **60+** |: |
 | Max hierarchy depth | 5 | **11** | 8 |
-| Build time | ~2 min | ~15 min | — (hand-built) |
+| Build time | ~2 min | ~15 min |: (hand-built) |
 
-**`/sketch`** runs 3 steps: classes + properties in one Turtle block, axioms + individuals, then save. Good for quick domain exploration or demo prototyping. Produces a complete ontology with hierarchy, properties, and individuals — but at a fraction of the depth.
+**`/sketch`** runs 3 steps: classes + properties in one Turtle block, axioms + individuals, then save. Good for quick domain exploration or demo prototyping. Produces a complete ontology with hierarchy, properties, and individuals, but at a fraction of the depth.
 
 **`/build`** runs a 13-step pipeline within a single persistent Claude session: foundation classes → per-branch deepening (4 passes) → gap filling → object properties (2 batches) → datatype properties → disjoints → individuals → reason → save. Each step focuses on one aspect of the ontology, staying within output token limits while building on the previous step's context. The result exceeds IES Common on every metric.
 
-`/sketch` is comparable to the Pizza benchmark (95 classes, 8 properties). `/build` produces IES-level ontologies — deep enough for production use.
+`/sketch` is comparable to the Pizza benchmark (95 classes, 8 properties). `/build` produces IES-level ontologies, deep enough for production use.
 
-### Mushroom Classification — OWL Reasoning vs Expert Labels
+### Mushroom Classification, OWL Reasoning vs Expert Labels
 
-**Dataset:** UCI Mushroom Dataset — 8,124 specimens classified by mycology experts.
+**Dataset:** UCI Mushroom Dataset, 8,124 specimens classified by mycology experts.
 
 | Metric | Result |
 | --- | --- |
 | Accuracy | **98.33%** |
-| Recall (poisonous) | **100%** — zero toxic mushrooms missed |
+| Recall (poisonous) | **100%**: zero toxic mushrooms missed |
 | False negatives | **0** |
 | Classification rules | 6 OWL axioms |
 
-### Ontology Marketplace — 33 Standard Ontologies
+### Ontology Marketplace, 33 Standard Ontologies
 
 The 29 general-purpose marketplace ontologies (the four IES entries are covered separately under [IES Support](#ies-support)) fetched, `owl:imports` resolved, loaded, and reasoned over with both RDFS and OWL-RL profiles. Regenerate with `python3 benchmark/marketplace_benchmark.py`:
 
@@ -441,9 +441,9 @@ The 29 general-purpose marketplace ontologies (the four IES entries are covered 
 | GoodRelations | 43 | 102 | 1,834 | +15 | +42 | 303ms | 3ms | 4ms |
 | FIBO (metadata) | 0 | 0 | 48 | +0 | +0 | 505ms | 4ms | 4ms |
 | QUDT | 99 | 196 | 2,434 | +1,574 | +1,581 | 2,100ms | 50ms | 49ms |
-| **Total** | **1,779** | **3,092** | **43,093** | **+8,162** | **+18,560** | — | — | — |
+| **Total** | **1,779** | **3,092** | **43,093** | **+8,162** | **+18,560** |: |: |: |
 
-29/29 ontologies loaded, imports resolved, and reasoned. RDFS adds 18% more triples. OWL-RL adds **43%** — transitive/symmetric/inverse properties and equivalentClass expansion discover significantly more implicit knowledge. Schema.org jumps from +4,082 (RDFS) to +14,236 (OWL-RL) inferred triples in 136ms.
+29/29 ontologies loaded, imports resolved, and reasoned. RDFS adds 18% more triples. OWL-RL adds **43%**, transitive/symmetric/inverse properties and equivalentClass expansion discover significantly more implicit knowledge. Schema.org jumps from +4,082 (RDFS) to +14,236 (OWL-RL) inferred triples in 136ms.
 
 Class and property counts are structural, not declaration-only: a term counts if it is typed (`owl:Class`, `rdfs:Class`, `owl:ObjectProperty`, `owl:DatatypeProperty`, `rdf:Property`) **or** used as one (`rdfs:subClassOf`/`subPropertyOf`/`domain`/`range` position). Vocabularies that never issue OWL type declarations, such as Schema.org, are therefore counted rather than reported as empty. Terms in the `rdf:`, `rdfs:` and `owl:` namespaces are excluded so a vocabulary is not credited with the meta-vocabulary it is written in. That exclusion is why OWL 2, RDF Schema and RDF Concepts report **0 properties**: every property they define is, by definition, in an excluded namespace. FIBO's marketplace entry is the metadata module only (48 triples), which declares no terms of its own.
 
@@ -467,7 +467,7 @@ cross-checked against HermiT 1.4.3.456:
 
 | Per-claim consistency check | median | p95 | throughput |
 | --- | --- | --- | --- |
-| HermiT (warm JVM, ontology pre-loaded) | 4,936 µs | — | ~200/s |
+| HermiT (warm JVM, ontology pre-loaded) | 4,936 µs |: | ~200/s |
 | **open-ontologies compiled check** | **0.3 µs** | **0.4 µs** | **3.1M/s (11.2M/s batched)** |
 
 Measured on Apple M3 Max over a rotation of four claims against the compiled
@@ -494,7 +494,7 @@ Correctness before speed:
   both fully-audited ontologies.
 - **Explicit incompleteness envelope**: anything the compiled surface cannot
   decide returns `Undetermined` and routes to a reasoner-backed residual tier
-  — it is never guessed.
+, it is never guessed.
 - Closed-world vocabulary checks catch hallucinated classes/properties that
   open-world OWL semantics structurally cannot flag.
 
@@ -525,7 +525,7 @@ Verification harness for the parity and soundness sweeps:
 Design, measurements and envelope: [docs/layer3-compiled-reasoning.md](docs/layer3-compiled-reasoning.md).
 Full benchmark methodology: [docs/benchmarks.md](docs/benchmarks.md)
 
-### OAEI Ontology Alignment — Anatomy Track
+### OAEI Ontology Alignment, Anatomy Track
 
 [OAEI](https://oaei.ontologymatching.org/) is the standard benchmark for ontology alignment systems. The Anatomy track aligns the mouse anatomy ontology (2,744 classes) to the human anatomy fragment of the NCI Thesaurus (3,304 classes) against 1,516 reference mappings.
 
@@ -560,7 +560,7 @@ The defensible finding from this track is therefore **not** the headline F1. It 
 
 Removing stable matching produces 12,557 candidates against a 1,516-mapping reference. See issues [#8](https://github.com/fabio-rovai/open-ontologies/issues/8), [#9](https://github.com/fabio-rovai/open-ontologies/issues/9), [#10](https://github.com/fabio-rovai/open-ontologies/issues/10); background-knowledge integration is the open work.
 
-### OAEI Ontology Alignment — Conference Track
+### OAEI Ontology Alignment, Conference Track
 
 15 of the 21 conference-track pairs, micro-averaged:
 
@@ -583,7 +583,7 @@ Removing stable matching produces 12,557 candidates against a 1,516-mapping refe
 
 ## IES Support
 
-[IES (Information Exchange Standard)](https://github.com/IES-Org) is the UK National Digital Twin Programme's core ontology framework. It uses a 4D extensionalist (BORO) approach for modelling entities, events, states, and relationships. Open Ontologies supports the **full IES stack** — all three layers, SHACL shapes, and example datasets from the IES-Org GitHub repositories.
+[IES (Information Exchange Standard)](https://github.com/IES-Org) is the UK National Digital Twin Programme's core ontology framework. It uses a 4D extensionalist (BORO) approach for modelling entities, events, states, and relationships. Open Ontologies supports the **full IES stack**, all three layers, SHACL shapes, and example datasets from the IES-Org GitHub repositories.
 
 ### The IES Layers
 
@@ -619,7 +619,7 @@ part of `benchmark/marketplace_benchmark.py`, so
 `benchmark/marketplace_results.json` does not contain this row. Fetch time is
 omitted because it measured a network round trip rather than the engine.
 
-IES is the second-largest ontology in the marketplace by class count (after Schema.org). RDFS reasoning produces the richest inference gain of any non-general ontology — State, ClassOfEntity, and Event subclasses all generating deep transitive chains.
+IES is the second-largest ontology in the marketplace by class count (after Schema.org). RDFS reasoning produces the richest inference gain of any non-general ontology, State, ClassOfEntity, and Event subclasses all generating deep transitive chains.
 
 ### Example Data
 
@@ -650,9 +650,9 @@ onto_reason --profile rdfs
 
 This mirrors NDTP's actual pipeline: CSV → IES RDF → validate → reason → query.
 
-### IES Building Extension — Comparison with NDTP/IRIS
+### IES Building Extension, Comparison with NDTP/IRIS
 
-The repo includes an [IES Building Extension](benchmark/generated/ies-building-extension.ttl) built from the UK EPC data schema and building science fundamentals, using IES 4D patterns. It was built independently — without reference to any existing implementation — then compared against the NDTP/IRIS production building ontology used in government data pipelines.
+The repo includes an [IES Building Extension](benchmark/generated/ies-building-extension.ttl) built from the UK EPC data schema and building science fundamentals, using IES 4D patterns. It was built independently, without reference to any existing implementation, then compared against the NDTP/IRIS production building ontology used in government data pipelines.
 
 | Metric | NDTP/IRIS (hand-built) | Open Ontologies (AI-built) |
 | --- | ---: | ---: |
@@ -672,11 +672,11 @@ The repo includes an [IES Building Extension](benchmark/generated/ies-building-e
 | Complete triads (Entity+State+ClassOf) | 14 | 129 |
 | Enumerated individuals | 2 | 214 |
 
-Built blind from the 105-column EPC schema, SAP methodology, and BORO 4D extensionalism — zero reference to the IRIS implementation. The two ontologies make different trade-offs: IRIS is more tightly curated with higher average hierarchy depth (2.89 vs 2.02), reflecting deliberate grouping by domain experts. Open Ontologies covers more of the EPC data schema and applies the BORO 4D pattern more systematically across the domain.
+Built blind from the 105-column EPC schema, SAP methodology, and BORO 4D extensionalism, zero reference to the IRIS implementation. The two ontologies make different trade-offs: IRIS is more tightly curated with higher average hierarchy depth (2.89 vs 2.02), reflecting deliberate grouping by domain experts. Open Ontologies covers more of the EPC data schema and applies the BORO 4D pattern more systematically across the domain.
 
 #### How the hierarchy emerges from building science
 
-The ontology's depth (max 10 levels) is not hand-tuned — it follows the natural classification that building scientists use. The EPC data schema describes heating systems as flat text fields (`"Condensing gas boiler with radiators"`), but the underlying domain has layered structure:
+The ontology's depth (max 10 levels) is not hand-tuned, it follows the natural classification that building scientists use. The EPC data schema describes heating systems as flat text fields (`"Condensing gas boiler with radiators"`), but the underlying domain has layered structure:
 
 ```mermaid
 graph TD
@@ -729,7 +729,7 @@ graph TD
     style CHP fill:#e94560,color:#fff
 ```
 
-The same pattern applies to the building fabric — heat transfer physics dictates the grouping:
+The same pattern applies to the building fabric, heat transfer physics dictates the grouping:
 
 ```mermaid
 graph TD
@@ -782,18 +782,18 @@ graph TD
     style FLT fill:#533483,color:#fff
 ```
 
-Each level in the tree is a real building science distinction — central vs room heating, hydronic vs warm air, combustion vs electric, masonry vs framed, cavity vs solid. An independent building scientist, given the same EPC data values, produces these same intermediate groupings ([verified by clean-room reproduction](docs/ies-ecosystem.md)). RDFS reasoning traverses these chains transitively, which is why a 10-level hierarchy generates 662 inferred triples from 3,229 raw.
+Each level in the tree is a real building science distinction, central vs room heating, hydronic vs warm air, combustion vs electric, masonry vs framed, cavity vs solid. An independent building scientist, given the same EPC data values, produces these same intermediate groupings ([verified by clean-room reproduction](docs/ies-ecosystem.md)). RDFS reasoning traverses these chains transitively, which is why a 10-level hierarchy generates 662 inferred triples from 3,229 raw.
 
 ### EPC Column Coverage Benchmark
 
-Both ontologies tested against 36 key EPC data columns — can each ontology receive and represent the data from that column?
+Both ontologies tested against 36 key EPC data columns, can each ontology receive and represent the data from that column?
 
 | Metric | NDTP/IRIS | Open Ontologies |
 | --- | ---: | ---: |
 | EPC columns covered | 18/36 (50%) | 36/36 (100%) |
 | Triples | 1,346 | 3,229 |
 
-Queries derived from published DESNZ/ONS EPC statistical reports — not from either ontology's class structure. Full benchmark: [benchmark/epc/](benchmark/epc/)
+Queries derived from published DESNZ/ONS EPC statistical reports, not from either ontology's class structure. Full benchmark: [benchmark/epc/](benchmark/epc/)
 
 Use `onto_align` to map it to other domain ontologies:
 
@@ -802,9 +802,9 @@ onto_load benchmark/generated/ies-building-extension.ttl
 onto_align <other-ontology.ttl>
 ```
 
-### Hierarchy Enforcement — Automated Inference Improvement
+### Hierarchy Enforcement, Automated Inference Improvement
 
-The `hierarchy` enforce pack detects flat spots in any ontology and suggests intermediate grouping classes. This is the same process used to deepen the building extension — now codified as a repeatable tool:
+The `hierarchy` enforce pack detects flat spots in any ontology and suggests intermediate grouping classes. This is the same process used to deepen the building extension, now codified as a repeatable tool:
 
 ```text
 onto_load my-ontology.ttl
@@ -813,7 +813,7 @@ onto_enforce --pack hierarchy
 # → reports max depth, avg depth, hierarchy density
 ```
 
-Tested on IES Common (511 classes), the tool found 24 flat spots. A clean-room agent — with no prior context — proposed 38 intermediate grouping classes based solely on the domain meaning of the flagged children:
+Tested on IES Common (511 classes), the tool found 24 flat spots. A clean-room agent, with no prior context, proposed 38 intermediate grouping classes based solely on the domain meaning of the flagged children:
 
 ```mermaid
 graph LR
@@ -864,7 +864,7 @@ extended version is not committed, so the 3,422 figure and the delta cannot be
 rechecked from this repository. Commit the extended Turtle file, or state the
 before figure alone.
 
-The same tool, applied to any ontology, produces the same kind of improvement. The intermediate classes emerge from domain knowledge — not from reference to any other implementation.
+The same tool, applied to any ontology, produces the same kind of improvement. The intermediate classes emerge from domain knowledge, not from reference to any other implementation.
 
 ### Further Reading
 
@@ -914,14 +914,14 @@ The same tool, applied to any ontology, produces the same kind of improvement. T
 
 ## Extending Open Ontologies
 
-Four extension surfaces, in increasing order of coupling — full map in [ECOSYSTEM.md](ECOSYSTEM.md):
+Four extension surfaces, in increasing order of coupling, full map in [ECOSYSTEM.md](ECOSYSTEM.md):
 
 | Surface | Contribution is | How |
 | ------- | --------------- | --- |
-| **[Community packs](community/README.md)** | Data — an ontology manifest in an open registry, installable via `onto_marketplace` the moment the PR merges (no release) | PR to [`community/registry.json`](community/registry.json) |
-| **[Community skills](skills/community/)** | Markdown — workflow recipes teaching agents to chain `onto_*` tools | PR a `SKILL.md` directory |
-| **[Companion servers](docs/companion-servers.md)** | An independent MCP server composing with this one in-session (lineage webhook, pack interchange, SPARQL endpoints) — [OpenCheir](https://github.com/fabio-rovai/opencheir) is the reference | Follow the five-rule contract, PR an [ECOSYSTEM.md](ECOSYSTEM.md) row |
-| **[WASM plugins](docs/plugins.md)** | Code — sandboxed wasm32 tools run in-process with fuel metering, no imports, no IO, per-call capability grants | Implement ABI v1 (reference: [`examples/plugins/`](examples/plugins/)) |
+| **[Community packs](community/README.md)** | Data: an ontology manifest in an open registry, installable via `onto_marketplace` the moment the PR merges (no release) | PR to [`community/registry.json`](community/registry.json) |
+| **[Community skills](skills/community/)** | Markdown: workflow recipes teaching agents to chain `onto_*` tools | PR a `SKILL.md` directory |
+| **[Companion servers](docs/companion-servers.md)** | An independent MCP server composing with this one in-session (lineage webhook, pack interchange, SPARQL endpoints): [OpenCheir](https://github.com/fabio-rovai/opencheir) is the reference | Follow the five-rule contract, PR an [ECOSYSTEM.md](ECOSYSTEM.md) row |
+| **[WASM plugins](docs/plugins.md)** | Code: sandboxed wasm32 tools run in-process with fuel metering, no imports, no IO, per-call capability grants | Implement ABI v1 (reference: [`examples/plugins/`](examples/plugins/)) |
 
 Everything holds the MCP-native convention: extensions provide validation and scaffolding; the connected LLM does the intelligence.
 
@@ -1055,9 +1055,9 @@ flowchart TD
 
 | Layer | Tech |
 | --- | --- |
-| Engine language | Rust (edition 2024) — single binary, no JVM |
+| Engine language | Rust (edition 2024): single binary, no JVM |
 | Triple store | Oxigraph 0.5, a pure Rust RDF and SPARQL 1.1 engine |
-| MCP protocol | rmcp — Streamable HTTP transport |
+| MCP protocol | rmcp: Streamable HTTP transport |
 | State / lineage / feedback | SQLite (rusqlite) |
 | Clinical crosswalks | Apache Arrow / Parquet |
 | Embeddings runtime | tract-onnx, pure Rust ONNX, behind the `embeddings` Cargo feature and absent from the published binaries |

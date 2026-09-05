@@ -47,7 +47,6 @@ The codebase is organized into domain modules under `src/`:
 |--------|---------|
 | `server.rs` | MCP server + tool/prompt implementations |
 | `inputs.rs` | Tool and prompt input structs (JsonSchema) |
-| `error.rs` | Typed error enum (`OntologyError`) |
 | `graph.rs` | Oxigraph triple store wrapper |
 | `ontology.rs` | Core RDF operations (validate, load, diff, lint) |
 | `state.rs` | SQLite state database (versions, feedback, locks) |

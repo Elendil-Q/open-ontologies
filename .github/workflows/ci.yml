@@ -192,6 +192,45 @@ jobs:
         # a hand-written list would not: `sql` implies postgres + duckdb.
         run: bash scripts/check-test-collection.sh cargo-test.log "${{ matrix.flags }}"
 
+  # The README describes the SHACL validator as differentially tested against
+  # pyshacl. tools/shacl_differential.py has existed since August and was
+  # referenced by no workflow and no Makefile target, so nothing ran it, no
+  # result was ever committed, and the claim rested on a run somebody did once
+  # by hand. A verification procedure nobody executes is the same defect as a
+  # test that returns early: it reports assurance that did not happen.
+  #
+  # The oracle exits 1 on a FALSE_CLEAN, meaning we said conforms where pyshacl
+  # said not, which is the one failure this validator must never have. That is
+  # what gates here. Disagreements in the other direction and undetermined
+  # verdicts are printed and uploaded, not failed on, because they are a work
+  # list rather than a defect.
+  shacl-differential:
+    timeout-minutes: 30
+    name: SHACL differential vs pyshacl
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pyshacl
+        run: pip install pyshacl
+      - name: Build the binary the oracle drives
+        run: cargo build --release
+      - name: Run the differential over the case-study corpus
+        run: |
+          python3 tools/shacl_differential.py \
+            --discover case-studies \
+            --json shacl-differential.json
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shacl-differential
+          path: shacl-differential.json
+
   # `python/` (open-ontologies-lite) has its own test suite and its own release
   # workflow, and until now nothing ran the tests. `python-release.yml` goes
   # straight from `uv build` to `pypa/gh-action-pypi-publish` on a `py-v*` tag,
