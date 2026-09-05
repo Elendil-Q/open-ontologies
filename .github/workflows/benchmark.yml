@@ -21,7 +21,7 @@ jobs:
       - name: Install Python deps
         run: pip install matplotlib
       - name: Build Open Ontologies
-        run: cargo build --release
+        run: cargo build --release --features embeddings
       - name: Download reasoner JARs
         run: bash benchmark/reasoner/setup_jars.sh
       - name: Run Pizza correctness

@@ -97,7 +97,10 @@ Anatomy 0.829 F1 (9th of 13 in the OAEI 2025 field), Conference 0.438 (below eve
 The claim-verification benchmark measures the workload the `claimcheck` module
 is built for: a fixed ontology, compiled once, against a stream of candidate
 claims (small sets of type/relation assertions), each answered consistent /
-rejected / undetermined.
+rejected / undetermined. `claimcheck` is a library module. No MCP tool in
+`src/server.rs` and no CLI subcommand in `src/main.rs` calls it, so these figures
+describe a module measured on its own and not a capability of the shipped server
+or binary.
 
 ### Methodology
 
@@ -125,9 +128,15 @@ rejected / undetermined.
 | HermiT, warm | 4,936 µs | — | ~200 claims/s |
 | compiled token-bitset check | 0.3 µs | 0.4 µs | 3.1M/s seq, 11.2M/s batched |
 
+Latency and throughput come from `tests/claimcheck_pizza_bench.rs`, over a
+rotation of four claims against the compiled Pizza ontology. The results are
+printed, not committed. Reproduce by writing `/tmp/pizza_compiled.json` with
+`CompileOntology`, then `cargo test --release --test claimcheck_pizza_bench --
+--nocapture`. Without that input the test skips and still passes.
+
 | Correctness | result |
 | --- | --- |
-| agreement with HermiT, 78,884 audited pairs (13 ontologies) | 100% |
+| unsound rejections vs HermiT, 78,884 audited pairs (13 ontologies) | 0, with 23 pairs left to the residual tier |
 | agreement on 793 structurally adversarial claims (8 ontologies) | 100%, 0 false negatives |
 | contradiction recall, pizza.owl | 3,944/3,944 (100%) |
 | contradiction recall, ore_ont_10230 | 232/232 (100%) |
@@ -156,6 +165,18 @@ make bench-pizza    # Just Pizza
 make bench-ontoaxiom # Just OntoAxiom
 make bench-reasoner # Just reasoner comparison
 ```
+
+The claim-verification benchmark has no `make` target. Run it directly:
+
+```bash
+cd benchmark/reasoner && ./setup_jars.sh
+javac -cp "lib/*" CompileOntology.java
+java -cp ".:lib/*" CompileOntology <pizza.owl> /tmp/pizza_compiled.json
+cd ../.. && cargo test --release --test claimcheck_pizza_bench -- --nocapture
+```
+
+The Rust test skips when `/tmp/pizza_compiled.json` is absent, and it asserts on
+the `http://www.co-ode.org/ontologies/pizza/pizza.owl#` namespace.
 
 ## Determinism and corrected results
 

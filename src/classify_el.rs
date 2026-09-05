@@ -12,7 +12,7 @@
 //! emits the **full classification table** — every materialised
 //! `?sub rdfs:subClassOf ?super` pair, sorted, deduplicated.
 //!
-//! For deep OWL-DL (SHOIQ), use `onto_dl_check` / `onto_dl_explain` which
+//! For deep SHIQ subsumption, use `onto_dl_check` / `onto_dl_explain` which
 //! delegate to the tableaux reasoner.
 
 use crate::graph::GraphStore;

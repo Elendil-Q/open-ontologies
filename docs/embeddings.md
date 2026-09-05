@@ -1,8 +1,8 @@
 # Semantic Embeddings (Poincare Vector Store)
 
-Open Ontologies includes a built-in dual-space vector store for semantic search and alignment:
+Open Ontologies has a dual-space vector store for semantic search and alignment, available in builds compiled with the `embeddings` feature:
 
-- **Text embeddings** via ONNX model (bge-small-en-v1.5) — captures label/definition similarity
+- **Text embeddings** via a local ONNX model (`paraphrase-multilingual-MiniLM-L12-v2`, 384 dimensions) that captures label and definition similarity across languages
 - **Structural embeddings** via Poincare ball — captures hierarchy position (root classes near center, leaves near boundary)
 - **Product search** — combines both spaces for best results
 
@@ -10,7 +10,7 @@ Open Ontologies includes a built-in dual-space vector store for semantic search 
 onto_load → onto_embed → onto_search "domestic animal"
 ```
 
-The embedding model (~33MB) is downloaded on `open-ontologies init`. All inference runs locally via tract (pure Rust ONNX runtime) — no API keys or external services needed.
+This subsystem is a compile-time feature. Build with `cargo build --release --features embeddings`. The pre-built binaries and the GHCR image do not have it, and on those `onto_embed`, `onto_search`, `onto_similarity` and `onto_hnsw_build` return `Compiled without embeddings feature. Rebuild with --features embeddings`. On a build that has the feature, `open-ontologies init` downloads a 448 MB ONNX model and a 16 MB tokenizer into `~/.open-ontologies/models`. All inference then runs locally via tract, a pure Rust ONNX runtime, with no API keys and no external services.
 
 ## Tools
 
@@ -35,7 +35,7 @@ The structural (Poincare) half has one, and will keep having one: TurboQuant
 scores inner products, and hyperbolic distance is not an inner product on the
 ambient coordinates.
 
-| | `embeddings` (default) | `turbovec` |
+| | `embeddings` (the default index backend) | `turbovec` |
 | --- | --- | --- |
 | Algorithm | HNSW graph (`instant-distance`) | TurboQuant quantiser (`turbovec`, arXiv:2504.19874) |
 | Entry point | `VecStore::search_cosine_hnsw` | `VecStore::search_cosine_turbo` |

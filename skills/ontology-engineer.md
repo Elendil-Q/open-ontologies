@@ -5,7 +5,7 @@ description: Use when building, modifying, or validating ontologies. Orchestrate
 
 # Ontology Engineer
 
-AI-native ontology engineering using OpenCheir's `onto_*` MCP tools (50+ tools).
+AI-native ontology engineering using the Open Ontologies `onto_*` MCP tools (109 tools, 8 of which require an optional Cargo feature).
 
 ## When to Use
 
@@ -83,7 +83,7 @@ onto_plan / onto_enforce / onto_apply / onto_monitor / onto_drift
 3. **Always lint after loading** — `onto_lint` catches missing labels and domains
 4. **Version before pushing** — `onto_version` before `onto_push` (enforcer rule)
 5. **Iterate, don't declare done** — if any check fails, fix and re-run from Phase 3
-6. **Use embeddings for semantic search and alignment** — call `onto_embed` once after `onto_load`, then `onto_search` / `onto_similarity` work, and `onto_align` automatically uses embeddings as a 7th signal.
+6. **Use embeddings for semantic search and alignment.** On a build with `--features embeddings`, call `onto_embed` once after `onto_load`; then `onto_search` and `onto_similarity` work, and `onto_align` uses embeddings as a 7th signal. On a default build those three tools return an error and `onto_align` runs on 6 signals.
 7. **Cache, don't re-parse** — when juggling several `.ttl` files, use `onto_cache_list` / `onto_repo_load` to leverage the on-disk N-Triples cache.
 
 ## Tool Quick Reference

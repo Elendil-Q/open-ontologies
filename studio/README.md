@@ -35,7 +35,7 @@ Natural language ontology engineering via a model provider chosen at runtime.
 
 **How it works:**
 - The agent runs as a Node.js sidecar process (`src-tauri/sidecars/agent/`), spawned by Tauri 3 seconds after the engine starts.
-- The sidecar connects a model to the Open Ontologies engine via its MCP endpoint (`http://localhost:<port>/mcp`, port 8137 by default, passed down from the Rust host), giving it access to the engine's full tool set: `src/server.rs` currently declares roughly 103 `onto_*` tools (`onto_load`, `onto_query`, `onto_validate`, `onto_lint`, `onto_reason`, `onto_enforce`, `onto_plan`, `onto_apply`, `onto_save`, `onto_diff`, `onto_align`, `onto_embed`, `onto_search`, and many more) -- check that file for the current count rather than trusting a number here, since it grows.
+- The sidecar connects a model to the Open Ontologies engine via its MCP endpoint (`http://localhost:<port>/mcp`, port 8137 by default, passed down from the Rust host), giving it access to the engine's whole tool set: `src/server.rs` declares 109 `onto_*` tools (`onto_load`, `onto_query`, `onto_validate`, `onto_lint`, `onto_reason`, `onto_enforce`, `onto_plan`, `onto_apply`, `onto_save`, `onto_diff`, `onto_align`, `onto_embed`, `onto_search`, and the rest). All 109 are advertised in a default build; 8 need an optional Cargo feature to run. Re-derive the count with `grep -c 'tool(name' src/server.rs` if this number looks stale.
 - Provider selection (`providers/alias.ts`'s `selectProvider`) is a fallback chain, not a fixed SDK: `ONTO_PROVIDER=anthropic|openai|claude-cli` forces one; otherwise an explicit `ONTO_LLM_BASE_URL` selects an OpenAI-compatible endpoint; otherwise a present `ANTHROPIC_API_KEY` selects Anthropic; otherwise it falls back to a **local** OpenAI-compatible endpoint (`http://localhost:8081/v1` by default). This local fallback exists because an app launched from Finder has no shell environment, so an unconditional Anthropic default died with an authentication error before the first token.
 - The Anthropic path (`providers/anthropic.ts`) calls the raw `@anthropic-ai/sdk` Messages API directly, not the separate Claude Agent SDK package. Its default model is `claude-opus-5` (`ONTO_LLM_MODEL` overrides it), used only when the fallback chain above actually selects Anthropic.
 - The Tauri Rust backend communicates with the sidecar over stdin/stdout using a simple JSON protocol (`{ type: 'chat', message }` in, `{ type: 'text' | 'tool_call' | 'done' | 'error' }` out).
@@ -111,7 +111,7 @@ The live working file is `~/.open-ontologies/studio-live.ttl`. On startup the en
 | Frontend | React 19, Vite 7, TypeScript 5.8, Tailwind CSS 4 |
 | 3D graph | 3d-force-graph 1.79 (Three.js / WebGL) |
 | State | Zustand 5 |
-| Engine | Rust, Axum 0.8, Oxigraph 0.4 (SPARQL), SQLite |
+| Engine | Rust, Axum 0.8, Oxigraph 0.5 (SPARQL), SQLite |
 | MCP | rmcp 1 (Streamable HTTP transport) |
 | AI agent | Node.js sidecar; `claude-opus-5` via `@anthropic-ai/sdk` when `ANTHROPIC_API_KEY` is set, otherwise a local OpenAI-compatible endpoint by default (see `providers/alias.ts`) |
 

@@ -1,6 +1,16 @@
-# OWL2-DL Reasoning
+# SHIQ Reasoning
 
-Native Rust SHOIQ tableaux reasoner — no JVM required.
+Native Rust SHIQ tableaux reasoner. No JVM is required.
+
+The implemented logic is SHIQ: ALC with transitive roles, role hierarchies,
+inverse roles and qualified number restrictions. Nominals are not implemented.
+The `Concept` enum has no nominal constructor, `owl:oneOf` is never parsed and
+falls through to an opaque atomic class, `owl:hasValue` is approximated as an
+existential restriction whose filler is an atomic concept named after the
+individual, and datatype ranges are skipped. An ontology that uses
+`owl:hasValue` returns undetermined classes rather than a classification. The
+measurements are in
+[benchmark/reasoner/regressions/README.md](../benchmark/reasoner/regressions/README.md).
 
 | DL Feature | Symbol | OWL Construct |
 | ---------- | ------ | ------------- |
@@ -17,6 +27,9 @@ Native Rust SHOIQ tableaux reasoner — no JVM required.
 | Symmetric roles | Sym(R) | SymmetricProperty |
 | Functional | Fun(R) | FunctionalProperty |
 | ABox reasoning | a:C | NamedIndividual |
+| Nominals | {a} | oneOf: not implemented |
+| Nominal in a restriction | exists R.{a} | hasValue: approximated as an atomic concept |
+| Datatypes | d | Datatype ranges are skipped |
 
 ## Agent-Based Parallel Classification
 
@@ -25,11 +38,11 @@ Native Rust SHOIQ tableaux reasoner — no JVM required.
 3. **Explanation Agent** — Traces clash derivations for unsatisfiable classes
 4. **ABox Agent** — Individual consistency and type inference
 
-| Reasoner | Language | JVM | Parallel | SHOIQ |
+| Reasoner | Language | JVM | Parallel | Logic |
 | -------- | -------- | --- | -------- | ----- |
-| **Open Ontologies** | Rust | No | Yes (rayon) | Yes |
-| HermiT | Java | Yes | No | Yes |
-| Pellet | Java | Yes | No | Yes |
+| **Open Ontologies** | Rust | No | Yes (rayon) | SHIQ |
+| HermiT | Java | Yes | No | SROIQ(D) |
+| Pellet | Java | Yes | No | SROIQ(D) |
 
 ## Reasoning Profiles
 
@@ -38,7 +51,7 @@ Native Rust SHOIQ tableaux reasoner — no JVM required.
 | `rdfs` | Subclass closure, domain/range inference |
 | `owl-rl` | + transitive/symmetric/inverse, sameAs, equivalentClass |
 | `owl-rl-ext` | + someValuesFrom, allValuesFrom, hasValue, intersectionOf, unionOf |
-| `owl-dl` | Full SHOIQ tableaux: satisfiability, classification, ABox reasoning |
+| `owl-dl` | SHIQ tableaux: satisfiability, classification, ABox reasoning. Nominals are not implemented and datatype ranges are skipped |
 
 ## Tools
 

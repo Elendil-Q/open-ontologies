@@ -42,8 +42,8 @@ onto_lint
 ```
 
 Expected output:
-- 513 classes, 206 object properties, 4,040 triples
-- 0 lint issues (IES v5 is well-formed)
+- 513 classes counted structurally (511 declared with `rdfs:Class`), 162 object properties and 44 datatype properties for 206 in total, 4,039 triples
+- 19 lint issues, all info-level `missing_domain` notices, and no warnings or errors
 
 ### Step 2: Reason
 
@@ -203,6 +203,6 @@ See [ies-alignment.md](ies-alignment.md) for the full IES:Building alignment wal
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | IES Top (ToLO) | ~22 | TBD | TBD | TBD | TBD | TBD |
 | IES Core | ~131 | TBD | TBD | TBD | TBD | TBD |
-| **IES Common** | **513** | **206** | **4,040** | **+3,094** | **911ms** | **63ms** |
+| **IES Common** | **513** | **206** | **4,039** | **+3,094** | not measured | **63ms** |
 
-IES Common is the second-largest ontology in the marketplace by class count (after Schema.org's 1,009). RDFS reasoning adds 77% more triples — the richest inference gain of any non-general ontology, driven by the deep 4D State/Event/ClassOfEntity hierarchies.
+IES Common is the second-largest ontology in the marketplace by class count, after Schema.org, which the marketplace benchmark records at 1,032 classes. RDFS reasoning adds 77% more triples — the richest inference gain of any non-general ontology, driven by the deep 4D State/Event/ClassOfEntity hierarchies.

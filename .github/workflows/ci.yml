@@ -183,7 +183,7 @@ jobs:
   # `python/` (open-ontologies-lite) has its own test suite and its own release
   # workflow, and until now nothing ran the tests. `python-release.yml` goes
   # straight from `uv build` to `pypa/gh-action-pypi-publish` on a `py-v*` tag,
-  # so every wheel published to PyPI so far was published without its 15 tests
+  # so every wheel published to PyPI so far was published without its tests
   # having executed once. Same shape of gap as #67, one subpackage over.
   #
   # Kept in CI rather than bolted onto the release workflow: a test that only

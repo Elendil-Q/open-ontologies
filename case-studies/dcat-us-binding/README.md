@@ -62,24 +62,38 @@ shapes GSA deleted were not stale. They were pointed at a graph that did not exi
 ## What it forced in this engine
 
 Both cross-checks were run through `open-ontologies batch` (`load` then `shacl`) against
-pySHACL on identical inputs. The two agree exactly on reach, 191 focus nodes each, and
-disagree on findings:
+pySHACL on identical inputs, on 20 August 2026. The two agree exactly on reach, 191 focus
+nodes each, and disagreed on findings as follows. The engine defects in the right-hand
+column were fixed on 24 August 2026 and the table has not been re-measured since, so read
+it as the state on the date of the run:
 
-| Measure | pySHACL | this engine |
+| Measure | pySHACL | this engine, 20 Aug 2026 |
 | --- | --: | --: |
 | `sh:class` results | 165 | **0** |
 | `sh:nodeKind` results | 122 | **0** |
 | `sh:maxCount` results | 27 | 27 |
 | `sh:datatype` results | 2 | **8** |
 
-Two defects, both ours:
+Two defects, both ours, both fixed on 24 August 2026:
 
-1. **`sh:class` and `sh:nodeKind` are not evaluated.** 287 of pySHACL's 316 findings are
-   invisible to the engine.
-2. **`sh:datatype` rejects a correctly typed literal for derived numeric types.**
-   `"1024"^^xsd:nonNegativeInteger` fails `sh:datatype xsd:nonNegativeInteger`, while
-   `xsd:integer`, `xsd:decimal` and `xsd:string` all pass. Eight-line repro in the
-   standalone repository's `tests/test_engine_findings.py`.
+1. **`sh:class` and `sh:nodeKind` under `sh:property` were not evaluated.** 287 of
+   pySHACL's 316 findings were invisible to the engine on this run. Both are evaluated
+   now, in `src/shacl.rs`, pinned by `tests/shacl_class_constraint_test.rs`. Two limits
+   remain and both apply to these shapes. Written on the node shape itself rather than
+   under `sh:property`, neither constraint is evaluated; it is recorded in
+   `skipped_constraints` and the verdict is null. Written as members of an `sh:or` list,
+   which is the form 153 of the 154 `sh:class` occurrences and 153 of the 274
+   `sh:nodeKind` occurrences in the recovered shapes take, the whole disjunction is
+   recorded in `skipped_constraints` and the verdict is null. So the fix turns most of
+   this corpus from a false clean into an explicit undetermined rather than into 287
+   findings.
+2. **`sh:datatype` rejected a correctly typed literal for derived numeric types.**
+   `"1024"^^xsd:nonNegativeInteger` failed `sh:datatype xsd:nonNegativeInteger`, while
+   `xsd:integer`, `xsd:decimal` and `xsd:string` all passed. Eight-line repro in the
+   standalone repository's `tests/test_engine_findings.py`. The store does not preserve
+   these datatype IRIs, so the constraint is now recorded in `skipped_constraints` and
+   the verdict is null instead of a false violation. The underlying store defect and the
+   workaround are written up in `docs/UPSTREAM_ISSUES.md`.
 
 A third defect belongs to rdflib 7.6.0, which raises `UnboundLocalError` from
 `plugins/parsers/jsonld.py:242` on a scalar JSON-LD document rather than producing the

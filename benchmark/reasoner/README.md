@@ -22,7 +22,7 @@ pip install matplotlib
 
 ### Pizza Correctness
 
-Compares OWL2-DL classification of the Pizza ontology across all three reasoners:
+Compares classification of the Pizza ontology across all three reasoners. Note that `benchmark/reference/pizza-reference.owl` contains six `owl:hasValue` restrictions and two `owl:oneOf` enumerations, which this reasoner does not implement, so the `owl-dl` profile currently returns 143 of 144 classes undetermined and zero inferred subsumptions on it:
 
 ```bash
 export OO_BIN=./target/release/open-ontologies
@@ -79,6 +79,8 @@ any Java reasoner should be made from this repository.** The reason our reasoner
 does not complete is documented in [`regressions/`](regressions/): it does not
 terminate on nominals, and LUBM emits one `owl:hasValue` per department.
 
-For a workload this engine *is* suited to, see the compiled claim-verification
-benchmark in [`docs/benchmarks.md`](../../docs/benchmarks.md), which is
-task-matched and audited against HermiT for agreement rather than speed alone.
+For a workload the compiled `claimcheck` module *is* suited to, see the
+claim-verification benchmark in [`docs/benchmarks.md`](../../docs/benchmarks.md),
+which is task-matched and audited against HermiT for agreement rather than speed
+alone. That module is a library benchmark. No MCP tool and no CLI subcommand
+calls it, so it is not part of the shipped server or binary.

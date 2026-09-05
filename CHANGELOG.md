@@ -97,8 +97,11 @@ All notable changes to Open Ontologies are documented here.
   predicate it inspects. A second complement now covers the shape node, with a
   whitelist of the predicates the validator reads there (the target forms,
   `sh:property`, `sh:sparql`) plus the annotation predicates, which are never
-  constraints, so any other `sh:` predicate lands in `skipped_constraints` and
-  the verdict becomes null. The shape is bound as a query variable and matched
+  constraints, so any other `sh:` predicate on a shape the `sh:targetClass`
+  discovery query returns lands in `skipped_constraints` and the verdict becomes
+  null. A shape whose only target is `sh:targetNode`, `sh:targetSubjectsOf` or
+  `sh:targetObjectsOf` is not returned by that query, so its node-level
+  constraints are still dropped without a record. The shape is bound as a query variable and matched
   to the discovered shape, not spliced into the query text: a shape written
   `[] a sh:NodeShape` is a blank node, and a blank-node label inside a SPARQL
   query is a wildcard, not a name. The complement runs once per shape rather
@@ -958,14 +961,15 @@ results produced with 1.1.0 or earlier are not directly comparable.
 ## 1.1.0 — 2026-07-27
 
 ### Added
-- `claimcheck` module: compiled per-claim ontology-consistency verification.
+- `claimcheck` module (library only; no MCP tool and no CLI subcommand calls it): compiled per-claim ontology-consistency verification.
   Token-bitset engine (0.3 µs median per claim, 11M claims/s batched), sound
   two-hop disjointness join with witness extraction, three-valued verdicts
   (`Rejected` / `Undetermined` / `Consistent`), reasoner-backed residual tier
   (`ResidualOracle`) with verdict learn-back, closed-world vocabulary checks,
   and an assumed-disjointness WARN tier for zero-disjointness ontologies.
-  Correctness audited against HermiT: 0 disagreements over 78,884 exhaustive
-  class pairs (13 ontologies) and 793 adversarial structural claims.
+  Correctness audited against HermiT: 0 unsound rejections over 78,884
+  exhaustive class pairs (13 ontologies) and 793 adversarial structural
+  claims. The join is sound but incomplete, so this is not full agreement.
 - Offline compile tooling (`benchmark/reasoner/`): `CompileOntology` with six
   sound disjointness-propagation rules (restriction, functional, union,
   data-value, counting, dueling-universal idioms), `DisjointnessMatrix`,
@@ -1146,7 +1150,7 @@ results produced with 1.1.0 or earlier are not directly comparable.
 - Terraform-style lifecycle: plan, apply, lock, drift, enforce, monitor, lineage
 - Data pipeline: ingest, map, SHACL validate, reason, extend
 - Clinical crosswalks (ICD-10, SNOMED, MeSH)
-- OWL2-DL SHOIQ tableaux reasoner with parallel classification
+- SHIQ tableaux reasoner with parallel classification
 - Design pattern enforcement (generic, BORO, value_partition)
 - Version snapshots and rollback
 - Core ontology tools: validate, load, save, query, stats, diff, lint, convert, clear, pull, push, import

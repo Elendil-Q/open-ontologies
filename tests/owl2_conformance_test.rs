@@ -19,7 +19,7 @@
 //! established DL reasoning benchmarks. Each test has a documented expected
 //! result that matches the output of HermiT/Pellet/FaCT++ reference reasoners.
 //!
-//! These serve as a validation oracle: if our SHOIQ tableaux produces the same
+//! These serve as a validation oracle: if our SHIQ tableaux produces the same
 //! results as the reference reasoners, we have high confidence in correctness.
 //!
 //! Sources:
@@ -838,5 +838,5 @@ fn w3c_oracle_agent_metrics() {
             > 0
     );
     assert!(agents["parallel_workers"].as_u64().unwrap() > 0);
-    assert_eq!(parsed["description_logic"], "SHOIQ");
+    assert_eq!(parsed["description_logic"], "SHIQ");
 }

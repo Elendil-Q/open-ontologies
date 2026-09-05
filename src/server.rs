@@ -1216,7 +1216,7 @@ impl OpenOntologiesServer {
         result.to_string()
     }
 
-    #[tool(name = "onto_shacl", description = "Validate the loaded ontology data against SHACL shapes. Checks cardinality (minCount/maxCount), datatypes, and class constraints. Returns a conformance report with violations.")]
+    #[tool(name = "onto_shacl", description = "Validate the loaded ontology data against SHACL shapes. Checks the core constraint components written under `sh:property`, including `sh:minCount`, `sh:maxCount`, `sh:datatype`, `sh:class`, `sh:nodeKind`, `sh:pattern`, `sh:in`, `sh:hasValue`, `sh:or` and `sh:not`, plus `sh:sparql`. A constraint it cannot execute is listed in `skipped_constraints` and the verdict is null rather than true. Returns a conformance report with violations, `focus_nodes` and `unmatched_shapes`.")]
     async fn onto_shacl(&self, Parameters(input): Parameters<OntoShaclInput>) -> String {
         use crate::shacl::ShaclValidator;
         let shapes = if input.inline.unwrap_or(false) {
@@ -1398,7 +1398,7 @@ impl OpenOntologiesServer {
             .unwrap_or_else(|e| Self::err_json(format!("serialization: {}", e)))
     }
 
-    #[tool(name = "onto_classify_el", description = "Classify the loaded ontology in the OWL-EL fragment (#30). Materialises OWL-RL-ext entailments in a sandbox copy of the graph and emits every distinct subsumption `?sub rdfs:subClassOf ?super` (transitive closure, deduplicated, owl:Thing-trivial pairs removed). For deep SHOIQ subsumption, use `onto_dl_check` / `onto_dl_explain`.")]
+    #[tool(name = "onto_classify_el", description = "Classify the loaded ontology in the OWL-EL fragment (#30). Materialises OWL-RL-ext entailments in a sandbox copy of the graph and emits every distinct subsumption `?sub rdfs:subClassOf ?super` (transitive closure, deduplicated, owl:Thing-trivial pairs removed). For deep SHIQ subsumption, use `onto_dl_check` / `onto_dl_explain`.")]
     async fn onto_classify_el(&self) -> String {
         match crate::classify_el::classify(&self.graph) {
             Ok(r) => serde_json::to_string(&r)
@@ -1876,7 +1876,7 @@ impl OpenOntologiesServer {
         body.to_string()
     }
 
-    #[tool(name = "onto_reason", description = "Run inference over the loaded ontology. Profiles: 'rdfs' (subclass, domain/range), 'owl-rl' (+ transitive/symmetric/inverse, sameAs, equivalentClass), 'owl-rl-ext' (+ someValuesFrom, allValuesFrom, hasValue, intersectionOf, unionOf), 'owl-dl' (Full OWL2-DL SHOIQ tableaux: satisfiability, classification, qualified number restrictions with node merging, inverse/symmetric roles, functional properties, parallel agent-based classification, explanation traces, ABox reasoning). Materializes inferred triples. Set `inference_graph` to keep them in a separate graph, where nothing downstream can read an inference as an assertion and a Turtle/RDF-XML save cannot publish one.")]
+    #[tool(name = "onto_reason", description = "Run inference over the loaded ontology. Profiles: 'rdfs' (subclass, domain/range), 'owl-rl' (+ transitive/symmetric/inverse, sameAs, equivalentClass), 'owl-rl-ext' (+ someValuesFrom, allValuesFrom, hasValue, intersectionOf, unionOf), 'owl-dl' (SHIQ tableaux: satisfiability, classification, qualified number restrictions with node merging, inverse/symmetric roles, functional properties, parallel agent-based classification, explanation traces, ABox reasoning. Nominals are not implemented: owl:oneOf is not read and owl:hasValue is approximated as an atomic concept, so an ontology that uses either returns undetermined classes rather than a classification. Datatype ranges are skipped). Materializes inferred triples. Set `inference_graph` to keep them in a separate graph, where nothing downstream can read an inference as an assertion and a Turtle/RDF-XML save cannot publish one.")]
     async fn onto_reason(&self, Parameters(input): Parameters<OntoReasonInput>) -> String {
         use crate::reason::Reasoner;
         let profile = input.profile.as_deref().unwrap_or("rdfs");
@@ -2448,7 +2448,7 @@ impl OpenOntologiesServer {
         }
     }
 
-    #[tool(name = "onto_embed", description = "Generate text + structural Poincaré embeddings for all classes in the loaded ontology. Requires the embedding model (run `open-ontologies init` to download). Embeddings enable semantic search via onto_search and improve alignment accuracy.")]
+    #[tool(name = "onto_embed", description = "Generate text + structural Poincaré embeddings for all classes in the loaded ontology. Requires a build with --features embeddings, plus the model (run `open-ontologies init` to download it). Embeddings enable semantic search via onto_search and improve alignment accuracy.")]
     async fn onto_embed(&self, Parameters(input): Parameters<OntoEmbedInput>) -> String {
         #[cfg(not(feature = "embeddings"))]
         { let _ = input; return r#"{"error":"Compiled without embeddings feature. Rebuild with --features embeddings"}"#.to_string(); }
@@ -2559,7 +2559,7 @@ impl OpenOntologiesServer {
         } // cfg(feature = "embeddings")
     }
 
-    #[tool(name = "onto_hnsw_build", description = "Build (or rebuild) the HNSW cosine index over the loaded text embeddings with explicit `ef_construction` and `ef_search` parameters. Persists the index to SQLite by default so subsequent process restarts skip the rebuild. Use after onto_embed when you want to tune index quality vs. build/query time on larger ontologies. Default builder parameters are sensible for ontologies up to ~10k classes.")]
+    #[tool(name = "onto_hnsw_build", description = "Build (or rebuild) the HNSW cosine index over the loaded text embeddings with explicit `ef_construction` and `ef_search` parameters. Persists the index to SQLite by default so subsequent process restarts skip the rebuild. Use after onto_embed when you want to tune index quality vs. build/query time on larger ontologies. Default builder parameters are sensible for ontologies up to ~10k classes. Requires a build with --features embeddings.")]
     async fn onto_hnsw_build(&self, Parameters(input): Parameters<OntoHnswBuildInput>) -> String {
         #[cfg(not(feature = "embeddings"))]
         { let _ = input; return r#"{"error":"Compiled without embeddings feature. Rebuild with --features embeddings"}"#.to_string(); }
@@ -2858,6 +2858,6 @@ impl OpenOntologiesServer {
 impl ServerHandler for OpenOntologiesServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().enable_prompts().build())
-            .with_instructions("Open Ontologies: AI-native ontology engine — RDF/OWL/SPARQL MCP server with 43 tools and 6 workflow prompts for ontology engineering, validation, comparison, alignment, data ingestion, and exploration.")
+            .with_instructions("Open Ontologies: AI-native ontology engine, an RDF/OWL/SPARQL MCP server with 109 tools and 6 workflow prompts for ontology engineering, validation, comparison, alignment, data ingestion, and exploration. All 109 tools are advertised in a default build; 8 of them require an optional Cargo feature (embeddings, plugins, postgres or duckdb) and return an error without it.")
     }
 }

@@ -1,7 +1,7 @@
 # Open Ontologies Studio — Tauri Redesign
 
 **Date:** 2026-03-14
-**Status:** Approved
+**Status:** Approved, and superseded in implementation. This document describes a Claude Agent SDK subagent architecture. What shipped is a pluggable provider layer on the raw @anthropic-ai/sdk with a hand-written MCP client. See studio/README.md.
 **Supersedes:** 2026-03-14-studio-architecture-redesign.md
 
 ## Problem

@@ -10,7 +10,7 @@ curl -LO https://github.com/fabio-rovai/open-ontologies/releases/latest/download
 chmod +x open-ontologies-aarch64-apple-darwin
 mv open-ontologies-aarch64-apple-darwin /usr/local/bin/open-ontologies
 
-# Initialize (creates ~/.open-ontologies, downloads embedding model)
+# Initialize (creates ~/.open-ontologies with a database and a default config)
 open-ontologies init
 ```
 
@@ -42,7 +42,7 @@ Claude will call `onto_validate` -> `onto_load` -> `onto_stats` -> `onto_lint` a
 
 ## CLI mode
 
-Every MCP tool also works as a CLI subcommand:
+Most MCP tools also work as CLI subcommands. The embedding tools (`onto_embed`, `onto_search`, `onto_similarity`) are MCP only and have no CLI equivalent in any build.
 
 ```bash
 # Validate a Turtle file
@@ -52,11 +52,11 @@ open-ontologies validate pizza.ttl
 open-ontologies load pizza.ttl
 open-ontologies query "SELECT ?class WHERE { ?class a owl:Class }" --pretty
 
-# Run OWL2-DL reasoning
+# Run SHIQ tableaux reasoning
 open-ontologies reason --profile owl-dl
 
-# Semantic search (requires embeddings)
-open-ontologies init  # downloads model if needed
+# Semantic search (requires a build with --features embeddings)
+open-ontologies init  # on an embeddings build, downloads a 448 MB ONNX model and a 16 MB tokenizer
 # then via MCP: onto_embed -> onto_search "domestic animal"
 ```
 
@@ -64,6 +64,6 @@ open-ontologies init  # downloads model if needed
 
 - [Data Pipeline](data-pipeline.md) -- ingest CSV/JSON/Parquet into your ontology
 - [Ontology Lifecycle](lifecycle.md) -- plan, enforce, apply, monitor changes
-- [OWL2-DL Reasoning](reasoning.md) -- native Rust SHOIQ tableaux
+- [SHIQ Reasoning](reasoning.md) -- native Rust SHIQ tableaux, no nominals
 - [Semantic Embeddings](embeddings.md) -- dual-space search (text + Poincare)
 - [Benchmarks](benchmarks.md) -- performance numbers and comparisons

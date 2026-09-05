@@ -10,7 +10,7 @@ ENV CARGO_INCREMENTAL=0 CARGO_PROFILE_RELEASE_DEBUG=0
 
 WORKDIR /build
 COPY . .
-RUN cargo build --release && strip target/release/open-ontologies
+RUN cargo build --release --features embeddings,plugins,sql && strip target/release/open-ontologies
 
 # Collect every shared library the binary transitively needs (direct plus
 # recursive NEEDED deps) into /deps, preserving absolute paths. This replaces a

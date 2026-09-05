@@ -88,7 +88,7 @@ listen<string>('agent-message', (event) => {
   try {
     const data = JSON.parse(event.payload);
 
-    // The agent's session id is a Claude SDK session, not an MCP session,
+    // The sidecar no longer emits a session id, and the graph store is shared
     // and the graph store is shared across MCP sessions anyway. Adopting it
     // as the proxy's MCP session poisoned every panel call after the first
     // chat turn ("Session not found").

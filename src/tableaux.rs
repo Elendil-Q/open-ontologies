@@ -1,7 +1,11 @@
-//! OWL2-DL Tableaux Reasoner — SHOIQ with Agent-Based Classification
+//! SHIQ Tableaux Reasoner with Agent-Based Classification
 //!
 //! A native Rust implementation of a tableaux decision procedure for
-//! the SHOIQ Description Logic (the logical foundation of OWL2-DL).
+//! the SHIQ Description Logic: ALC extended with transitive roles, role
+//! hierarchies, inverse roles and qualified number restrictions. Nominals are
+//! not implemented, so this is a strict fragment of OWL 2 DL. `owl:oneOf` is
+//! not parsed, `owl:hasValue` is approximated as an atomic concept named after
+//! the individual, and datatype ranges are skipped.
 //!
 //! ## Description Logic Coverage
 //!
@@ -81,7 +85,9 @@ const OWL_ON_CLASS: &str = "<http://www.w3.org/2002/07/owl#onClass>";
 // ── Concept (Negation Normal Form) ──────────────────────────────────────
 
 /// Description Logic concept in NNF (Negation Normal Form).
-/// All negations pushed to atomic level. Supports SHOIQ.
+/// All negations pushed to atomic level. Covers SHIQ. There is no nominal
+/// constructor in this enum, so `owl:oneOf` has no representation and
+/// `owl:hasValue` is carried as an atomic concept named after the individual.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Concept {
     Top,
@@ -1785,7 +1791,8 @@ impl Tableau {
         false
     }
 
-    /// Subset blocking: node blocked by ancestor with ⊇ labels.
+    /// Applies pairwise ancestor blocking to every node. See
+    /// `is_pairwise_blocked` for the condition.
     fn update_blocking(&mut self) {
         let mut node_ids: Vec<u32> = self.nodes.keys().copied().collect();
         // Sorted: HashMap iteration order is seeded per process, so an unsorted
@@ -1831,7 +1838,7 @@ impl Tableau {
     /// Note `=`, not `⊆`. This replaces the previous implementation, which used
     /// ancestor SUBSET blocking on the node label alone and ignored parents and
     /// edge labels entirely. That was adequate for ALC but unsound for the
-    /// SHOIQ this reasoner advertises.
+    /// SHIQ this reasoner implements.
     ///
     /// This is deliberately the classical ancestor variant rather than HermiT's
     /// "anywhere" blocking. Anywhere blocking yields smaller models but is a
@@ -2600,7 +2607,7 @@ impl DlReasoner {
         let mut output = serde_json::json!({
             "profile_used": "owl-dl",
             "algorithm": "tableaux",
-            "description_logic": "SHOIQ",
+            "description_logic": "SHIQ",
             "consistent": consistent,
             "tbox_consistent": tbox_consistent,
             "named_classes": reasoner.named_classes.len(),

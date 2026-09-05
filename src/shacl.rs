@@ -13,7 +13,10 @@ use std::sync::Arc;
 /// Supports the core constraints `sh:minCount`, `sh:maxCount`, `sh:datatype`,
 /// `sh:class`, `sh:pattern`, `sh:hasValue`, `sh:in`, `sh:nodeKind`, `sh:or`,
 /// `sh:not`, the inclusive and exclusive range bounds, and SPARQL-based
-/// constraints via `sh:sparql`.
+/// constraints via `sh:sparql`. Apart from `sh:or` and `sh:sparql`, those are
+/// read under `sh:property` only: the same predicate asserted directly on the
+/// node shape is not evaluated, and the whitelist at the node-shape complement
+/// below is what decides that.
 ///
 /// All four target forms select focus nodes: `sh:targetClass` (including the
 /// implicit class target), `sh:targetNode`, `sh:targetSubjectsOf` and
@@ -26,7 +29,12 @@ use std::sync::Arc;
 /// not evaluated), or on the node shape itself (`sh:closed`, `sh:deactivated`).
 /// A target that selects no nodes reaches the same null verdict by the other
 /// route, `unmatched_shapes`. Reporting success for rules that were never run is
-/// the one failure mode this validator must not have.
+/// the one failure mode this validator must not have, and one case of it is
+/// open. The node-shape complement only inspects shapes returned by the
+/// `sh:targetClass` discovery query, so a shape whose only target is
+/// `sh:targetNode`, `sh:targetSubjectsOf` or `sh:targetObjectsOf` has its
+/// node-level constraints dropped with no `skipped_constraints` entry and the
+/// verdict comes back true.
 pub struct ShaclValidator;
 
 impl ShaclValidator {
@@ -187,9 +195,17 @@ impl ShaclValidator {
         // undetermined. A constraint is by definition a predicate in the sh:
         // namespace; a predicate from any other namespace on a shape node is
         // an annotation or an axiom, never a constraint.
-        let discovered: HashSet<&str> = shapes
+        // Every shape that selects focus nodes by any of the four target
+        // forms, not just the two the `sh:targetClass` query returns. Built
+        // from `targets` for that reason: reading `shapes` here filtered out
+        // any shape targeted only by `sh:targetNode`, `sh:targetSubjectsOf` or
+        // `sh:targetObjectsOf`, so a constraint on such a shape that this
+        // validator does not evaluate was dropped with no `skipped_constraints`
+        // entry and the run returned `conforms: true`. Pinned by
+        // `tests/shacl_node_target_skip_test.rs`.
+        let discovered: HashSet<&str> = targets
             .iter()
-            .filter_map(|s| s.get("shape").map(String::as_str))
+            .map(|(shape, _, _)| shape.as_str())
             .collect();
         let unknown_on_node = query_solutions(
             &shapes_store,

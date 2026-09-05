@@ -181,7 +181,7 @@ When exploring or aligning ontologies using semantic embeddings:
 
 ### Setup
 
-1. Ensure the embedding model is downloaded (`open-ontologies init`)
+1. Confirm the server was built with `--features embeddings`, then run `open-ontologies init` to download the model. On a default build, every tool in this section returns `Compiled without embeddings feature`.
 2. Call `onto_load` to load the ontology
 3. Call `onto_embed` to generate text + structural embeddings for all classes
 

@@ -26,7 +26,7 @@
 
 > 本文是英文 [README.md](README.md) 的中文版。英文版为准：当两者出现差异时，请以英文版为最新内容。
 
-Open Ontologies 是一个 **Rust 编写的 MCP 服务器**与**桌面版 Studio**，面向 AI 原生的本体工程。它提供 **70 多个工具**，让 Claude 能够基于内存中的 Oxigraph 三元组存储来构建、校验、查询、比对、检查、版本化、推理、对齐、规划、认证和治理 RDF/OWL 本体，并具备完整的 Dynamics → Causal → Planner 三层架构、33 个标准本体的市场、临床术语交叉映射、语义向量以及完整的血缘审计链路。
+Open Ontologies 是一个 **Rust 编写的 MCP 服务器**与**桌面版 Studio**，面向 AI 原生的本体工程。它提供 **109 个工具**，让 Claude 能够基于内存中的 Oxigraph 三元组存储来构建、校验、查询、比对、检查、版本化、推理、对齐、规划、认证和治理 RDF/OWL 本体，并具备完整的 Dynamics → Causal → Planner 三层架构、33 个标准本体的市场、临床术语交叉映射、语义向量以及完整的血缘审计链路。语义向量、Postgres 与 DuckDB 连接器、WASM 插件宿主都是编译期可选特性。预编译二进制与 GHCR 镜像均以默认特性集构建，不包含上述功能；如需启用，请从源码执行 `cargo build --release --features embeddings,plugins,sql`。默认构建会公开全部 109 个工具，其中 8 个需要启用可选的 Cargo feature 才能运行：4 个需要 `embeddings`，2 个需要 `plugins`，2 个需要 `postgres` 或 `duckdb`；未启用时这些工具会返回错误。
 
 **Studio** 将引擎封装为可视化桌面环境：带层级连线的虚拟化本体树、面包屑导航与关系浏览器；支持 `/build`（IES 级深度建模）与 `/sketch`（快速原型）指令的 AI 对话面板；Protégé 风格的属性检查器；以及血缘查看器。
 
@@ -75,7 +75,7 @@ docker run -i ghcr.io/fabio-rovai/open-ontologies serve
 
 ```bash
 git clone https://github.com/fabio-rovai/open-ontologies.git
-cd open-ontologies && cargo build --release
+cd open-ontologies && cargo build --release --features embeddings,plugins,sql
 ./target/release/open-ontologies init
 ```
 

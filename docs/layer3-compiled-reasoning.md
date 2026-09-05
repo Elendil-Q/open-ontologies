@@ -2,6 +2,7 @@
 
 **Module:** `src/claimcheck.rs` · **Compile step:** `benchmark/reasoner/CompileOntology.java`
 **Verification harness:** `benchmark/layer3-prototype/` · **Status:** measured 2026-07-27
+**Exposure:** library module only. No MCP tool in `src/server.rs` and no CLI subcommand in `src/main.rs` calls it. The only caller in the repository is `tests/claimcheck_pizza_bench.rs`.
 
 ## The problem shape
 
@@ -118,7 +119,7 @@ stated, verdicts cross-checked against HermiT 1.4.3.456.
 | --- | --- | --- |
 | HermiT, warm JVM, amortised load | 4,936 µs | — |
 | compiled, Oxigraph-probe variant | 35.4 µs | 61.5 µs |
-| **compiled, token bitsets** | **0.3 µs** | **0.4 µs** |
+| **compiled, token bitsets** | **0.3 µs** | **0.4 µs** (four-claim rotation, warm cache) |
 
 Throughput: 3.1M claims/s single-threaded, 11.2M/s batched.
 
@@ -136,7 +137,7 @@ pair) and adversarial structural claims:
 | | result |
 | --- | --- |
 | unsound rejections, 78,884 pairs, 13 ontologies | **0** |
-| agreement, 793 structural claims, 8 ontologies | **100%**, 0 false negatives |
+| agreement, 793 structural claims, 8 ontologies | **100%**, 0 false negatives (stdout only, no artefact committed) |
 | contradiction recall, pizza.owl | **3,944/3,944 (100%)** |
 | contradiction recall, ore_ont_10230 | **232/232 (100%)** |
 | tier-2 residual, structural corpus aggregate | 4.9% of claims |
@@ -186,17 +187,23 @@ exhaustive-matrix audit is the stable metric.
 ## Reproduction
 
 ```
-# compile an ontology
-java -cp ".:lib/*" CompileOntology <ont.owl> compiled.json
+# from benchmark/reasoner: fetch the jars (gitignored) and build the compile step
+./setup_jars.sh
+javac -cp "lib/*" CompileOntology.java DisjointnessMatrix.java
+
+# compile an ontology. The Rust bench reads this exact path and no other.
+java -cp ".:lib/*" CompileOntology <ont.owl> /tmp/pizza_compiled.json
 
 # exhaustive ground-truth matrix
 java -cp ".:lib/*" DisjointnessMatrix <ont.owl> matrix.csv
 
-# parity + adversarial structural claims
+# from the repository root: parity and adversarial structural claims
 python benchmark/layer3-prototype/structural_parity.py <ont.owl> 120
 python benchmark/layer3-prototype/verify_join_soundness.py <corpus_dir> 250
 
-# Rust bench (loads compiled.json)
+# Rust bench. It skips when /tmp/pizza_compiled.json is absent, and its
+# assertions use the http://www.co-ode.org/ontologies/pizza/pizza.owl# namespace,
+# so the ontology compiled above must carry those IRIs.
 cargo test --release --test claimcheck_pizza_bench -- --nocapture
 ```
 
@@ -213,7 +220,7 @@ R5  A ⊑ ∀R.(C…), B ⊑ ∀R.(D…), every Ci disjoint every Dj,
 ```
 
 plus `DataExactCardinality(1, p, DataOneOf(v))` recognised as a pinned value
-for RD. Effect on the 12-ontology exhaustive audit: tier-2 residual fell from
+for RD. Effect on the 13-ontology exhaustive audit: tier-2 residual fell from
 501 to **23 pairs of 78,884** (aggregate recall 99.83%), still **0 unsound**;
 the diagnosed ontology went 96.1% → 99.9%. Pizza and ore_ont_10230 hold at
 100%.
