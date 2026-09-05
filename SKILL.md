@@ -25,7 +25,9 @@ metadata:
         - name: open-ontologies
           description: >
             Oxigraph-backed MCP server providing all onto_* tools.
-            Install: cargo install open-ontologies OR download binary from
+            Install: cargo install --git
+            https://github.com/fabio-rovai/open-ontologies OR download a
+            binary from
             https://github.com/fabio-rovai/open-ontologies/releases
           config:
             command: open-ontologies
@@ -56,7 +58,7 @@ AI-native ontology engineering. Generate OWL/RDF directly, validate with MCP too
 
 This skill requires the **Open Ontologies MCP server** to provide the `onto_*` tools.
 
-**Install:** `cargo install open-ontologies --features embeddings,plugins,sql`, or download from [GitHub releases](https://github.com/fabio-rovai/open-ontologies/releases), which ships the default feature set without embeddings, SQL or plugins
+**Install:** `cargo install --git https://github.com/fabio-rovai/open-ontologies --features embeddings,plugins,sql`, or download from [GitHub releases](https://github.com/fabio-rovai/open-ontologies/releases), which ships the default feature set without embeddings, SQL or plugins. The crate is not on crates.io yet, so plain `cargo install open-ontologies` does not work
 
 **MCP config** (add to `.mcp.json` or Claude settings):
 ```json
