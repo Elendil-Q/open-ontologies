@@ -309,6 +309,61 @@ impl GraphStore {
         self.select_with_dataset(query, true)
     }
 
+    /// Run a SELECT once per term, with `var` pre-bound to that term, over the
+    /// union dataset. Returns the solutions per term, in the order given.
+    ///
+    /// Pre-binding is SPARQL substitution, the mechanism SHACL-SPARQL
+    /// specifies for `$this` (section 5.3.2): the term is in scope everywhere
+    /// in the query, inside `FILTER (NOT) EXISTS` and inside subqueries. A
+    /// `VALUES` join is not the same thing. A subquery is evaluated bottom-up
+    /// with no outer variable in scope, so a constraint wrapped that way ran
+    /// with `$this` unbound, asked whether ANY node matched, and one clean
+    /// record hid every dirty one (#132).
+    ///
+    /// The query is parsed once; each term gets its own substitution and
+    /// execution. The pre-bound variable is present in every returned row
+    /// whether or not the author projected it.
+    pub fn sparql_select_union_prebound(
+        &self,
+        query: &str,
+        var: &str,
+        terms: &[Term],
+    ) -> anyhow::Result<Vec<Vec<std::collections::HashMap<String, String>>>> {
+        let store = &self.store;
+        let mut prepared = SparqlEvaluator::new().parse_query(query)?;
+        prepared.dataset_mut().set_default_graph_as_union();
+        let variable = Variable::new(var)?;
+        let mut out = Vec::with_capacity(terms.len());
+        for term in terms {
+            let bound = prepared
+                .clone()
+                .substitute_variable(variable.clone(), term.clone());
+            let QueryResults::Solutions(solutions) = bound.on_store(store).execute()? else {
+                anyhow::bail!("pre-bound evaluation needs a SELECT query");
+            };
+            let vars: Vec<String> = solutions
+                .variables()
+                .iter()
+                .map(|v| v.as_str().to_string())
+                .collect();
+            let mut rows = Vec::new();
+            for solution in solutions {
+                let solution = solution?;
+                let mut row = std::collections::HashMap::new();
+                for v in &vars {
+                    if let Some(t) = solution.get(v.as_str()) {
+                        row.insert(v.clone(), t.to_string());
+                    }
+                }
+                row.entry(var.to_string())
+                    .or_insert_with(|| term.to_string());
+                rows.push(row);
+            }
+            out.push(rows);
+        }
+        Ok(out)
+    }
+
     fn select_with_dataset(
         &self,
         query: &str,
@@ -319,7 +374,7 @@ impl GraphStore {
         if union_default_graph {
             prepared.dataset_mut().set_default_graph_as_union();
         }
-        match prepared.on_store(&store).execute()? {
+        match prepared.on_store(store).execute()? {
             QueryResults::Solutions(solutions) => {
                 let vars: Vec<String> = solutions
                     .variables()
@@ -493,7 +548,7 @@ impl GraphStore {
         let count_from_query = |q: &str| -> usize {
             let Ok(prepared) = SparqlEvaluator::new().parse_query(q) else { return 0 };
             let Ok(QueryResults::Solutions(solutions)) = prepared
-                .on_store(&store)
+                .on_store(store)
                 .execute()
             else { return 0 };
             let Some(Ok(row)) = solutions.into_iter().next() else { return 0 };

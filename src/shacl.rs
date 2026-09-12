@@ -1,5 +1,6 @@
 use crate::graph::GraphStore;
 use oxigraph::io::{RdfFormat, RdfParser};
+use oxigraph::model::Term;
 use oxigraph::sparql::{QueryResults, SparqlEvaluator};
 use oxigraph::store::Store;
 use std::collections::{HashMap, HashSet};
@@ -40,6 +41,13 @@ pub struct ShaclValidator;
 impl ShaclValidator {
     /// Validate the data in `graph` against SHACL shapes (inline Turtle).
     /// Returns a JSON report: `{conforms, violation_count, violations[]}`.
+    ///
+    /// Every violation names the shape that produced it (`source_shape`), the
+    /// W3C constraint component (`source_constraint_component`) and, where a
+    /// path is known, `result_path`, so a report written as one shape per rule
+    /// can be read back as the findings table it is (#131). The keys that
+    /// predate those (`constraint`, `focus_node`, `message`, `severity`,
+    /// `path`) are unchanged.
     pub fn validate(graph: &Arc<GraphStore>, shapes_ttl: &str) -> anyhow::Result<String> {
         // 1. Parse shapes Turtle into a temporary store
         let shapes_store = Store::new()?;
@@ -667,12 +675,12 @@ impl ShaclValidator {
                             } else {
                                 node_message.clone()
                             };
-                            violations.push(serde_json::json!({
+                            violations.push(attribute(&shape_iri, serde_json::json!({
                                 "severity": "Violation",
                                 "focus_node": strip_angle_brackets(focus),
                                 "constraint": "or",
                                 "message": msg,
-                            }));
+                            })));
                         }
                     }
                 }
@@ -791,13 +799,13 @@ impl ShaclValidator {
                         } else {
                             q_message.clone()
                         };
-                        violations.push(serde_json::json!({
+                        violations.push(attribute(&shape_iri, serde_json::json!({
                             "severity": q_severity,
                             "focus_node": strip_angle_brackets(focus),
                             "path": q_path,
                             "constraint": constraint,
                             "message": msg,
-                        }));
+                        })));
                     }
                 }
             }
@@ -898,13 +906,13 @@ impl ShaclValidator {
                                 } else {
                                     message.clone()
                                 };
-                                violations.push(serde_json::json!({
+                                violations.push(attribute(&shape_iri, serde_json::json!({
                                     "severity": severity,
                                     "focus_node": strip_angle_brackets(focus),
                                     "path": path,
                                     "constraint": "minCount",
                                     "message": msg,
-                                }));
+                                })));
                             }
                         }
                     }
@@ -932,13 +940,13 @@ impl ShaclValidator {
                             } else {
                                 message.clone()
                             };
-                            violations.push(serde_json::json!({
+                            violations.push(attribute(&shape_iri, serde_json::json!({
                                 "severity": severity,
                                 "focus_node": strip_angle_brackets(focus),
                                 "path": path,
                                 "constraint": "maxCount",
                                 "message": msg,
-                            }));
+                            })));
                         }
                     }
                 }
@@ -967,13 +975,13 @@ impl ShaclValidator {
                             } else {
                                 message.clone()
                             };
-                            violations.push(serde_json::json!({
+                            violations.push(attribute(&shape_iri, serde_json::json!({
                                 "severity": severity,
                                 "focus_node": strip_angle_brackets(focus),
                                 "path": path,
                                 "constraint": "class",
                                 "message": msg,
-                            }));
+                            })));
                         }
                     }
                 }
@@ -1016,13 +1024,13 @@ impl ShaclValidator {
                             } else {
                                 message.clone()
                             };
-                            violations.push(serde_json::json!({
+                            violations.push(attribute(&shape_iri, serde_json::json!({
                                 "severity": severity,
                                 "focus_node": strip_angle_brackets(focus),
                                 "path": path,
                                 "constraint": "datatype",
                                 "message": msg,
-                            }));
+                            })));
                         }
                     }
                 }
@@ -1048,13 +1056,13 @@ impl ShaclValidator {
                             } else {
                                 message.clone()
                             };
-                            violations.push(serde_json::json!({
+                            violations.push(attribute(&shape_iri, serde_json::json!({
                                 "severity": severity,
                                 "focus_node": strip_angle_brackets(focus),
                                 "path": path,
                                 "constraint": "pattern",
                                 "message": msg,
-                            }));
+                            })));
                         }
                     }
                 }
@@ -1090,13 +1098,13 @@ impl ShaclValidator {
                             } else {
                                 message.clone()
                             };
-                            violations.push(serde_json::json!({
+                            violations.push(attribute(&shape_iri, serde_json::json!({
                                 "severity": severity,
                                 "focus_node": strip_angle_brackets(focus),
                                 "path": path,
                                 "constraint": "or",
                                 "message": msg,
-                            }));
+                            })));
                         }
                     }
                 }
@@ -1136,13 +1144,13 @@ impl ShaclValidator {
                             } else {
                                 message.clone()
                             };
-                            violations.push(serde_json::json!({
+                            violations.push(attribute(&shape_iri, serde_json::json!({
                                 "severity": severity,
                                 "focus_node": strip_angle_brackets(focus),
                                 "path": path,
                                 "constraint": constraint,
                                 "message": msg,
-                            }));
+                            })));
                         }
                     }
                 }
@@ -1179,13 +1187,13 @@ impl ShaclValidator {
                             } else {
                                 message.clone()
                             };
-                            violations.push(serde_json::json!({
+                            violations.push(attribute(&shape_iri, serde_json::json!({
                                 "severity": severity,
                                 "focus_node": strip_angle_brackets(focus),
                                 "path": path,
                                 "constraint": constraint,
                                 "message": msg,
-                            }));
+                            })));
                         }
                     }
                 }
@@ -1215,13 +1223,13 @@ impl ShaclValidator {
                                     } else {
                                         message.clone()
                                     };
-                                    violations.push(serde_json::json!({
+                                    violations.push(attribute(&shape_iri, serde_json::json!({
                                         "severity": severity,
                                         "focus_node": strip_angle_brackets(focus),
                                         "path": path,
                                         "constraint": "node",
                                         "message": msg,
-                                    }));
+                                    })));
                                 }
                             }
                         }
@@ -1257,13 +1265,13 @@ impl ShaclValidator {
                             } else {
                                 message.clone()
                             };
-                            violations.push(serde_json::json!({
+                            violations.push(attribute(&shape_iri, serde_json::json!({
                                 "severity": severity,
                                 "focus_node": strip_angle_brackets(focus),
                                 "path": path,
                                 "constraint": "not",
                                 "message": msg,
-                            }));
+                            })));
                         }
                     }
                 }
@@ -1288,13 +1296,13 @@ impl ShaclValidator {
                             } else {
                                 message.clone()
                             };
-                            violations.push(serde_json::json!({
+                            violations.push(attribute(&shape_iri, serde_json::json!({
                                 "severity": severity,
                                 "focus_node": strip_angle_brackets(focus),
                                 "path": path,
                                 "constraint": "in",
                                 "message": msg,
-                            }));
+                            })));
                         }
                     }
                 }
@@ -1333,13 +1341,13 @@ impl ShaclValidator {
                                     } else {
                                         message.clone()
                                     };
-                                    violations.push(serde_json::json!({
+                                    violations.push(attribute(&shape_iri, serde_json::json!({
                                         "severity": severity,
                                         "focus_node": strip_angle_brackets(focus),
                                         "path": path,
                                         "constraint": "nodeKind",
                                         "message": msg,
-                                    }));
+                                    })));
                                 }
                             }
                         }
@@ -1372,13 +1380,13 @@ impl ShaclValidator {
                             } else {
                                 message.clone()
                             };
-                            violations.push(serde_json::json!({
+                            violations.push(attribute(&shape_iri, serde_json::json!({
                                 "severity": severity,
                                 "focus_node": strip_angle_brackets(focus),
                                 "path": path,
                                 "constraint": "hasValue",
                                 "message": msg,
-                            }));
+                            })));
                         }
                     }
                 }
@@ -1416,13 +1424,13 @@ impl ShaclValidator {
                                 } else {
                                     message.clone()
                                 };
-                                violations.push(serde_json::json!({
+                                violations.push(attribute(&shape_iri, serde_json::json!({
                                     "severity": severity,
                                     "focus_node": strip_angle_brackets(focus),
                                     "path": path,
                                     "constraint": key,
                                     "message": msg,
-                                }));
+                                })));
                             }
                         }
                     }
@@ -1460,30 +1468,29 @@ impl ShaclValidator {
                 continue;
             }
 
-            // Focus nodes for this shape. Blank nodes are excluded because they
-            // cannot be named in a VALUES clause; excluding them is recorded
-            // rather than assumed harmless.
+            // Focus nodes for this shape, read back as terms. Blank nodes are
+            // included. They used to be excluded because a blank node cannot
+            // be named in a VALUES clause; there is no VALUES clause any more.
             let focus_rows = graph_sparql_select(
                 graph,
                 &format!("SELECT ?this WHERE {{ {this_pattern} }}"),
             )?;
-            let focus_nodes: Vec<String> = focus_rows
-                .iter()
-                .filter_map(|r| r.get("this"))
-                .filter(|t| t.starts_with('<'))
-                .cloned()
-                .collect();
-            let blank_focus = focus_rows.len() - focus_nodes.len();
-            if blank_focus > 0 {
-                skipped.push(serde_json::json!({
-                    "shape": strip_angle_brackets(&shape_iri),
-                    "reason": format!(
-                        "{} blank-node focus nodes excluded from sh:sparql evaluation (blank nodes cannot be bound in a VALUES clause)",
-                        blank_focus
-                    ),
-                }));
+            let mut focus_terms: Vec<Term> = Vec::new();
+            for row in &focus_rows {
+                let Some(t) = row.get("this") else { continue };
+                match t.parse::<Term>() {
+                    Ok(term) => focus_terms.push(term),
+                    Err(e) => skipped.push(serde_json::json!({
+                        "shape": strip_angle_brackets(&shape_iri),
+                        "constraint": "sparql",
+                        "reason": format!("focus node {t} could not be read back as a term: {e}"),
+                    })),
+                }
             }
-            if focus_nodes.is_empty() {
+            // Store iteration order is not a contract; the report's is.
+            focus_terms.sort_by_key(|t| t.to_string());
+            focus_terms.dedup();
+            if focus_terms.is_empty() {
                 continue;
             }
 
@@ -1509,36 +1516,59 @@ impl ShaclValidator {
                     })
                     .unwrap_or_else(|| "Violation".to_string());
 
-                // SHACL pre-binds $this to the focus node. Rewrite it to the
-                // ordinary variable ?this and bind it through a VALUES clause,
-                // wrapping the author's SELECT as a subquery so that nothing is
-                // spliced into the middle of their query text.
-                let inner = select_raw.replace("$this", "?this");
-                // The author's own PREFIX and BASE declarations have to be lifted
-                // out of the subquery position and put where SPARQL allows them,
-                // or the wrapper cannot parse at all. See split_sparql_prologue.
-                let (author_prologue, inner_body) = split_sparql_prologue(&inner);
-                let values = focus_nodes.join(" ");
-                let wrapped = format!(
-                    "{prefix_block}{author_prologue}SELECT ?this WHERE \
-                     {{ VALUES ?this {{ {values} }} {{ {inner_body} }} }}"
-                );
-
-                match graph_sparql_select(graph, &wrapped) {
-                    Ok(rows) => {
-                        for row in &rows {
-                            if let Some(focus) = row.get("this") {
-                                let msg = if message.is_empty() {
-                                    "SPARQL constraint violated".to_string()
-                                } else {
-                                    message.clone()
-                                };
-                                violations.push(serde_json::json!({
+                // SHACL-SPARQL 5.3.2: `$this` is pre-bound to the focus node,
+                // one evaluation per node. Pre-binding is SPARQL substitution,
+                // so the term is in scope inside FILTER (NOT) EXISTS and inside
+                // subqueries, which is what makes a constraint written as
+                // `FILTER NOT EXISTS { $this ... }` mean "this node lacks" and
+                // not "every node lacks".
+                //
+                // The previous evaluation wrapped the author's SELECT as a
+                // subquery under a VALUES clause. A subquery is evaluated
+                // bottom-up with no outer variable in scope, so `$this` was
+                // unbound inside it, the filter asked whether ANY node matched
+                // the pattern, and the single empty solution either survived
+                // (joining with every focus node) or died (reporting none).
+                // One clean record therefore hid every dirty one (#132).
+                //
+                // `$this` and `?this` name the same variable in SPARQL, so the
+                // author's text runs as written, behind the prefixes the
+                // shapes graph declares. An author prologue of its own is
+                // legal after those: the grammar allows any number of
+                // PREFIX and BASE declarations in any order.
+                let query = format!("{prefix_block}{select_raw}");
+                match graph.sparql_select_union_prebound(&query, "this", &focus_terms) {
+                    Ok(per_focus) => {
+                        for (focus, rows) in focus_terms.iter().zip(per_focus) {
+                            let focus_str = focus.to_string();
+                            for row in rows {
+                                // 5.3.2 again: a bound ?message overrides
+                                // sh:message, ?path is sh:resultPath and
+                                // ?value is sh:value.
+                                let msg = row
+                                    .get("message")
+                                    .map(|m| strip_quotes(m))
+                                    .filter(|m| !m.is_empty())
+                                    .unwrap_or_else(|| {
+                                        if message.is_empty() {
+                                            "SPARQL constraint violated".to_string()
+                                        } else {
+                                            message.clone()
+                                        }
+                                    });
+                                let mut v = serde_json::json!({
                                     "severity": severity,
-                                    "focus_node": strip_angle_brackets(focus),
+                                    "focus_node": strip_angle_brackets(&focus_str),
                                     "constraint": "sparql",
                                     "message": msg,
-                                }));
+                                });
+                                if let Some(p) = row.get("path") {
+                                    v["result_path"] = serde_json::json!(strip_angle_brackets(p));
+                                }
+                                if let Some(val) = row.get("value") {
+                                    v["value"] = serde_json::json!(strip_angle_brackets(val));
+                                }
+                                violations.push(attribute(&shape_iri, v));
                             }
                         }
                     }
@@ -2182,57 +2212,6 @@ fn datatype_is_indistinguishable_in_store(datatype: &str) -> bool {
     )
 }
 
-/// Split a SPARQL query into its prologue (PREFIX and BASE declarations, with any
-/// leading comments) and the body that follows.
-///
-/// SPARQL permits PREFIX and BASE only in the prologue, at the very start of a
-/// query. SHACL pre-binds `$this`, and this validator binds it by wrapping the
-/// author's SELECT as a subquery under a VALUES clause, which puts any prologue
-/// the author wrote into a position where it cannot parse and takes the whole
-/// query down with it. Hoisting it to the front of the wrapper is the fix.
-///
-/// Declaring prefixes inside `sh:select` is the portable way to write a SPARQL
-/// constraint and is what pyshacl accepts. All seven `sh:sparql` constraints in
-/// the banking vertical were being reported as unrunnable for this reason alone,
-/// found by the differential run against pyshacl rather than by any unit test.
-fn split_sparql_prologue(query: &str) -> (String, &str) {
-    let mut prologue = String::new();
-    let mut rest = query;
-    loop {
-        let trimmed = rest.trim_start();
-        if let Some(line) = trimmed.strip_prefix('#') {
-            // A comment carries no meaning to the parser but may carry a lot to
-            // a reader, so it is moved rather than dropped.
-            let end = line.find('\n').map(|i| i + 2).unwrap_or(trimmed.len());
-            prologue.push_str(&trimmed[..end]);
-            rest = &trimmed[end..];
-            continue;
-        }
-        let lower = trimmed.to_ascii_lowercase();
-        let keyword_len = if lower.starts_with("prefix") {
-            6
-        } else if lower.starts_with("base") {
-            4
-        } else {
-            return (prologue, trimmed);
-        };
-        // Require a separator after the keyword so an identifier merely starting
-        // with those letters is not mistaken for a declaration.
-        match trimmed[keyword_len..].chars().next() {
-            Some(c) if c.is_whitespace() || c == '<' => {}
-            _ => return (prologue, trimmed),
-        }
-        // Every declaration ends at the closing '>' of its IRI.
-        match trimmed.find('>') {
-            Some(i) => {
-                prologue.push_str(&trimmed[..=i]);
-                prologue.push('\n');
-                rest = &trimmed[i + 1..];
-            }
-            None => return (prologue, trimmed),
-        }
-    }
-}
 
 /// The SPARQL pattern selecting the focus nodes of one target, bound to `var`.
 ///
@@ -2279,6 +2258,45 @@ fn count_focus_nodes(graph: &Arc<GraphStore>, focus_pattern: &str) -> anyhow::Re
         .map(|c| strip_quotes(c))
         .and_then(|c| c.parse::<u64>().ok())
         .unwrap_or(0))
+}
+
+/// Name the shape and the constraint component that produced a violation.
+///
+/// The W3C validation report vocabulary carries `sh:sourceShape` and
+/// `sh:sourceConstraintComponent` on every result so that a consumer can tell
+/// which rule fired. Without them a report written as one shape per rule, the
+/// natural form of a findings table, could only be attributed by parsing an
+/// identifier back out of `sh:message` (#131). `result_path` mirrors `path`
+/// under the vocabulary's name wherever a path is known; the keys consumers
+/// already read are left as they were.
+fn attribute(shape: &str, mut v: serde_json::Value) -> serde_json::Value {
+    v["source_shape"] = serde_json::Value::String(strip_angle_brackets(shape));
+    let constraint = v["constraint"].as_str().unwrap_or("").to_string();
+    v["source_constraint_component"] =
+        serde_json::Value::String(constraint_component(&constraint));
+    if v.get("result_path").is_none()
+        && let Some(path) = v.get("path").cloned()
+    {
+        v["result_path"] = path;
+    }
+    v
+}
+
+/// The `sh:*ConstraintComponent` IRI for the short constraint name a violation
+/// carries in `constraint`. Every W3C core component is the parameter name with
+/// its first letter capitalised, except SPARQL.
+fn constraint_component(constraint: &str) -> String {
+    let local = constraint.strip_prefix("sh:").unwrap_or(constraint);
+    let name = if local.eq_ignore_ascii_case("sparql") {
+        "SPARQL".to_string()
+    } else {
+        let mut chars = local.chars();
+        match chars.next() {
+            Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            None => String::new(),
+        }
+    };
+    format!("http://www.w3.org/ns/shacl#{name}ConstraintComponent")
 }
 
 fn strip_angle_brackets(s: &str) -> String {

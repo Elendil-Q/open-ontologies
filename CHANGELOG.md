@@ -4,6 +4,25 @@ All notable changes to Open Ontologies are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- **`sh:sparql` reported `conforms: true` when any single focus node
+  conformed (#132).** The author's SELECT was wrapped as a subquery under a
+  `VALUES ?this` clause. A subquery is evaluated bottom-up with no outer
+  variable in scope, so `$this` was unbound inside it, `FILTER NOT EXISTS`
+  asked whether ANY node matched, and one clean record hid every dirty one;
+  when every record failed the empty solution joined with all of them and the
+  count looked right. `$this` is now pre-bound per focus node through
+  Oxigraph's substitution, which is the mechanism SHACL-SPARQL 5.3.2
+  specifies. Blank-node focus nodes, previously excluded because VALUES
+  cannot name them, are evaluated. On the 39-shape case from the issue the
+  engine and pyshacl now agree exactly: 249 results, 245 distinct
+  record-shape pairs. A bound `?message` overrides `sh:message`, `?path`
+  becomes `result_path` and `?value` becomes `value`.
+- **Violations now name the shape and constraint component that produced
+  them (#131).** Every violation carries `source_shape` (the shape IRI),
+  `source_constraint_component` (the `sh:*ConstraintComponent` IRI) and
+  `result_path` wherever a path is known. Existing keys are unchanged.
+
 ## [1.3.0] - 2026-09-04
 
 > `v1.2.1` was tagged from inside this range (`5208de8`) without a version bump
