@@ -428,6 +428,11 @@ enum Commands {
     Reason {
         #[arg(long, default_value = "rdfs")]
         profile: String,
+        /// Write a derivation certificate (asserted.tsv + derivations.tsv)
+        /// to this directory. `lean/` holds a checker for it whose soundness
+        /// is a machine-checked theorem; see docs/lean-certificates.md.
+        #[arg(long)]
+        certificate: Option<String>,
     },
     /// Full pipeline: ingest → SHACL → reason
     Extend {
@@ -619,8 +624,13 @@ impl Commands {
             Commands::Query { query } => cmd("query", vec![query.clone()]),
             Commands::Lint { input } => cmd("lint", vec![absolutize(input)]),
             Commands::Defects { input } => cmd("defects", vec![absolutize(input)]),
-            Commands::Reason { profile } => {
-                cmd("reason", vec!["--profile".into(), profile.clone()])
+            Commands::Reason { profile, certificate } => {
+                let mut a = vec!["--profile".into(), profile.clone()];
+                if let Some(c) = certificate {
+                    a.push("--certificate".into());
+                    a.push(absolutize(c));
+                }
+                cmd("reason", a)
             }
             Commands::Shacl { shapes } => cmd("shacl", vec![absolutize(shapes)]),
             Commands::Status => cmd("status", vec![]),
@@ -2302,10 +2312,11 @@ async fn async_main() -> anyhow::Result<()> {
                 .unwrap_or_else(|e| format!(r#"{{"error":"{}"}}"#, e));
             output_result_checked(&result, cli.pretty);
         }
-        Commands::Reason { profile } => {
-            use open_ontologies::reason::Reasoner;
+        Commands::Reason { profile, certificate } => {
+            use open_ontologies::reason::{InferenceTarget, Reasoner};
             let (_db, graph) = setup(&cli.data_dir)?;
-            let result = Reasoner::run(&graph, &profile, true)
+            let dir = certificate.as_deref().map(std::path::Path::new);
+            let result = Reasoner::run_full(&graph, &profile, true, InferenceTarget::DefaultGraph, dir)
                 .unwrap_or_else(|e| format!(r#"{{"error":"{}"}}"#, e));
             output_result_checked(&result, cli.pretty);
         }
@@ -2822,7 +2833,7 @@ mod proxy_serialization_tests {
             Commands::Stats,
             Commands::Query { query: "SELECT ?s WHERE { ?s ?p ?o }".into() },
             Commands::Lint { input: "x.ttl".into() },
-            Commands::Reason { profile: "rdfs".into() },
+            Commands::Reason { profile: "rdfs".into(), certificate: None },
             Commands::Shacl { shapes: "s.ttl".into() },
             Commands::Status,
             Commands::Pull { url: "http://example.org".into(), sparql: false, query: None },

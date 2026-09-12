@@ -1886,7 +1886,8 @@ impl OpenOntologiesServer {
         } else {
             crate::reason::InferenceTarget::DefaultGraph
         };
-        Reasoner::run_with_target(&self.graph, profile, materialize, target)
+        let dir = input.certificate_dir.as_deref().map(std::path::Path::new);
+        Reasoner::run_full(&self.graph, profile, materialize, target, dir)
             .unwrap_or_else(Self::err_json)
     }
 

@@ -25,6 +25,17 @@ const RDF_FIRST: &str = "<http://www.w3.org/1999/02/22-rdf-syntax-ns#first>";
 const RDF_REST: &str = "<http://www.w3.org/1999/02/22-rdf-syntax-ns#rest>";
 const RDF_NIL: &str = "<http://www.w3.org/1999/02/22-rdf-syntax-ns#nil>";
 
+/// A triple over interned ids.
+type Fact = (u32, u32, u32);
+
+/// One line of a certificate: the rule, what it concluded, and the premises
+/// it read, in the order `lean/OOCert/Rules.lean` documents for that rule.
+struct Derivation {
+    rule: &'static str,
+    conclusion: Fact,
+    premises: Vec<Fact>,
+}
+
 /// Intern strings to u32 IDs for efficient reasoning.
 struct Interner {
     to_id: HashMap<String, u32>,
@@ -100,8 +111,43 @@ impl Reasoner {
         materialize: bool,
         target: InferenceTarget,
     ) -> anyhow::Result<String> {
+        Self::run_full(graph, profile, materialize, target, None)
+    }
+
+    /// Run the forward-chaining reasoner and, when `certificate_dir` is given,
+    /// write a derivation certificate beside the result.
+    ///
+    /// The certificate is two tab-separated files: `asserted.tsv`, every
+    /// triple the run started from, and `derivations.tsv`, one line per
+    /// inferred triple naming the rule that produced it and the premises the
+    /// rule read. `lean/` holds a checker for that format whose soundness is a
+    /// machine-checked theorem (`OOCert.certificate_sound`): a certificate it
+    /// accepts contains only triples entailed by the asserted graph under the
+    /// RDF-based semantics of the vocabulary the rules use. The engine's own
+    /// correctness is therefore not the thing a consumer has to trust; the
+    /// checker's is, and the checker is a few hundred lines with a proof.
+    ///
+    /// The first thing the checker caught was in this file: `cls-svf1` used
+    /// to derive membership in a subclass from membership in its restriction
+    /// superclass, the converse of the axiom
+    /// (tests/reason_rl_ext_soundness_test.rs).
+    ///
+    /// Not available for `owl-dl`: the tableaux path has no rule trace.
+    pub fn run_full(
+        graph: &Arc<GraphStore>,
+        profile: &str,
+        materialize: bool,
+        target: InferenceTarget,
+        certificate_dir: Option<&std::path::Path>,
+    ) -> anyhow::Result<String> {
         // Delegate OWL-DL to tableaux reasoner
         if profile == "owl-dl" {
+            if certificate_dir.is_some() {
+                anyhow::bail!(
+                    "the owl-dl tableaux path emits no derivation certificate; \
+                     run rdfs, owl-rl or owl-rl-ext for a certified run"
+                );
+            }
             if target == InferenceTarget::Inferred {
                 // Say so rather than materialise into the default graph while
                 // the caller believes the inferences were kept apart.
@@ -191,16 +237,25 @@ impl Reasoner {
             .filter_map(|(&r, &filler)| restr_prop.get(&r).map(|&prop| (prop, filler, r)))
             .collect();
 
-        // Parse RDF lists for intersectionOf/unionOf
-        let mut intersection_classes: Vec<(u32, Vec<u32>)> = Vec::new();
-        let mut union_classes: Vec<(u32, Vec<u32>)> = Vec::new();
+        // Parse RDF lists for intersectionOf/unionOf.
+        //
+        // A list is read only when it is well formed: every node carries the
+        // rdf:first and rdf:rest the certificate checker will look for, and
+        // the chain reaches rdf:nil. It used to be read leniently (a node
+        // without rdf:first was skipped, the walk stopped at 100 nodes) and
+        // the class rules fired on whatever came back. The checker has no
+        // rule for a list it cannot walk, so the reasoner no longer derives
+        // from one either; deriving less from malformed input is the sound
+        // direction. Each entry keeps the head node and the chain triples so
+        // that a certificate can cite them.
+        let rdf_first = interner.intern(RDF_FIRST);
+        let rdf_rest = interner.intern(RDF_REST);
+        let rdf_nil = interner.intern(RDF_NIL);
+        let owl_intersection = interner.intern(OWL_INTERSECTION);
+        let owl_union = interner.intern(OWL_UNION);
+        let mut intersection_classes: Vec<(u32, u32, Vec<Fact>, Vec<u32>)> = Vec::new();
+        let mut union_classes: Vec<(u32, u32, Vec<Fact>, Vec<u32>)> = Vec::new();
         if include_ext {
-            let rdf_first = interner.intern(RDF_FIRST);
-            let rdf_rest = interner.intern(RDF_REST);
-            let rdf_nil = interner.intern(RDF_NIL);
-            let owl_intersection = interner.intern(OWL_INTERSECTION);
-            let owl_union = interner.intern(OWL_UNION);
-
             let first_map: HashMap<u32, u32> = facts.iter()
                 .filter(|&&(_, p, _)| p == rdf_first)
                 .map(|&(s, _, o)| (s, o)).collect();
@@ -208,38 +263,69 @@ impl Reasoner {
                 .filter(|&&(_, p, _)| p == rdf_rest)
                 .map(|&(s, _, o)| (s, o)).collect();
 
-            let walk_list = |head: u32| -> Vec<u32> {
+            let walk_list = |head: u32| -> Option<(Vec<Fact>, Vec<u32>)> {
+                let mut chain = Vec::new();
                 let mut items = Vec::new();
                 let mut cur = head;
-                for _ in 0..100 {
-                    if cur == rdf_nil { break; }
-                    if let Some(&item) = first_map.get(&cur) { items.push(item); }
-                    cur = *rest_map.get(&cur).unwrap_or(&rdf_nil);
+                // Bounded so that a cyclic rdf:rest cannot spin.
+                for _ in 0..100_000 {
+                    if cur == rdf_nil {
+                        return Some((chain, items));
+                    }
+                    let item = *first_map.get(&cur)?;
+                    let next = *rest_map.get(&cur)?;
+                    chain.push((cur, rdf_first, item));
+                    chain.push((cur, rdf_rest, next));
+                    items.push(item);
+                    cur = next;
                 }
-                items
+                None
             };
 
             for &(s, p, o) in &facts {
-                if p == owl_intersection {
-                    let items = walk_list(o);
-                    if !items.is_empty() { intersection_classes.push((s, items)); }
+                if p == owl_intersection
+                    && let Some((chain, items)) = walk_list(o)
+                    && !items.is_empty()
+                {
+                    intersection_classes.push((s, o, chain, items));
                 }
-                if p == owl_union {
-                    let items = walk_list(o);
-                    if !items.is_empty() { union_classes.push((s, items)); }
+                if p == owl_union
+                    && let Some((chain, items)) = walk_list(o)
+                    && !items.is_empty()
+                {
+                    union_classes.push((s, o, chain, items));
                 }
             }
         }
 
+        // Ids the certificate cites as premises. Interning a term twice
+        // returns the same id, so these agree with the filters above.
+        let rdfs_domain = interner.intern(RDFS_DOMAIN);
+        let rdfs_range = interner.intern(RDFS_RANGE);
+        let owl_transitive = interner.intern(OWL_TRANSITIVE);
+        let owl_symmetric = interner.intern(OWL_SYMMETRIC);
+        let owl_inverse = interner.intern(OWL_INVERSE);
+        let owl_equiv_class = interner.intern(OWL_EQUIV_CLASS);
+        let owl_equiv_prop = interner.intern(OWL_EQUIV_PROP);
+
         // ── Fixpoint iteration ──────────────────────────────────────
-        let mut triple_set: HashSet<(u32, u32, u32)> = facts.iter().copied().collect();
+        let mut triple_set: HashSet<Fact> = facts.iter().copied().collect();
         let initial_size = triple_set.len();
         let mut iterations = 0;
+
+        // Certificate bookkeeping. A conclusion is recorded the first time it
+        // is derived and never again, so the certificate has exactly one line
+        // per inferred triple and `derivations.len() == inferred_count` is an
+        // invariant the tests pin. Nothing here runs unless a certificate was
+        // asked for: the hot path pays one branch per candidate triple.
+        let certify = certificate_dir.is_some();
+        let mut derivations: Vec<Derivation> = Vec::new();
+        let mut recorded: HashSet<Fact> = HashSet::new();
 
         loop {
             iterations += 1;
             let before = triple_set.len();
-            let mut new: Vec<(u32, u32, u32)> = Vec::new();
+            let mut new: Vec<Fact> = Vec::new();
 
             // Build per-iteration indices
             let type_idx: Vec<(u32, u32)> = triple_set.iter()
@@ -258,6 +344,17 @@ impl Reasoner {
                 sub_to_super.entry(sub).or_default().push(sup);
             }
 
+            // Every rule goes through this. It pushes the candidate and, when a
+            // certificate was asked for, records the first derivation of each
+            // triple not already in the closure, with the premises in the
+            // order the checker expects for that rule.
+            let mut emit = |t: Fact, rule: &'static str, premises: &[Fact]| {
+                if certify && !triple_set.contains(&t) && recorded.insert(t) {
+                    derivations.push(Derivation { rule, conclusion: t, premises: premises.to_vec() });
+                }
+                new.push(t);
+            };
+
             // ── RDFS rules ──────────────────────────────────────────
 
             // rdfs9: x type sub, sub subClassOf super → x type super
@@ -265,7 +362,8 @@ impl Reasoner {
                 if let Some(supers) = sub_to_super.get(&sub) {
                     for &sup in supers {
                         if sub != sup {
-                            new.push((x, rdf_type, sup));
+                            emit((x, rdf_type, sup), "rdfs9",
+                                &[(x, rdf_type, sub), (sub, rdfs_subclass, sup)]);
                         }
                     }
                 }
@@ -276,7 +374,8 @@ impl Reasoner {
                 if let Some(cs) = sub_to_super.get(&b) {
                     for &c in cs {
                         if a != b && b != c && a != c {
-                            new.push((a, rdfs_subclass, c));
+                            emit((a, rdfs_subclass, c), "rdfs11",
+                                &[(a, rdfs_subclass, b), (b, rdfs_subclass, c)]);
                         }
                     }
                 }
@@ -284,16 +383,18 @@ impl Reasoner {
 
             // rdfs2: s p o, p domain class → s type class
             for &(prop, cls) in &domain_map {
-                for &(s, p, _) in &triple_set.iter().collect::<Vec<_>>() {
-                    if *p == prop { new.push((*s, rdf_type, cls)); }
+                for &(s, p, o) in triple_set.iter() {
+                    if p == prop {
+                        emit((s, rdf_type, cls), "rdfs2", &[(s, p, o), (prop, rdfs_domain, cls)]);
+                    }
                 }
             }
 
             // rdfs3: s p o, p range class → o type class (IRI only)
             for &(prop, cls) in &range_map {
-                for &(_, p, o) in &triple_set.iter().collect::<Vec<_>>() {
-                    if *p == prop && interner.resolve(*o).starts_with('<') {
-                        new.push((*o, rdf_type, cls));
+                for &(s, p, o) in triple_set.iter() {
+                    if p == prop && interner.resolve(o).starts_with('<') {
+                        emit((o, rdf_type, cls), "rdfs3", &[(s, p, o), (prop, rdfs_range, cls)]);
                     }
                 }
             }
@@ -307,7 +408,8 @@ impl Reasoner {
                 if let Some(cs) = subp_to_super.get(&b) {
                     for &c in cs {
                         if a != b && b != c && a != c {
-                            new.push((a, rdfs_subprop, c));
+                            emit((a, rdfs_subprop, c), "rdfs5",
+                                &[(a, rdfs_subprop, b), (b, rdfs_subprop, c)]);
                         }
                     }
                 }
@@ -316,15 +418,17 @@ impl Reasoner {
             // rdfs7: s sub o, sub subPropertyOf super → s super o
             for &(sub, sup) in &subprop_idx {
                 if sub != sup {
-                    for &(s, p, o) in &triple_set.iter().collect::<Vec<_>>() {
-                        if *p == sub { new.push((*s, sup, *o)); }
+                    for &(s, p, o) in triple_set.iter() {
+                        if p == sub {
+                            emit((s, sup, o), "rdfs7", &[(s, sub, o), (sub, rdfs_subprop, sup)]);
+                        }
                     }
                 }
             }
 
             // ── OWL-RL rules ────────────────────────────────────────
             if include_owl {
-                // Transitive: x P y, y P z → x P z
+                // prp-trp: x P y, y P z → x P z
                 for &tp in &transitive_set {
                     let pairs: Vec<(u32, u32)> = triple_set.iter()
                         .filter(|&&(_, p, _)| p == tp)
@@ -336,50 +440,53 @@ impl Reasoner {
                     for &(x, y) in &pairs {
                         if let Some(zs) = by_subj.get(&y) {
                             for &z in zs {
-                                if x != z { new.push((x, tp, z)); }
+                                if x != z {
+                                    emit((x, tp, z), "prp-trp",
+                                        &[(tp, rdf_type, owl_transitive), (x, tp, y), (y, tp, z)]);
+                                }
                             }
                         }
                     }
                 }
 
-                // Symmetric: s P o → o P s
+                // prp-symp: s P o → o P s
                 for &sp in &symmetric_set {
-                    let to_add: Vec<_> = triple_set.iter()
-                        .filter(|&&(_, p, _)| p == sp)
-                        .map(|&(s, _, o)| (o, sp, s)).collect();
-                    new.extend(to_add);
+                    for &(s, p, o) in triple_set.iter() {
+                        if p == sp {
+                            emit((o, sp, s), "prp-symp", &[(sp, rdf_type, owl_symmetric), (s, sp, o)]);
+                        }
+                    }
                 }
 
-                // Inverse: s P o, P inverseOf Q → o Q s (both directions)
+                // prp-inv1, prp-inv2: s P o, P inverseOf Q → o Q s (both directions)
                 for &(p, q) in &inverse_pairs {
-                    let fwd: Vec<_> = triple_set.iter()
-                        .filter(|&&(_, pred, _)| pred == p)
-                        .map(|&(s, _, o)| (o, q, s)).collect();
-                    let rev: Vec<_> = triple_set.iter()
-                        .filter(|&&(_, pred, _)| pred == q)
-                        .map(|&(s, _, o)| (o, p, s)).collect();
-                    new.extend(fwd);
-                    new.extend(rev);
+                    for &(s, pred, o) in triple_set.iter() {
+                        if pred == p {
+                            emit((o, q, s), "prp-inv1", &[(p, owl_inverse, q), (s, p, o)]);
+                        }
+                        if pred == q {
+                            emit((o, p, s), "prp-inv2", &[(p, owl_inverse, q), (s, q, o)]);
+                        }
+                    }
                 }
 
-                // sameAs: symmetry + transitivity
-                let sameas: Vec<(u32, u32)> = triple_set.iter()
-                    .filter(|&&(_, p, _)| p == owl_sameas)
-                    .map(|&(s, _, o)| (s, o)).collect();
-                for &(a, b) in &sameas {
-                    new.push((b, owl_sameas, a));
+                // eq-sym: sameAs symmetry
+                for &(s, p, o) in triple_set.iter() {
+                    if p == owl_sameas {
+                        emit((o, owl_sameas, s), "eq-sym", &[(s, owl_sameas, o)]);
+                    }
                 }
 
-                // equivalentClass → bidirectional subClassOf
+                // scm-eqc1, scm-eqc2: equivalentClass → bidirectional subClassOf
                 for &(a, b) in &equiv_class {
-                    new.push((a, rdfs_subclass, b));
-                    new.push((b, rdfs_subclass, a));
+                    emit((a, rdfs_subclass, b), "scm-eqc1", &[(a, owl_equiv_class, b)]);
+                    emit((b, rdfs_subclass, a), "scm-eqc2", &[(a, owl_equiv_class, b)]);
                 }
 
-                // equivalentProperty → bidirectional subPropertyOf
+                // scm-eqp1, scm-eqp2: equivalentProperty → bidirectional subPropertyOf
                 for &(a, b) in &equiv_prop {
-                    new.push((a, rdfs_subprop, b));
-                    new.push((b, rdfs_subprop, a));
+                    emit((a, rdfs_subprop, b), "scm-eqp1", &[(a, owl_equiv_prop, b)]);
+                    emit((b, rdfs_subprop, a), "scm-eqp2", &[(a, owl_equiv_prop, b)]);
                 }
             }
 
@@ -391,8 +498,21 @@ impl Reasoner {
                     inst_types.entry(x).or_default().insert(cls);
                 }
 
-                // cls-svf1: x P y, y type filler, restriction(P, svf=filler),
-                //           class subClassOf restriction → x type class
+                // cls-svf1: x P y, y type filler, restriction(P, svf=filler)
+                //           → x type restriction
+                //
+                // Two derivations this rule used to make are gone, both found
+                // when every rule had to correspond to one the Lean checker
+                // can prove sound (tests/reason_rl_ext_soundness_test.rs):
+                //   * `x type C` for every `C rdfs:subClassOf restriction`.
+                //     That is the converse of the axiom. Membership in a
+                //     superclass never gives membership in a subclass; the
+                //     equivalentClass case that made it look right is carried
+                //     by rdfs9 over the subClassOf triple scm-eqc emits.
+                //   * `x type restriction` from `x P filler`, where the
+                //     object is the filler class IRI itself. A class in
+                //     object position is a resource, not an instance of
+                //     itself.
                 for &(prop, filler, restr) in &svf_rules {
                     let prop_pairs: Vec<(u32, u32)> = triple_set.iter()
                         .filter(|&&(_, p, _)| p == prop)
@@ -402,23 +522,20 @@ impl Reasoner {
                         .filter(|&&(_, cls)| cls == filler)
                         .map(|&(inst, _)| inst).collect();
 
-                    // Classes whose superclass is this restriction
-                    let parent_classes: Vec<u32> = subclass_idx.iter()
-                        .filter(|&&(_, sup)| sup == restr)
-                        .map(|&(sub, _)| sub).collect();
-
                     for &(x, y) in &prop_pairs {
-                        if filler_insts.contains(&y) || y == filler {
-                            new.push((x, rdf_type, restr));
-                            for &cls in &parent_classes {
-                                new.push((x, rdf_type, cls));
-                            }
+                        if filler_insts.contains(&y) {
+                            emit((x, rdf_type, restr), "cls-svf1", &[
+                                (restr, owl_on_property, prop),
+                                (restr, owl_some_values, filler),
+                                (x, prop, y),
+                                (y, rdf_type, filler),
+                            ]);
                         }
                     }
                 }
 
-                // cls-hv: x type class, class subClassOf restriction(P, hasValue v) → x P v
-                // and:    x P v, restriction(P, hasValue v) → x type restriction
+                // cls-hv1: x type class, class subClassOf restriction(P, hasValue v) → x P v
+                // cls-hv2: x P v, restriction(P, hasValue v) → x type restriction
                 for &(prop, val, restr) in &hv_rules {
                     let parent_classes: Vec<u32> = subclass_idx.iter()
                         .filter(|&&(_, sup)| sup == restr)
@@ -427,32 +544,56 @@ impl Reasoner {
                     for &cls in &parent_classes {
                         for &(x, c) in &type_idx {
                             if c == cls {
-                                new.push((x, prop, val));
+                                emit((x, prop, val), "cls-hv1", &[
+                                    (restr, owl_on_property, prop),
+                                    (restr, owl_has_value, val),
+                                    (cls, rdfs_subclass, restr),
+                                    (x, rdf_type, cls),
+                                ]);
                             }
                         }
                     }
-                    for &(s, p, o) in &triple_set.iter().collect::<Vec<_>>() {
-                        if *p == prop && *o == val {
-                            new.push((*s, rdf_type, restr));
+                    for &(s, p, o) in triple_set.iter() {
+                        if p == prop && o == val {
+                            emit((s, rdf_type, restr), "cls-hv2", &[
+                                (restr, owl_on_property, prop),
+                                (restr, owl_has_value, val),
+                                (s, prop, val),
+                            ]);
                         }
                     }
                 }
 
-                // cls-int: x type ALL members → x type intersection class
-                for (cls, members) in &intersection_classes {
-                    for &(x, _) in &type_idx {
-                        if let Some(x_types) = inst_types.get(&x)
-                            && members.iter().all(|m| x_types.contains(m)) {
-                                new.push((x, rdf_type, *cls));
-                            }
+                // cls-int1: x type ALL members → x type intersection class
+                for (cls, head, chain, members) in &intersection_classes {
+                    for (&x, x_types) in &inst_types {
+                        if members.iter().all(|m| x_types.contains(m)) {
+                            let premises: Vec<Fact> = if certify {
+                                let mut v = vec![(*cls, owl_intersection, *head)];
+                                v.extend(chain.iter().copied());
+                                v.extend(members.iter().map(|&m| (x, rdf_type, m)));
+                                v
+                            } else {
+                                Vec::new()
+                            };
+                            emit((x, rdf_type, *cls), "cls-int1", &premises);
+                        }
                     }
                 }
 
                 // cls-uni: x type ANY member → x type union class
-                for (cls, members) in &union_classes {
+                for (cls, head, chain, members) in &union_classes {
                     for &(x, c) in &type_idx {
                         if members.contains(&c) {
-                            new.push((x, rdf_type, *cls));
+                            let premises: Vec<Fact> = if certify {
+                                let mut v = vec![(*cls, owl_union, *head)];
+                                v.extend(chain.iter().copied());
+                                v.push((x, rdf_type, c));
+                                v
+                            } else {
+                                Vec::new()
+                            };
+                            emit((x, rdf_type, *cls), "cls-uni", &premises);
                         }
                     }
                 }
@@ -472,7 +613,7 @@ impl Reasoner {
 
         // Materialize inferred triples
         if materialize && inferred_count > 0 {
-            let original: HashSet<(u32, u32, u32)> = facts.iter().copied().collect();
+            let original: HashSet<Fact> = facts.iter().copied().collect();
             let mut lines = String::new();
             for &(s, p, o) in &triple_set {
                 if !original.contains(&(s, p, o)) {
@@ -496,7 +637,7 @@ impl Reasoner {
         }
 
         // Sample
-        let original: HashSet<(u32, u32, u32)> = facts.iter().copied().collect();
+        let original: HashSet<Fact> = facts.iter().copied().collect();
         let sample: Vec<String> = triple_set.iter()
             .filter(|t| !original.contains(t))
             .filter(|&&(_, p, _)| p == rdf_type)
@@ -520,6 +661,47 @@ impl Reasoner {
             // they were put.
             result["inference_graph"] = serde_json::json!(INFERRED_GRAPH);
         }
+
+        if let Some(dir) = certificate_dir {
+            std::fs::create_dir_all(dir)?;
+            let mut asserted = String::with_capacity(facts.len() * 96);
+            for &(s, p, o) in &facts {
+                asserted.push_str(interner.resolve(s));
+                asserted.push('\t');
+                asserted.push_str(interner.resolve(p));
+                asserted.push('\t');
+                asserted.push_str(interner.resolve(o));
+                asserted.push('\n');
+            }
+            std::fs::write(dir.join("asserted.tsv"), asserted)?;
+
+            let mut by_rule: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+            let mut lines = String::with_capacity(derivations.len() * 256);
+            for d in &derivations {
+                *by_rule.entry(d.rule).or_default() += 1;
+                lines.push_str(d.rule);
+                for &(s, p, o) in std::iter::once(&d.conclusion).chain(d.premises.iter()) {
+                    lines.push('\t');
+                    lines.push_str(interner.resolve(s));
+                    lines.push('\t');
+                    lines.push_str(interner.resolve(p));
+                    lines.push('\t');
+                    lines.push_str(interner.resolve(o));
+                }
+                lines.push('\n');
+            }
+            std::fs::write(dir.join("derivations.tsv"), lines)?;
+
+            result["certificate"] = serde_json::json!({
+                "dir": dir.display().to_string(),
+                "format": "oo-cert/1",
+                "asserted": facts.len(),
+                "derivations": derivations.len(),
+                "by_rule": by_rule,
+                "check_with": "cd lean && lake exe oo-cert <dir>/asserted.tsv <dir>/derivations.tsv",
+            });
+        }
+
         Ok(result.to_string())
     }
 }

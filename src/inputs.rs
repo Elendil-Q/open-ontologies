@@ -262,6 +262,12 @@ pub struct OntoReasonInput {
     /// `onto_save` to a triple format cannot publish one. Default false, which
     /// keeps the historical behaviour. Not available for the `owl-dl` profile.
     pub inference_graph: Option<bool>,
+    /// Directory to write a derivation certificate to (`asserted.tsv` and
+    /// `derivations.tsv`). The Lean checker in `lean/` verifies it against a
+    /// machine-checked soundness theorem, so a run whose certificate checks
+    /// contains only entailed triples whatever this engine did. Not available
+    /// for `owl-dl`.
+    pub certificate_dir: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]

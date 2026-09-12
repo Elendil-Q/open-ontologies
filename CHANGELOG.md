@@ -4,6 +4,21 @@ All notable changes to Open Ontologies are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Derivation certificates, checked by a proved-sound Lean checker.**
+  `reason --certificate DIR` (also `onto_reason`'s `certificate_dir` and batch
+  `reason --certificate`) writes `asserted.tsv` and `derivations.tsv`: every
+  inferred triple with the rule that produced it and the premises the rule
+  read, in a fixed order per rule. `lean/` holds a checker for that format
+  whose soundness is a machine-checked theorem, `OOCert.certificate_sound`,
+  with its axioms pinned by `#guard_msgs` so that a `sorry` fails the build: a
+  certificate it accepts contains only triples entailed by the asserted graph
+  under the RDF-based semantics of the twenty rules' vocabulary. Core Lean, no
+  Mathlib, no dependencies. A new CI job builds the proofs, certifies every
+  RDF file the repository ships, and appends forged lines the checker must
+  reject. `owl-dl` refuses the flag rather than pretending it has a rule
+  trace. See docs/lean-certificates.md and decision 0002.
+
 ### Fixed
 - **`sh:sparql` reported `conforms: true` when any single focus node
   conformed (#132).** The author's SELECT was wrapped as a subquery under a
@@ -22,6 +37,17 @@ All notable changes to Open Ontologies are documented here.
   them (#131).** Every violation carries `source_shape` (the shape IRI),
   `source_constraint_component` (the `sh:*ConstraintComponent` IRI) and
   `result_path` wherever a path is known. Existing keys are unchanged.
+- **`owl-rl-ext` derived the converse of a subclass axiom.** `cls-svf1`
+  inferred `x rdf:type C` from `C rdfs:subClassOf ∃p.D`, `x p y` and
+  `y rdf:type D`, and treated `x p D`, with `D` the filler class IRI itself,
+  as a witness. Neither has a sound rule; both derivations are gone. The
+  `owl:equivalentClass` case that made the first look right is carried by
+  `rdfs9` over the `rdfs:subClassOf` triple `scm-eqc` emits. Found while
+  giving every rule a soundness proof for the certificate checker.
+- **Malformed `owl:intersectionOf` and `owl:unionOf` lists no longer fire the
+  class rules.** A list is read only when every node carries `rdf:first` and
+  `rdf:rest` and the chain reaches `rdf:nil`; the old lenient walk derived
+  from whatever it recovered.
 
 ## [1.3.0] - 2026-09-04
 

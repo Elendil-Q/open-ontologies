@@ -60,3 +60,10 @@ measurements are in
 | `onto_reason` | Run inference with selected profile |
 | `onto_dl_explain` | Explain why a class is unsatisfiable (clash trace) |
 | `onto_dl_check` | Check if one class is subsumed by another |
+
+## Certified inference
+
+Every profile except `owl-dl` can emit a derivation certificate
+(`reason --certificate DIR`) that the checker in `lean/` verifies against a
+machine-checked soundness theorem. What is proved, what is not, and how to run
+it: [lean-certificates.md](lean-certificates.md).

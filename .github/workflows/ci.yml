@@ -283,3 +283,32 @@ jobs:
       - name: Type-check
         working-directory: studio
         run: npx tsc --noEmit
+
+  # The Lean certificate layer. `lean/` holds a checker for the reasoner's
+  # derivation certificates with a machine-checked soundness proof. Building
+  # that directory IS the proof check: the `#guard_msgs` axiom tripwire in
+  # OOCert/Soundness.lean fails the build on any `sorry`. The Rust test then
+  # certifies every ontology this repository ships through the built checker
+  # and proves the checker can also say no. OO_REQUIRE_FIXTURES=1 turns the
+  # "no lake installed" skip into a failure, so this job cannot pass by not
+  # running.
+  lean:
+    timeout-minutes: 45
+    name: lean / certificate checker
+    runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: lean
+          build: true
+          test: false
+          lint: false
+          use-github-cache: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Certify every shipped ontology through the proved checker
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test lean_certificate_test -- --nocapture

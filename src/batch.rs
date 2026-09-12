@@ -237,11 +237,13 @@ impl BatchRunner {
     }
 
     fn exec_reason(&self, args: &[String]) -> Value {
-        use crate::reason::Reasoner;
+        use crate::reason::{InferenceTarget, Reasoner};
         let profile = Self::flag_value(args, "--profile")
             .or_else(|| args.first().cloned())
             .unwrap_or("rdfs".to_string());
-        let result = Reasoner::run(&self.graph, &profile, true)
+        let certificate = Self::flag_value(args, "--certificate");
+        let dir = certificate.as_deref().map(std::path::Path::new);
+        let result = Reasoner::run_full(&self.graph, &profile, true, InferenceTarget::DefaultGraph, dir)
             .unwrap_or_else(|e| format!(r#"{{"error":"{}"}}"#, e));
         serde_json::from_str(&result).unwrap_or(json!({"raw": result}))
     }

@@ -994,6 +994,20 @@ flowchart TD
     DataPipe --> PG
 ```
 
+### Certified inference
+
+The forward-chaining reasoner (`rdfs`, `owl-rl`, `owl-rl-ext`) can write a
+derivation certificate beside its result: `reason --certificate DIR` records
+every inferred triple with the rule that produced it and the premises the rule
+read. `lean/` holds a checker for that certificate whose soundness is a
+machine-checked theorem (`OOCert.certificate_sound`, core Lean, no Mathlib), so
+a run whose certificate checks contains only triples entailed by the asserted
+graph, whatever this engine did to find them. CI builds the proofs and
+certifies every RDF file in this repository. The first thing the checker caught
+was in the engine: `cls-svf1` derived the converse of a subclass axiom. Details
+in [docs/lean-certificates.md](docs/lean-certificates.md) and
+[decision 0002](docs/decisions/0002-an-inference-carries-a-certificate.md).
+
 ### Studio
 
 ```mermaid
@@ -1078,6 +1092,7 @@ flowchart TD
 | Ontology Lifecycle | [docs/lifecycle.md](docs/lifecycle.md) |
 | Schema Alignment | [docs/alignment.md](docs/alignment.md) |
 | SHIQ Reasoning | [docs/reasoning.md](docs/reasoning.md) |
+| Derivation certificates, Lean checker | [docs/lean-certificates.md](docs/lean-certificates.md) |
 | Semantic Embeddings | [docs/embeddings.md](docs/embeddings.md) |
 | Clinical Crosswalks | [docs/clinical.md](docs/clinical.md) |
 | IES Ecosystem | [docs/ies-ecosystem.md](docs/ies-ecosystem.md) |

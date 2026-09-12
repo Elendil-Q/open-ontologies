@@ -1,0 +1,14 @@
+name = "oocert"
+version = "0.1.0"
+defaultTargets = ["OOCert", "oo-cert"]
+
+# Core Lean only. No Mathlib, no external packages: the checker's trust surface
+# is the Lean kernel plus what is written in this directory, and it should stay
+# small enough to read in an afternoon.
+
+[[lean_lib]]
+name = "OOCert"
+
+[[lean_exe]]
+name = "oo-cert"
+root = "Main"
