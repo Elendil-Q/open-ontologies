@@ -47,6 +47,13 @@ jobs:
         # log instead of invisible in a pass. tests/common/mod.rs emits the
         # marker, and OO_REQUIRE_FIXTURES=1 turns each skip into a failure for
         # any job that is supposed to supply the fixtures.
+        #
+        # `shell: bash` because the matrix includes Windows, where a `run:`
+        # block defaults to PowerShell and this one is a bash script. It failed
+        # the whole Windows leg on the line it was written to be harmless on,
+        # contradicting the "does not fail the build" above. The runner ships
+        # bash, so naming it is the whole fix.
+        shell: bash
         run: |
           n=$(grep -c 'SKIPPED_FIXTURE:' cargo-test.log || true)
           echo "$n test(s) skipped for a missing fixture"

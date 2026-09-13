@@ -23,7 +23,7 @@ mod tests {
     #[test]
     fn test_e2e_embed_search_align() {
         if !model_available() {
-            common::skip_unless(false, "embedding model",
+            crate::common::skip_unless(false, "embedding model",
                                 "Run `open-ontologies init` first.");
             return;
         }
