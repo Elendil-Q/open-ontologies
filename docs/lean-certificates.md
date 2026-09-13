@@ -154,5 +154,8 @@ Stated rather than discovered later.
   but if you materialise into a store that already held inferences they appear in `asserted.tsv` as
   assumptions with nothing marking them derived. Use `inference_graph: true` (decision 0001) when
   that distinction matters.
-- **`focus_nodes` in a SHACL report is a sum over target declarations**, so a node selected by two
-  declarations of one shape is counted twice. The violations themselves are deduplicated.
+- **A SHACL report double-counts a node selected by two target declarations of one shape.** Both
+  `focus_nodes` and `violation_count` are affected. Collapsing identical results is not the fix:
+  SHACL emits one result per SPARQL solution, pyshacl does too, and deduplicating breaks an exact
+  agreement with it. The fix is to union a shape's focus nodes across its declarations, which is a
+  change to the evaluation loop and is not done.

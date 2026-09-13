@@ -1721,21 +1721,24 @@ impl ShaclValidator {
         let nothing_matched = (!targets.is_empty() && focus_nodes_total == 0)
             || (targets.is_empty() && declared_any_shape);
 
-        // A validation report is a SET of results. One shape may carry two
-        // target declarations that select the same node (a `sh:targetClass` and
-        // a `sh:targetNode` for one of its instances), and the loop above walks
-        // targets, so that node was checked twice and every violation on it was
-        // reported twice. Two results identical in every field are one result.
+        // Deliberately NOT deduplicated, and this was measured before it was
+        // decided. One shape carrying two target declarations that select the
+        // same node does get checked twice, which inflates `violation_count`
+        // and `focus_nodes`. Collapsing identical results looked like the fix
+        // and is not: SHACL 5.3.2 emits one result per SPARQL solution, so a
+        // constraint returning several solutions for one focus node produces
+        // several results that are identical wherever the extra solution binds
+        // nothing this report carries. pyshacl emits those too. On the
+        // 39-shape corpus from issue #132 both engines return 249 results over
+        // 245 distinct (focus node, shape) pairs, and deduplicating took this
+        // engine to 245 and broke an exact agreement.
         //
-        // This does not touch `focus_nodes`, which is still a sum over targets
-        // and so still counts such a node twice. Making that a distinct count
-        // means enumerating focus nodes rather than counting them in SPARQL,
-        // which is a memory trade on large graphs and a separate decision.
-        {
-            let mut seen: HashSet<String> = HashSet::new();
-            violations.retain(|v| seen.insert(v.to_string()));
-        }
-
+        // The real fix for the double-checked node is to take the union of a
+        // shape's focus nodes across its target declarations rather than to
+        // walk targets, which is a change to the evaluation loop and not to
+        // the report. Until then the inflation is a documented limitation,
+        // because a wrong count is cheaper than a validator that drops results
+        // the specification says to emit.
         let mut report = serde_json::json!({
             "violation_count": violations.len(),
             "violations": violations,

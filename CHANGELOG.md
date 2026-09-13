@@ -57,9 +57,6 @@ All notable changes to Open Ontologies are documented here.
   indistinguishable, which is the case #131 was filed about. pyshacl returns
   the property shape and this now agrees. The node shape is still reported,
   under `node_shape`.
-- **Duplicate results.** One shape carrying two target declarations that select
-  the same node reported every violation on that node twice. A validation
-  report is a set.
 - **The reasoner was not a fixpoint of its own rule set.** Only the `rdf:type`,
   `rdfs:subClassOf` and `rdfs:subPropertyOf` indices were rebuilt each
   iteration; every schema index was filtered once out of the run-start
