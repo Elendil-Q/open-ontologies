@@ -36,8 +36,20 @@ fn lean_dir() -> PathBuf {
 }
 
 fn lake_available() -> bool {
+    // `.current_dir(lean_dir())` is not cosmetic. elan resolves the toolchain
+    // from the working directory's `lean-toolchain`, and the crate root is the
+    // one directory in this repository with none in its ancestry. Run from
+    // there against an elan that has no default toolchain, which is exactly
+    // what `leanprover/lean-action` installs, `lake --version` exits non-zero
+    // with "no default toolchain configured". The probe then reported lake as
+    // missing, `skip()` returned false, and `OO_REQUIRE_FIXTURES=1` turned
+    // that into five panics: the CI job that gates the proofs could not pass,
+    // while every local run was green because a developer machine has a
+    // default toolchain. `checker()` below already did this correctly, which
+    // is why the real `lake build` would have worked.
     Command::new("lake")
         .arg("--version")
+        .current_dir(lean_dir())
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
@@ -239,33 +251,49 @@ fn owl_dl_refuses_to_pretend_it_has_a_certificate() {
     assert!(err.to_string().contains("no derivation certificate"), "{err}");
 }
 
-/// Everything under these roots that parses as RDF, up to the size cap.
-const ROOTS: [&str; 5] = ["case-studies", "demo", "tests/fixtures", "data", "examples"];
+/// Every RDF file the repository tracks, rather than a hand-picked list of
+/// directories.
+///
+/// The list used to be five named directories, three of which hold no RDF at
+/// all, so 59 of the 128 tracked RDF files were never walked, and they were
+/// excluded SILENTLY. That contradicted this file's own promise that anything
+/// excluded is named with the reason, and the README's claim that CI certifies
+/// every RDF file in the repository. Walking from the root makes both true, and
+/// it is what surfaced the literal-subject defect in `prp-symp` and friends
+/// (`tests/reason_literal_subject_test.rs`), which lived in `benchmark/`, a
+/// directory the old list did not name.
 const SIZE_CAP: u64 = 4 * 1024 * 1024;
 
-fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
-        if path.is_dir() {
-            // Tooling trees that live beside the corpus locally but are not
-            // part of it: a Python venv drops pyshacl's own shacl.ttl under
-            // site-packages, and it certified happily, but it is not ours.
-            if matches!(
-                name.as_str(),
-                "node_modules" | "target" | ".lake" | ".git" | ".venv" | "venv" | "site-packages" | "__pycache__"
-            ) {
-                continue;
-            }
-            walk(&path, out);
-        } else if matches!(
-            path.extension().and_then(|e| e.to_str()),
-            Some("ttl" | "owl" | "rdf" | "nt")
-        ) {
-            out.push(path);
-        }
-    }
+/// Build output, dependency trees and virtual environments. Each holds RDF that
+/// is not this repository's to certify: a Python venv drops pyshacl's own
+/// `shacl.ttl` under site-packages, and it certified happily, but it is theirs.
+const SKIP_DIRS: [&str; 8] = [
+    "node_modules", "target", ".lake", ".git", ".venv", "venv", "site-packages", "__pycache__",
+];
+
+/// The RDF files this repository actually contains, from `git ls-files`.
+///
+/// Enumerating from git rather than from the filesystem is what makes "every
+/// RDF file in this repository" a statement with one meaning. A filesystem walk
+/// sees whatever a developer has generated locally as well, so it takes 190
+/// LUBM files nobody committed on one machine and none on a fresh clone, and
+/// the run stops being comparable between them. It is also minutes slower for
+/// no extra coverage.
+fn corpus() -> Vec<PathBuf> {
+    let out = Command::new("git")
+        .args(["ls-files", "-z", "*.ttl", "*.owl", "*.rdf", "*.nt"])
+        .current_dir(repo())
+        .output()
+        .expect("run git ls-files");
+    assert!(out.status.success(), "git ls-files failed: {}", String::from_utf8_lossy(&out.stderr));
+    let mut files: Vec<PathBuf> = String::from_utf8_lossy(&out.stdout)
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .filter(|p| !SKIP_DIRS.iter().any(|d| p.split('/').any(|seg| seg == *d)))
+        .map(|p| repo().join(p))
+        .collect();
+    files.sort();
+    files
 }
 
 #[test]
@@ -273,12 +301,8 @@ fn every_shipped_ontology_certifies() {
     if skip() {
         return;
     }
-    let mut files = Vec::new();
-    for root in ROOTS {
-        walk(&repo().join(root), &mut files);
-    }
-    files.sort();
-    assert!(files.len() >= 40, "expected the shipped corpus, found {} files", files.len());
+    let files = corpus();
+    assert!(files.len() >= 120, "expected the whole corpus, found {} files", files.len());
 
     let mut excluded: Vec<(String, String)> = Vec::new();
     let mut failures: Vec<(String, String)> = Vec::new();
@@ -324,7 +348,7 @@ fn every_shipped_ontology_certifies() {
     for (f, why) in &excluded {
         eprintln!("EXCLUDED {f}: {why}");
     }
-    assert!(certified >= 30, "too few files certified ({certified}); excluded: {excluded:?}");
+    assert!(certified >= 100, "too few files certified ({certified}); excluded: {excluded:?}");
     assert!(total_derivations > 0, "the corpus produced no inferences at all, so nothing was checked");
     assert!(
         failures.is_empty(),

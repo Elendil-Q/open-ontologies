@@ -1003,7 +1003,8 @@ read. `lean/` holds a checker for that certificate whose soundness is a
 machine-checked theorem (`OOCert.certificate_sound`, core Lean, no Mathlib), so
 a run whose certificate checks contains only triples entailed by the asserted
 graph, whatever this engine did to find them. CI builds the proofs and
-certifies every RDF file in this repository. The first thing the checker caught
+certifies every RDF file in this repository, naming with a reason any it cannot
+read or that exceeds the size cap. The first thing the checker caught
 was in the engine: `cls-svf1` derived the converse of a subclass axiom. Details
 in [docs/lean-certificates.md](docs/lean-certificates.md) and
 [decision 0002](docs/decisions/0002-an-inference-carries-a-certificate.md).

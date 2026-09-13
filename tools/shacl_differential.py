@@ -44,6 +44,11 @@ MAX_BYTES = int(os.environ.get("SHACL_DIFF_MAX_BYTES", 40 * 1024 * 1024))
 TIMEOUT = int(os.environ.get("SHACL_DIFF_TIMEOUT", 300))
 
 
+# Every violation passes through `attribute()`, which mirrors `path` into
+# `result_path` and is the only field a sh:sparql result populates, so reading
+# `result_path` first is what makes SPARQL-based results comparable at all.
+# Keyed on `path` alone, two engines that agreed exactly printed PARTIAL for
+# every constraint that binds ?path, which would have masked a real difference.
 def run_open_ontologies(data_files, shapes_file):
     with tempfile.TemporaryDirectory() as d:
         env = dict(os.environ, OPEN_ONTOLOGIES_STORAGE_MODE="persistent")
@@ -91,7 +96,7 @@ def run_pyshacl(data_files, shapes_file):
 def ours_violation_set(report):
     out = set()
     for v in report.get("violations", []) or []:
-        out.add((str(v.get("focus_node")), v.get("path")))
+        out.add((str(v.get("focus_node")), v.get("result_path") or v.get("path")))
     return out
 
 

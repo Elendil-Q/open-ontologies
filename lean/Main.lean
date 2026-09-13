@@ -35,11 +35,27 @@ def jsonStr (s : String) : String :=
 
 def showTriple (t : Triple) : String := s!"{t.s} {t.p} {t.o}"
 
+/-- Read a file, or report why not. A read failure is exit 2, the code reserved
+for "a file could not be read or parsed"; letting the exception escape `main`
+exits 1, which is the code that means "the checker rejected a step". A harness
+written to the documented contract would then report an unreadable file as a
+failed certificate, which is the wrong alarm in the wrong direction. -/
+def readOrFail (path : String) : IO (Except UInt32 String) := do
+  try
+    return .ok (← IO.FS.readFile path)
+  catch e =>
+    IO.eprintln s!"cannot read {path}: {e}"
+    return .error 2
+
 def main (args : List String) : IO UInt32 := do
   match args with
   | [gPath, dPath] =>
-    let g ← IO.FS.readFile gPath
-    let d ← IO.FS.readFile dPath
+    let g ← match ← readOrFail gPath with
+      | .ok s => pure s
+      | .error c => return c
+    let d ← match ← readOrFail dPath with
+      | .ok s => pure s
+      | .error c => return c
     match Parse.parseTriples g, Parse.parseSteps d with
     | .ok G, .ok steps =>
       if checkCert G steps then

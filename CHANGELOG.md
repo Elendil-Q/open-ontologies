@@ -20,6 +20,77 @@ All notable changes to Open Ontologies are documented here.
   trace. See docs/lean-certificates.md and decision 0002.
 
 ### Fixed
+- **`sh:sparql` ignored `sh:prefixes` and merged every `sh:declare` in the
+  shapes graph into one prologue.** A prefix bound to two namespaces emitted
+  two `PREFIX` lines, SPARQL took the last, and which one won was decided by
+  store row order: the constraint pointing at the loser matched nothing and the
+  run reported `conforms: true` with nothing in `skipped_constraints`. Two
+  shapes files that were the same RDF graph could give opposite verdicts. A
+  false clean, in the function the `#132` fix sits next to. Declarations are
+  now scoped per constraint through `sh:prefixes`, `owl:imports*` and
+  `sh:declare` as SHACL 5.2.1 says; a constraint that names no set keeps the
+  permissive whole-graph merge, but an ambiguous merge is refused with a
+  recorded reason rather than guessed.
+- **`sh:deactivated true` was ignored on a `sh:sparql` constraint node.** The
+  constraint ran, its rows were reported, and the run returned a confident
+  `conforms: false` where SHACL 5.3 says there are no results. The predicate
+  was already honoured on node shapes and property shapes. There was also no
+  unimplemented-predicate complement over constraint nodes at all, so any other
+  `sh:` predicate written there was invisible; there is one now.
+- **Any `sh:select`, `sh:pattern` or `sh:message` containing a typed or
+  language-tagged literal was truncated.** The helper that strips a literal's
+  quoting searched the whole string for `^^` and `"@` and cut there, so
+  `FILTER(?d < "2025-01-01"^^xsd:date)` was chopped mid-query. The constraint
+  then failed to parse and was recorded as unrunnable with an error blaming the
+  author, leaving `conforms: null`, zero violations and exit 0. Date and
+  numeric comparisons are the most common SPARQL constraints there are. The
+  value is now read with the RDF parser instead of by string surgery.
+- **A blank-node node shape applied every property shape in the file to its own
+  targets.** The shape was spliced into the query text, and `_:label` in a
+  SPARQL body is a non-distinguished variable, so `[] a sh:NodeShape` meant
+  "anything that has a property shape". Two such shapes with disjoint targets
+  reported conforming data as non-conforming. Shape terms are now bound by
+  substitution, the same mechanism `$this` pre-binding uses.
+- **`source_shape` named the enclosing node shape rather than the shape
+  carrying the constraint**, for all fifteen property-borne constraint sites.
+  Two property shapes on one path under one node shape therefore stayed
+  indistinguishable, which is the case #131 was filed about. pyshacl returns
+  the property shape and this now agrees. The node shape is still reported,
+  under `node_shape`.
+- **Duplicate results.** One shape carrying two target declarations that select
+  the same node reported every violation on that node twice. A validation
+  report is a set.
+- **The reasoner was not a fixpoint of its own rule set.** Only the `rdf:type`,
+  `rdfs:subClassOf` and `rdfs:subPropertyOf` indices were rebuilt each
+  iteration; every schema index was filtered once out of the run-start
+  snapshot, so a schema triple the reasoner itself derived was never used and
+  running `reason` twice derived more than running it once. That matters most
+  for certificates: materialising turns one run's conclusions into the next
+  run's premises, so `asserted.tsv` could list the reasoner's own output as an
+  axiom.
+- **Four rules could conclude a triple with a literal subject.** `prp-symp`,
+  `prp-inv1`, `prp-inv2` and `eq-sym` take their conclusion's subject from an
+  object position, so a literal object produced a triple no serialisation can
+  express. Materialisation then failed on the whole batch, losing every
+  inference including the sound ones, at a line number that moved between runs
+  because it depends on hash iteration order.
+- **`cls-hv1` was not W3C's `cls-hv1`.** It was the composite of `cax-sco` and
+  `cls-hv1`: it required an explicit `rdfs:subClassOf` hop, so an individual
+  typed directly with the restriction derived nothing, while the certificate
+  put a W3C rule name in front of the reader. The W3C form is used now and
+  loses nothing, since the composite case is `rdfs9` followed by it.
+- **`rdfs3` dropped every range inference onto a blank node.** The guard
+  required an IRI when the invariant it needs is "not a literal", so a
+  blank-node value never got typed and `rdfs9` starved behind it.
+- **`oo-cert` exited 1 rather than the documented 2 when a certificate file
+  could not be read**, so a harness written to the contract reported an
+  unreadable file as a rejected certificate.
+- **The `lean` CI job could not pass.** The `lake --version` probe ran from the
+  crate root, the one directory with no `lean-toolchain` in its ancestry, and
+  `leanprover/lean-action` installs elan with no default toolchain. The probe
+  reported lake as missing and `OO_REQUIRE_FIXTURES=1` turned that into five
+  panics. Every local run was green because a developer machine has a default
+  toolchain.
 - **`sh:sparql` reported `conforms: true` when any single focus node
   conformed (#132).** The author's SELECT was wrapped as a subquery under a
   `VALUES ?this` clause. A subquery is evaluated bottom-up with no outer

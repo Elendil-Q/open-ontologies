@@ -114,6 +114,13 @@ interpretation of the premises plus the single consequence the semantics does fo
 
 ## What it caught on day one
 
+An adversarial audit of the whole layer on 13 September 2026 found nine more defects, seven of them
+predating the certificate work: a false clean from unscoped prefix declarations, an ignored
+`sh:deactivated`, a truncation that silently disabled any constraint mentioning a typed literal, a
+blank-node shape acting as a wildcard, a reasoner that was not a fixpoint, four rules that could
+emit an unserialisable triple, and a CI job that could not pass. All are fixed and pinned; the
+CHANGELOG lists them.
+
 `cls-svf1` in the `owl-rl-ext` profile derived `x rdf:type C` from `C rdfs:subClassOf ∃p.D`,
 `x p y` and `y rdf:type D`. That is the converse of the axiom. It also treated `x p D`, with `D` the
 filler class IRI itself, as a witness. Neither has a sound rule, so neither could be given one in
@@ -123,8 +130,29 @@ kept in `tests/lean_certificate_test.rs` as a forged certificate the checker mus
 ## In CI
 
 The `lean` job builds `lean/` (which is the proof check), then runs
-`tests/lean_certificate_test.rs` with `OO_REQUIRE_FIXTURES=1`: every RDF file under
-`case-studies/`, `demo/`, `tests/fixtures/`, `data/` and `examples/` is loaded, reasoned under
-`owl-rl-ext` with a certificate, and the certificate checked. Files over 4 MB and files that do not
-parse are listed with the reason, never dropped silently. The same test appends three forgeries
-and requires each to be rejected.
+`tests/lean_certificate_test.rs` with `OO_REQUIRE_FIXTURES=1`. Every RDF file the repository
+tracks, enumerated from `git ls-files`, is loaded, reasoned under `owl-rl-ext` with a certificate,
+and the certificate checked: 122 files and 37,133 derivations at the time of writing. Files over
+4 MB and files that do not parse are listed with the reason, never dropped silently. The same test
+appends three forgeries and requires each to be rejected.
+
+The corpus used to be five hand-named directories, three of which hold no RDF, so 46% of the
+repository's RDF was never walked and was excluded without being named. Widening it is what
+surfaced the literal-subject defect in `prp-symp`, `prp-inv1`, `prp-inv2` and `eq-sym`, which lived
+in `benchmark/`.
+
+## Known limitations
+
+Stated rather than discovered later.
+
+- **The rule table is this engine's, not W3C's.** `by_rule` describes what this engine did. It is
+  not an OWL 2 RL conformance claim, and the engine does not implement every rule in the profile.
+- **`asserted.tsv` is the store, not your file.** Quads are flattened, so a triple present in two
+  named graphs appears on two lines. Literals are in the store's post-parse canonical spelling, so
+  `"01"^^xsd:integer` is written `"1"^^xsd:integer`. The guarantee is relative to that file.
+- **Reasoning twice into one store.** The run now reaches a fixpoint, so a second run adds nothing,
+  but if you materialise into a store that already held inferences they appear in `asserted.tsv` as
+  assumptions with nothing marking them derived. Use `inference_graph: true` (decision 0001) when
+  that distinction matters.
+- **`focus_nodes` in a SHACL report is a sum over target declarations**, so a node selected by two
+  declarations of one shape is counted twice. The violations themselves are deduplicated.
