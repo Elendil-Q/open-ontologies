@@ -319,3 +319,44 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Certify every shipped ontology through the proved checker
         run: OO_REQUIRE_FIXTURES=1 cargo test --test lean_certificate_test -- --nocapture
+
+  # The official W3C SHACL test suite, as a ratchet.
+  #
+  # `shacl-differential` above compares this engine against pyshacl on OUR
+  # corpus, which measures agreement with one other implementation on data we
+  # chose. This measures conformance against the Working Group's own suite on
+  # data they chose, which is the only number that can be quoted outside this
+  # repository. The two are complementary and neither replaces the other.
+  #
+  # The gate is monotone, not pass-all: PASS may not drop, FAIL may not rise,
+  # and no named PASS may regress against tests/w3c_shacl_baseline.json. The
+  # engine passes 32 of 120 today and pretending otherwise would be exactly the
+  # silent success this repository keeps finding elsewhere. See the module docs
+  # in tests/w3c_shacl_conformance_test.rs.
+  #
+  # Cheap by construction: no Python, no network, no release build. The suite is
+  # vendored under tests/w3c-shacl/ (632 KB, W3C Software and Document License)
+  # so the job is offline and deterministic. OO_REQUIRE_FIXTURES=1 turns the
+  # "suite missing" skip into a failure, so it cannot pass by not running.
+  w3c-shacl:
+    timeout-minutes: 15
+    name: SHACL conformance vs the W3C suite
+    runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run the suite and hold the ratchet
+        run: |
+          set -o pipefail
+          OO_REQUIRE_FIXTURES=1 cargo test --test w3c_shacl_conformance_test -- --nocapture \
+            2>&1 | tee w3c-shacl-conformance.log
+      - name: Upload the per-test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w3c-shacl-conformance
+          path: w3c-shacl-conformance.log

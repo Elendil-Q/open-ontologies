@@ -328,6 +328,17 @@ impl ShaclValidator {
             // `sh:not` was invisible: it was never collected, never evaluated, and
             // never recorded, so a shape whose only constraint was `sh:not` returned
             // `conforms: true` over data that violated it.
+            //
+            // Restricted to the SHACL namespace, exactly as the node-shape
+            // complement above already is. A predicate from any other namespace
+            // on a shape is an annotation or an axiom, never a constraint, and
+            // treating one as unimplemented cost the verdict: a shapes graph
+            // that merely documented itself with `rdfs:label` came back
+            // `conforms: null` with the label recorded as a constraint this
+            // validator could not evaluate. Seven tests in the W3C suite turn
+            // on that alone. A false undetermined is not free; it teaches the
+            // reader to ignore null, which destroys the signal the third answer
+            // carries.
             let unknown = query_solutions_bound(
                 &shapes_store,
                 &format!(
@@ -336,7 +347,7 @@ impl ShaclValidator {
                     SELECT DISTINCT ?shape ?pred WHERE {{
                         {} sh:property ?prop .
                         ?prop ?pred ?o .
-                        FILTER(?pred NOT IN (
+                        FILTER(STRSTARTS(STR(?pred), "http://www.w3.org/ns/shacl#") && ?pred NOT IN (
                             sh:path, sh:minCount, sh:maxCount, sh:datatype,
                             sh:class, sh:pattern, sh:hasValue, sh:message, sh:severity,
                             sh:minInclusive, sh:maxInclusive,
@@ -347,8 +358,7 @@ impl ShaclValidator {
                             sh:qualifiedValueShape, sh:qualifiedMinCount,
                             sh:qualifiedMaxCount,
                             sh:node,
-                            sh:name, sh:description, sh:order, sh:group,
-                            <http://www.w3.org/1999/02/22-rdf-syntax-ns#type>
+                            sh:name, sh:description, sh:order, sh:group
                         ))
                     }}
                     "#,
@@ -1641,6 +1651,18 @@ impl ShaclValidator {
                 // legal after those: the grammar allows any number of
                 // PREFIX and BASE declarations in any order.
                 let query = format!("{prefix_block}{select_raw}");
+                if let Some(construct) = prebinding_violation(&select_raw, "this") {
+                    skipped.push(serde_json::json!({
+                        "shape": strip_angle_brackets(&shape_iri),
+                        "constraint": "sparql",
+                        "reason": format!(
+                            "SHACL 5.2.1 forbids {construct} in a query that is pre-bound, so this \
+                             constraint cannot be evaluated and the validator must refuse rather \
+                             than substitute into it"
+                        ),
+                    }));
+                    continue;
+                }
                 match graph.sparql_select_union_prebound(&query, "this", &focus_terms) {
                     Ok(per_focus) => {
                         for (focus, rows) in focus_terms.iter().zip(per_focus) {
@@ -2432,6 +2454,127 @@ fn count_focus_nodes(graph: &Arc<GraphStore>, focus_pattern: &str) -> anyhow::Re
         .map(|c| strip_quotes(c))
         .and_then(|c| c.parse::<u64>().ok())
         .unwrap_or(0))
+}
+
+/// The construct in `query` that SHACL forbids under pre-binding, if any.
+///
+/// SHACL 5.2.1 restricts what a `sh:sparql` SELECT may contain, because
+/// pre-binding is substitution and substitution is not sound through every
+/// SPARQL operator. A conforming processor must REPORT A FAILURE rather than
+/// evaluate such a query. This validator substituted unconditionally, so it
+/// ran them and returned a confident answer: the same false-clean class as
+/// #132, in the same function, and invisible to any proof about this code
+/// because the rule lives in the specification rather than in the program.
+/// The W3C suite ships five tests (`unsupported-sparql-001` to `-005`) that
+/// exist only to check a validator refuses.
+///
+/// The scan is lexical, and deliberately conservative: it skips string
+/// literals, IRIs and comments so that a `MINUS` inside a message cannot
+/// trigger it, and where it is unsure it refuses. Refusing is the safe
+/// direction here, because a refusal is `conforms: null` with a reason, which
+/// no consumer can read as a pass.
+fn prebinding_violation(query: &str, var: &str) -> Option<String> {
+    // Blank out anything a keyword could hide inside, keeping the length so
+    // that word boundaries still line up.
+    let mut scrubbed = String::with_capacity(query.len());
+    let mut chars = query.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' | '\'' => {
+                scrubbed.push(' ');
+                let quote = c;
+                for d in chars.by_ref() {
+                    scrubbed.push(if d == '\n' { '\n' } else { ' ' });
+                    if d == quote {
+                        break;
+                    }
+                }
+            }
+            '<' => {
+                scrubbed.push(' ');
+                for d in chars.by_ref() {
+                    scrubbed.push(' ');
+                    if d == '>' {
+                        break;
+                    }
+                }
+            }
+            '#' => {
+                scrubbed.push(' ');
+                for d in chars.by_ref() {
+                    scrubbed.push(if d == '\n' { '\n' } else { ' ' });
+                    if d == '\n' {
+                        break;
+                    }
+                }
+            }
+            other => scrubbed.push(other),
+        }
+    }
+    let upper = scrubbed.to_ascii_uppercase();
+    let has_word = |w: &str| -> bool {
+        let mut from = 0;
+        while let Some(i) = upper[from..].find(w) {
+            let at = from + i;
+            let before_ok = at == 0
+                || !upper[..at]
+                    .chars()
+                    .next_back()
+                    .map(|c| c.is_alphanumeric() || c == '_' || c == '?' || c == '$')
+                    .unwrap_or(false);
+            let after = upper[at + w.len()..].chars().next();
+            let after_ok = after.map(|c| !c.is_alphanumeric() && c != '_').unwrap_or(true);
+            if before_ok && after_ok {
+                return true;
+            }
+            from = at + w.len();
+        }
+        false
+    };
+    if has_word("MINUS") {
+        return Some("MINUS".to_string());
+    }
+    if has_word("SERVICE") {
+        return Some("SERVICE".to_string());
+    }
+    // A VALUES clause or a BIND that touches the pre-bound variable.
+    let marks = [format!("?{var}"), format!("${var}")];
+    if let Some(i) = upper.find("VALUES")
+        && marks.iter().any(|m| {
+            upper[i..]
+                .split_once('{')
+                .map(|(head, _)| head.to_ascii_uppercase().contains(&m.to_ascii_uppercase()))
+                .unwrap_or(false)
+        })
+    {
+        return Some(format!("VALUES over the pre-bound variable {marks:?}"));
+    }
+    let mut from = 0;
+    while let Some(i) = upper[from..].find(" AS ") {
+        let at = from + i + 4;
+        let rest = upper[at..].trim_start();
+        if marks.iter().any(|m| rest.starts_with(&m.to_ascii_uppercase())) {
+            return Some(format!("BIND or expression assigning to {marks:?}"));
+        }
+        from = at;
+    }
+    // A sub-SELECT that does not project the pre-bound variable cannot receive
+    // the substitution, so the outer binding silently does not reach it.
+    if let Some(first) = upper.find("SELECT") {
+        let mut from = first + 6;
+        while let Some(i) = upper[from..].find("SELECT") {
+            let at = from + i;
+            let head = match upper[at..].find("WHERE") {
+                Some(w) => &upper[at..at + w],
+                None => &upper[at..],
+            };
+            if !head.contains('*') && !marks.iter().any(|m| head.contains(&m.to_ascii_uppercase())) {
+                return Some("a sub-SELECT that does not project the pre-bound variable".to_string());
+            }
+            from = at + 6;
+        }
+    }
+    None
 }
 
 /// Name the shape and the constraint component that produced a violation.
