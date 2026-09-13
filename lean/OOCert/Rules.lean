@@ -36,7 +36,7 @@ wrong order is rejected, which is a false alarm and never a false pass.
 | scm-eqp1   | `a owl:equivalentProperty b`                                    | `a sp b`         |
 | scm-eqp2   | `a owl:equivalentProperty b`                                    | `b sp a`         |
 | cls-svf1   | `r owl:onProperty p`, `r owl:someValuesFrom c`, `x p y`, `y rdf:type c` | `x rdf:type r` |
-| cls-hv1    | `r owl:onProperty p`, `r owl:hasValue v`, `k sc r`, `x rdf:type k`  | `x p v`      |
+| cls-hv1    | `r owl:onProperty p`, `r owl:hasValue v`, `x rdf:type r`        | `x p v`          |
 | cls-hv2    | `r owl:onProperty p`, `r owl:hasValue v`, `x p v`               | `x rdf:type r`   |
 | cls-int1   | `c owl:intersectionOf l`, the list chain of `l`, `x rdf:type m` for every member `m` | `x rdf:type c` |
 | cls-uni    | `c owl:unionOf l`, the list chain of `l`, `x rdf:type m` for one member `m` | `x rdf:type c` |
@@ -153,10 +153,9 @@ def checkStep (inG derived : Triple → Bool) (st : Step) : Bool :=
       t = V.type ∧ c' = c ∧
       k ⟨r, op, p⟩ ∧ k ⟨r', sv, c⟩ ∧ k ⟨x, p1, y⟩ ∧ k ⟨y', t, c'⟩ ∧
       st.conclusion = ⟨x, V.type, r⟩
-  | .clsHv1, [⟨r, op, p⟩, ⟨r', hv, v⟩, ⟨cls, sc, r''⟩, ⟨x, t, cls'⟩] =>
-      op = V.onProperty ∧ hv = V.hasValue ∧ r' = r ∧ sc = V.subClassOf ∧ r'' = r ∧
-      t = V.type ∧ cls' = cls ∧
-      k ⟨r, op, p⟩ ∧ k ⟨r', hv, v⟩ ∧ k ⟨cls, sc, r''⟩ ∧ k ⟨x, t, cls'⟩ ∧
+  | .clsHv1, [⟨r, op, p⟩, ⟨r', hv, v⟩, ⟨x, t, r''⟩] =>
+      op = V.onProperty ∧ hv = V.hasValue ∧ r' = r ∧ t = V.type ∧ r'' = r ∧
+      k ⟨r, op, p⟩ ∧ k ⟨r', hv, v⟩ ∧ k ⟨x, t, r''⟩ ∧
       st.conclusion = ⟨x, p, v⟩
   | .clsHv2, [⟨r, op, p⟩, ⟨r', hv, v⟩, ⟨x, p1, v'⟩] =>
       op = V.onProperty ∧ hv = V.hasValue ∧ r' = r ∧ p1 = p ∧ v' = v ∧

@@ -180,126 +180,9 @@ impl Reasoner {
         let rdfs_subclass = interner.intern(RDFS_SUBCLASS);
         let rdfs_subprop = interner.intern(RDFS_SUBPROP);
         let owl_sameas = interner.intern(OWL_SAMEAS);
-
-        // Pre-extract static schema relations
-        let domain_map: Vec<(u32, u32)> = facts.iter()
-            .filter(|&&(_, p, _)| p == interner.intern(RDFS_DOMAIN))
-            .map(|&(s, _, o)| (s, o)).collect();
-        let range_map: Vec<(u32, u32)> = facts.iter()
-            .filter(|&&(_, p, _)| p == interner.intern(RDFS_RANGE))
-            .map(|&(s, _, o)| (s, o)).collect();
-        let transitive_set: HashSet<u32> = facts.iter()
-            .filter(|&&(_, p, o)| p == rdf_type && o == interner.intern(OWL_TRANSITIVE))
-            .map(|&(s, _, _)| s).collect();
-        let symmetric_set: HashSet<u32> = facts.iter()
-            .filter(|&&(_, p, o)| p == rdf_type && o == interner.intern(OWL_SYMMETRIC))
-            .map(|&(s, _, _)| s).collect();
-        let inverse_pairs: Vec<(u32, u32)> = facts.iter()
-            .filter(|&&(_, p, _)| p == interner.intern(OWL_INVERSE))
-            .map(|&(s, _, o)| (s, o)).collect();
-        let equiv_class: Vec<(u32, u32)> = facts.iter()
-            .filter(|&&(_, p, _)| p == interner.intern(OWL_EQUIV_CLASS))
-            .map(|&(s, _, o)| (s, o)).collect();
-        let equiv_prop: Vec<(u32, u32)> = facts.iter()
-            .filter(|&&(_, p, _)| p == interner.intern(OWL_EQUIV_PROP))
-            .map(|&(s, _, o)| (s, o)).collect();
-
-        // OWL restriction structures (for owl-rl-ext)
-        let owl_on_property = interner.intern(OWL_ON_PROPERTY);
-        let owl_some_values = interner.intern(OWL_SOME_VALUES);
-        let owl_all_values = interner.intern(OWL_ALL_VALUES);
-        let owl_has_value = interner.intern(OWL_HAS_VALUE);
-
-        let mut restr_prop: HashMap<u32, u32> = HashMap::new();
-        let mut restr_svf: HashMap<u32, u32> = HashMap::new();
-        let mut restr_avf: HashMap<u32, u32> = HashMap::new();
-        let mut restr_hv: HashMap<u32, u32> = HashMap::new();
-
-        if include_ext {
-            for &(s, p, o) in &facts {
-                if p == owl_on_property { restr_prop.insert(s, o); }
-                if p == owl_some_values { restr_svf.insert(s, o); }
-                if p == owl_all_values { restr_avf.insert(s, o); }
-                if p == owl_has_value { restr_hv.insert(s, o); }
-            }
-        }
-
-        // svf_rules: (property, filler_class, restriction_node)
-        let svf_rules: Vec<(u32, u32, u32)> = restr_svf.iter()
-            .filter_map(|(&r, &filler)| restr_prop.get(&r).map(|&prop| (prop, filler, r)))
-            .collect();
-        // hv_rules: (property, value, restriction_node)
-        let hv_rules: Vec<(u32, u32, u32)> = restr_hv.iter()
-            .filter_map(|(&r, &val)| restr_prop.get(&r).map(|&prop| (prop, val, r)))
-            .collect();
-        // avf_rules: (property, filler_class, restriction_node)
-        let _avf_rules: Vec<(u32, u32, u32)> = restr_avf.iter()
-            .filter_map(|(&r, &filler)| restr_prop.get(&r).map(|&prop| (prop, filler, r)))
-            .collect();
-
-        // Parse RDF lists for intersectionOf/unionOf.
-        //
-        // A list is read only when it is well formed: every node carries the
-        // rdf:first and rdf:rest the certificate checker will look for, and
-        // the chain reaches rdf:nil. It used to be read leniently (a node
-        // without rdf:first was skipped, the walk stopped at 100 nodes) and
-        // the class rules fired on whatever came back. The checker has no
-        // rule for a list it cannot walk, so the reasoner no longer derives
-        // from one either; deriving less from malformed input is the sound
-        // direction. Each entry keeps the head node and the chain triples so
-        // that a certificate can cite them.
-        let rdf_first = interner.intern(RDF_FIRST);
-        let rdf_rest = interner.intern(RDF_REST);
-        let rdf_nil = interner.intern(RDF_NIL);
-        let owl_intersection = interner.intern(OWL_INTERSECTION);
-        let owl_union = interner.intern(OWL_UNION);
-        let mut intersection_classes: Vec<(u32, u32, Vec<Fact>, Vec<u32>)> = Vec::new();
-        let mut union_classes: Vec<(u32, u32, Vec<Fact>, Vec<u32>)> = Vec::new();
-        if include_ext {
-            let first_map: HashMap<u32, u32> = facts.iter()
-                .filter(|&&(_, p, _)| p == rdf_first)
-                .map(|&(s, _, o)| (s, o)).collect();
-            let rest_map: HashMap<u32, u32> = facts.iter()
-                .filter(|&&(_, p, _)| p == rdf_rest)
-                .map(|&(s, _, o)| (s, o)).collect();
-
-            let walk_list = |head: u32| -> Option<(Vec<Fact>, Vec<u32>)> {
-                let mut chain = Vec::new();
-                let mut items = Vec::new();
-                let mut cur = head;
-                // Bounded so that a cyclic rdf:rest cannot spin.
-                for _ in 0..100_000 {
-                    if cur == rdf_nil {
-                        return Some((chain, items));
-                    }
-                    let item = *first_map.get(&cur)?;
-                    let next = *rest_map.get(&cur)?;
-                    chain.push((cur, rdf_first, item));
-                    chain.push((cur, rdf_rest, next));
-                    items.push(item);
-                    cur = next;
-                }
-                None
-            };
-
-            for &(s, p, o) in &facts {
-                if p == owl_intersection
-                    && let Some((chain, items)) = walk_list(o)
-                    && !items.is_empty()
-                {
-                    intersection_classes.push((s, o, chain, items));
-                }
-                if p == owl_union
-                    && let Some((chain, items)) = walk_list(o)
-                    && !items.is_empty()
-                {
-                    union_classes.push((s, o, chain, items));
-                }
-            }
-        }
-
-        // Ids the certificate cites as premises. Interning a term twice
-        // returns the same id, so these agree with the filters above.
+        // Every well-known id is interned once, before the loop, so the
+        // schema indices below can be rebuilt from the closure each iteration
+        // without borrowing the interner mutably inside it.
         let rdfs_domain = interner.intern(RDFS_DOMAIN);
         let rdfs_range = interner.intern(RDFS_RANGE);
         let owl_transitive = interner.intern(OWL_TRANSITIVE);
@@ -307,6 +190,15 @@ impl Reasoner {
         let owl_inverse = interner.intern(OWL_INVERSE);
         let owl_equiv_class = interner.intern(OWL_EQUIV_CLASS);
         let owl_equiv_prop = interner.intern(OWL_EQUIV_PROP);
+        let owl_on_property = interner.intern(OWL_ON_PROPERTY);
+        let owl_some_values = interner.intern(OWL_SOME_VALUES);
+        let owl_all_values = interner.intern(OWL_ALL_VALUES);
+        let owl_has_value = interner.intern(OWL_HAS_VALUE);
+        let owl_intersection = interner.intern(OWL_INTERSECTION);
+        let owl_union = interner.intern(OWL_UNION);
+        let rdf_first = interner.intern(RDF_FIRST);
+        let rdf_rest = interner.intern(RDF_REST);
+        let rdf_nil = interner.intern(RDF_NIL);
 
         // ── Fixpoint iteration ──────────────────────────────────────
         let mut triple_set: HashSet<Fact> = facts.iter().copied().collect();
@@ -326,6 +218,118 @@ impl Reasoner {
             iterations += 1;
             let before = triple_set.len();
             let mut new: Vec<Fact> = Vec::new();
+
+            // Schema indices, rebuilt from the closure on every iteration.
+            //
+            // These used to be filtered ONCE out of the pre-loop snapshot while
+            // only the three data indices below were rebuilt, so the run was
+            // not a fixpoint of its own rule set: a `rdfs:domain` triple that
+            // the reasoner itself derived, by rdfs7 over a subproperty of
+            // rdfs:domain or by scm-eqp, was never used, and running `reason` a
+            // second time derived more than running it once. The number of runs
+            // needed was the length of the longest chain of such rules, not two.
+            //
+            // For certificates that mattered more than for query answers.
+            // Materialising turns run N's conclusions into run N+1's premises,
+            // so `asserted.tsv` could list the reasoner's own output as an
+            // axiom with nothing marking it as derived, and the soundness
+            // theorem is conditional on the assertions. Reaching the fixpoint
+            // in one run is what makes a single certificate the whole story.
+            //
+            // The cost is a constant factor on a scan the loop already does.
+            let domain_map: Vec<(u32, u32)> = triple_set.iter()
+                .filter(|&&(_, p, _)| p == rdfs_domain)
+                .map(|&(s, _, o)| (s, o)).collect();
+            let range_map: Vec<(u32, u32)> = triple_set.iter()
+                .filter(|&&(_, p, _)| p == rdfs_range)
+                .map(|&(s, _, o)| (s, o)).collect();
+            let transitive_set: HashSet<u32> = triple_set.iter()
+                .filter(|&&(_, p, o)| p == rdf_type && o == owl_transitive)
+                .map(|&(s, _, _)| s).collect();
+            let symmetric_set: HashSet<u32> = triple_set.iter()
+                .filter(|&&(_, p, o)| p == rdf_type && o == owl_symmetric)
+                .map(|&(s, _, _)| s).collect();
+            let inverse_pairs: Vec<(u32, u32)> = triple_set.iter()
+                .filter(|&&(_, p, _)| p == owl_inverse)
+                .map(|&(s, _, o)| (s, o)).collect();
+            let equiv_class: Vec<(u32, u32)> = triple_set.iter()
+                .filter(|&&(_, p, _)| p == owl_equiv_class)
+                .map(|&(s, _, o)| (s, o)).collect();
+            let equiv_prop: Vec<(u32, u32)> = triple_set.iter()
+                .filter(|&&(_, p, _)| p == owl_equiv_prop)
+                .map(|&(s, _, o)| (s, o)).collect();
+
+            // OWL restriction structures and RDF lists (owl-rl-ext only).
+            let mut restr_prop: HashMap<u32, u32> = HashMap::new();
+            let mut restr_svf: HashMap<u32, u32> = HashMap::new();
+            let mut restr_hv: HashMap<u32, u32> = HashMap::new();
+            let mut intersection_classes: Vec<(u32, u32, Vec<Fact>, Vec<u32>)> = Vec::new();
+            let mut union_classes: Vec<(u32, u32, Vec<Fact>, Vec<u32>)> = Vec::new();
+            let mut svf_rules: Vec<(u32, u32, u32)> = Vec::new();
+            let mut hv_rules: Vec<(u32, u32, u32)> = Vec::new();
+            if include_ext {
+                let mut restr_avf: HashMap<u32, u32> = HashMap::new();
+                for &(s, p, o) in triple_set.iter() {
+                    if p == owl_on_property { restr_prop.insert(s, o); }
+                    if p == owl_some_values { restr_svf.insert(s, o); }
+                    if p == owl_all_values { restr_avf.insert(s, o); }
+                    if p == owl_has_value { restr_hv.insert(s, o); }
+                }
+                let _ = restr_avf;
+                svf_rules = restr_svf.iter()
+                    .filter_map(|(&r, &filler)| restr_prop.get(&r).map(|&prop| (prop, filler, r)))
+                    .collect();
+                hv_rules = restr_hv.iter()
+                    .filter_map(|(&r, &val)| restr_prop.get(&r).map(|&prop| (prop, val, r)))
+                    .collect();
+
+                // A list is read only when it is well formed: every node carries
+                // the rdf:first and rdf:rest the certificate checker will look
+                // for, and the chain reaches rdf:nil. It used to be read
+                // leniently and the class rules fired on whatever came back. The
+                // checker has no rule for a list it cannot walk, so the reasoner
+                // no longer derives from one either; deriving less from
+                // malformed input is the sound direction. Each entry keeps the
+                // head node and the chain triples so a certificate can cite them.
+                let first_map: HashMap<u32, u32> = triple_set.iter()
+                    .filter(|&&(_, p, _)| p == rdf_first)
+                    .map(|&(s, _, o)| (s, o)).collect();
+                let rest_map: HashMap<u32, u32> = triple_set.iter()
+                    .filter(|&&(_, p, _)| p == rdf_rest)
+                    .map(|&(s, _, o)| (s, o)).collect();
+                let walk_list = |head: u32| -> Option<(Vec<Fact>, Vec<u32>)> {
+                    let mut chain = Vec::new();
+                    let mut items = Vec::new();
+                    let mut cur = head;
+                    // Bounded so that a cyclic rdf:rest cannot spin.
+                    for _ in 0..100_000 {
+                        if cur == rdf_nil {
+                            return Some((chain, items));
+                        }
+                        let item = *first_map.get(&cur)?;
+                        let next = *rest_map.get(&cur)?;
+                        chain.push((cur, rdf_first, item));
+                        chain.push((cur, rdf_rest, next));
+                        items.push(item);
+                        cur = next;
+                    }
+                    None
+                };
+                for &(s, p, o) in triple_set.iter() {
+                    if p == owl_intersection
+                        && let Some((chain, items)) = walk_list(o)
+                        && !items.is_empty()
+                    {
+                        intersection_classes.push((s, o, chain, items));
+                    }
+                    if p == owl_union
+                        && let Some((chain, items)) = walk_list(o)
+                        && !items.is_empty()
+                    {
+                        union_classes.push((s, o, chain, items));
+                    }
+                }
+            }
 
             // Build per-iteration indices
             let type_idx: Vec<(u32, u32)> = triple_set.iter()
@@ -393,7 +397,13 @@ impl Reasoner {
             // rdfs3: s p o, p range class → o type class (IRI only)
             for &(prop, cls) in &range_map {
                 for &(s, p, o) in triple_set.iter() {
-                    if p == prop && interner.resolve(o).starts_with('<') {
+                    // The guard has to exclude LITERALS, which cannot be the
+                    // subject of the conclusion, and nothing else. Requiring an
+                    // IRI also dropped every range inference onto a blank node,
+                    // so a blank-node value never got typed, rdfs9 starved
+                    // behind it, and a SHACL shape targeting that class found
+                    // no focus nodes. rdfs2 twelve lines up has no such guard.
+                    if p == prop && !interner.resolve(o).starts_with('"') {
                         emit((o, rdf_type, cls), "rdfs3", &[(s, p, o), (prop, rdfs_range, cls)]);
                     }
                 }
@@ -426,6 +436,17 @@ impl Reasoner {
                 }
             }
 
+            // Four rules below conclude a triple whose SUBJECT comes from an
+            // object position, so a literal object would produce a triple no
+            // RDF serialisation can express. The materialiser then failed on
+            // the whole batch with "The subject of a triple must be an IRI or a
+            // blank node", at a line number that moved between runs because it
+            // depends on hash iteration order, and every inference from that
+            // run was lost. OWL 2 RL scopes prp-symp, prp-inv1, prp-inv2 and
+            // eq-sym to what can legally appear as a subject; this is that
+            // scope, made explicit. Pinned by `tests/reason_literal_subject_test.rs`.
+            let is_literal = |id: u32| interner.resolve(id).starts_with('"');
+
             // ── OWL-RL rules ────────────────────────────────────────
             if include_owl {
                 // prp-trp: x P y, y P z → x P z
@@ -452,7 +473,7 @@ impl Reasoner {
                 // prp-symp: s P o → o P s
                 for &sp in &symmetric_set {
                     for &(s, p, o) in triple_set.iter() {
-                        if p == sp {
+                        if p == sp && !is_literal(o) {
                             emit((o, sp, s), "prp-symp", &[(sp, rdf_type, owl_symmetric), (s, sp, o)]);
                         }
                     }
@@ -461,6 +482,9 @@ impl Reasoner {
                 // prp-inv1, prp-inv2: s P o, P inverseOf Q → o Q s (both directions)
                 for &(p, q) in &inverse_pairs {
                     for &(s, pred, o) in triple_set.iter() {
+                        if is_literal(o) {
+                            continue;
+                        }
                         if pred == p {
                             emit((o, q, s), "prp-inv1", &[(p, owl_inverse, q), (s, p, o)]);
                         }
@@ -472,7 +496,7 @@ impl Reasoner {
 
                 // eq-sym: sameAs symmetry
                 for &(s, p, o) in triple_set.iter() {
-                    if p == owl_sameas {
+                    if p == owl_sameas && !is_literal(o) {
                         emit((o, owl_sameas, s), "eq-sym", &[(s, owl_sameas, o)]);
                     }
                 }
@@ -534,23 +558,28 @@ impl Reasoner {
                     }
                 }
 
-                // cls-hv1: x type class, class subClassOf restriction(P, hasValue v) → x P v
+                // cls-hv1: x type restriction(P, hasValue v) → x P v
                 // cls-hv2: x P v, restriction(P, hasValue v) → x type restriction
+                //
+                // The rule emitted under the name `cls-hv1` used to be the
+                // composite of `cax-sco` and W3C `cls-hv1`: it demanded an
+                // explicit `k rdfs:subClassOf r` hop and fired on `x type k`,
+                // so an individual typed with the restriction DIRECTLY derived
+                // nothing. The engine reached the restriction class by its own
+                // rdfs9 and then refused to use it, and a certificate could
+                // carry `rdfs9  <k> rdf:type <R>` right next to a cls-hv1 step
+                // that ignored it. Putting a W3C rule name in front of an
+                // auditor obliges the rule to be that rule. The W3C form is
+                // used here and loses nothing: the composite case is rdfs9
+                // followed by this.
                 for &(prop, val, restr) in &hv_rules {
-                    let parent_classes: Vec<u32> = subclass_idx.iter()
-                        .filter(|&&(_, sup)| sup == restr)
-                        .map(|&(sub, _)| sub).collect();
-
-                    for &cls in &parent_classes {
-                        for &(x, c) in &type_idx {
-                            if c == cls {
-                                emit((x, prop, val), "cls-hv1", &[
-                                    (restr, owl_on_property, prop),
-                                    (restr, owl_has_value, val),
-                                    (cls, rdfs_subclass, restr),
-                                    (x, rdf_type, cls),
-                                ]);
-                            }
+                    for &(x, c) in &type_idx {
+                        if c == restr {
+                            emit((x, prop, val), "cls-hv1", &[
+                                (restr, owl_on_property, prop),
+                                (restr, owl_has_value, val),
+                                (x, rdf_type, restr),
+                            ]);
                         }
                     }
                     for &(s, p, o) in triple_set.iter() {

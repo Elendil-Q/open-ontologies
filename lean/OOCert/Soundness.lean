@@ -214,12 +214,11 @@ theorem checkStep_sound {inG derived : Triple → Bool} {st : Step}
     exact M.conds.svf _ _ _ (hk _ h1 I M) (hk _ h2 I M) _ _ (hk _ h3 I M) (hk _ h4 I M)
   case clsHv1 =>
     rcases premises with
-      _ | ⟨⟨r, op, p⟩, _ | ⟨⟨r', hv, v⟩, _ | ⟨⟨cls, sc, r''⟩, _ | ⟨⟨x, t, cls'⟩, _ | _⟩⟩⟩⟩ <;>
+      _ | ⟨⟨r, op, p⟩, _ | ⟨⟨r', hv, v⟩, _ | ⟨⟨x, t, r''⟩, _ | _⟩⟩⟩ <;>
       simp only [decide_eq_true_eq, Bool.false_eq_true] at h
-    obtain ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, h1, h2, h3, h4, rfl⟩ := h
+    obtain ⟨rfl, rfl, rfl, rfl, rfl, h1, h2, h3, rfl⟩ := h
     intro I M
-    exact (M.conds.hv _ _ _ (hk _ h1 I M) (hk _ h2 I M) _).mp
-      (M.conds.sc_sub _ _ (hk _ h3 I M) _ (hk _ h4 I M))
+    exact (M.conds.hv _ _ _ (hk _ h1 I M) (hk _ h2 I M) _).mp (hk _ h3 I M)
   case clsHv2 =>
     rcases premises with
       _ | ⟨⟨r, op, p⟩, _ | ⟨⟨r', hv, v⟩, _ | ⟨⟨x, p1, v'⟩, _ | _⟩⟩⟩ <;>
