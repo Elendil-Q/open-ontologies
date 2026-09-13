@@ -31,11 +31,10 @@ wrong order is rejected, which is a false alarm and never a false pass.
 | prp-inv1   | `p owl:inverseOf q`, `x p y`                                    | `y q x`          |
 | prp-inv2   | `p owl:inverseOf q`, `x q y`                                    | `y p x`          |
 | eq-sym     | `a owl:sameAs b`                                                | `b owl:sameAs a` |
-| scm-eqc1   | `a owl:equivalentClass b`                                       | `a sc b`         |
-| scm-eqc2   | `a owl:equivalentClass b`                                       | `b sc a`         |
-| scm-eqp1   | `a owl:equivalentProperty b`                                    | `a sp b`         |
-| scm-eqp2   | `a owl:equivalentProperty b`                                    | `b sp a`         |
+| scm-eqc1   | `a owl:equivalentClass b`                                       | `a sc b` or `b sc a` |
+| scm-eqp1   | `a owl:equivalentProperty b`                                    | `a sp b` or `b sp a` |
 | cls-svf1   | `r owl:onProperty p`, `r owl:someValuesFrom c`, `x p y`, `y rdf:type c` | `x rdf:type r` |
+| cls-avf    | `r owl:onProperty p`, `r owl:allValuesFrom c`, `x rdf:type r`, `x p y` | `y rdf:type c` |
 | cls-hv1    | `r owl:onProperty p`, `r owl:hasValue v`, `x rdf:type r`        | `x p v`          |
 | cls-hv2    | `r owl:onProperty p`, `r owl:hasValue v`, `x p v`               | `x rdf:type r`   |
 | cls-int1   | `c owl:intersectionOf l`, the list chain of `l`, `x rdf:type m` for every member `m` | `x rdf:type c` |
@@ -45,14 +44,20 @@ The list chain is the sequence `l rdf:first m₁`, `l rdf:rest l₂`,
 `l₂ rdf:first m₂`, `l₂ rdf:rest l₃`, … down to a node whose `rdf:rest` is
 `rdf:nil`. The chain and the constructor triple must be asserted, not derived,
 because `Model` reads lists off the asserted graph.
+
+`scm-eqc1` and `scm-eqp1` each license TWO conclusions from one premise, so a
+certificate carries two steps under one rule id and the checker accepts either
+conclusion. They used to emit the second under the ids `scm-eqc2` and `scm-eqp2`,
+which name different W3C rules concluding in the opposite direction. Those names
+are now free for the rules that own them.
 -/
 namespace OOCert
 
 inductive Rule
   | rdfs2 | rdfs3 | rdfs5 | rdfs7 | rdfs9 | rdfs11
   | prpTrp | prpSymp | prpInv1 | prpInv2 | eqSym
-  | scmEqc1 | scmEqc2 | scmEqp1 | scmEqp2
-  | clsSvf1 | clsHv1 | clsHv2 | clsInt1 | clsUni
+  | scmEqc1 | scmEqp1
+  | clsSvf1 | clsAvf | clsHv1 | clsHv2 | clsInt1 | clsUni
 deriving DecidableEq, Repr
 
 def Rule.name : Rule → String
@@ -60,16 +65,16 @@ def Rule.name : Rule → String
   | .rdfs9 => "rdfs9" | .rdfs11 => "rdfs11"
   | .prpTrp => "prp-trp" | .prpSymp => "prp-symp" | .prpInv1 => "prp-inv1"
   | .prpInv2 => "prp-inv2" | .eqSym => "eq-sym"
-  | .scmEqc1 => "scm-eqc1" | .scmEqc2 => "scm-eqc2" | .scmEqp1 => "scm-eqp1"
-  | .scmEqp2 => "scm-eqp2"
-  | .clsSvf1 => "cls-svf1" | .clsHv1 => "cls-hv1" | .clsHv2 => "cls-hv2"
+  | .scmEqc1 => "scm-eqc1" | .scmEqp1 => "scm-eqp1"
+  | .clsSvf1 => "cls-svf1" | .clsAvf => "cls-avf"
+  | .clsHv1 => "cls-hv1" | .clsHv2 => "cls-hv2"
   | .clsInt1 => "cls-int1" | .clsUni => "cls-uni"
 
 def Rule.all : List Rule :=
   [.rdfs2, .rdfs3, .rdfs5, .rdfs7, .rdfs9, .rdfs11,
    .prpTrp, .prpSymp, .prpInv1, .prpInv2, .eqSym,
-   .scmEqc1, .scmEqc2, .scmEqp1, .scmEqp2,
-   .clsSvf1, .clsHv1, .clsHv2, .clsInt1, .clsUni]
+   .scmEqc1, .scmEqp1,
+   .clsSvf1, .clsAvf, .clsHv1, .clsHv2, .clsInt1, .clsUni]
 
 def Rule.ofName? (s : String) : Option Rule :=
   Rule.all.find? (fun r => r.name == s)
@@ -141,18 +146,21 @@ def checkStep (inG derived : Triple → Bool) (st : Step) : Bool :=
   | .eqSym, [⟨a, sa, b⟩] =>
       sa = V.sameAs ∧ k ⟨a, sa, b⟩ ∧ st.conclusion = ⟨b, V.sameAs, a⟩
   | .scmEqc1, [⟨a, e, b⟩] =>
-      e = V.equivalentClass ∧ k ⟨a, e, b⟩ ∧ st.conclusion = ⟨a, V.subClassOf, b⟩
-  | .scmEqc2, [⟨a, e, b⟩] =>
-      e = V.equivalentClass ∧ k ⟨a, e, b⟩ ∧ st.conclusion = ⟨b, V.subClassOf, a⟩
+      e = V.equivalentClass ∧ k ⟨a, e, b⟩ ∧
+      (st.conclusion = ⟨a, V.subClassOf, b⟩ ∨ st.conclusion = ⟨b, V.subClassOf, a⟩)
   | .scmEqp1, [⟨a, e, b⟩] =>
-      e = V.equivalentProperty ∧ k ⟨a, e, b⟩ ∧ st.conclusion = ⟨a, V.subPropertyOf, b⟩
-  | .scmEqp2, [⟨a, e, b⟩] =>
-      e = V.equivalentProperty ∧ k ⟨a, e, b⟩ ∧ st.conclusion = ⟨b, V.subPropertyOf, a⟩
+      e = V.equivalentProperty ∧ k ⟨a, e, b⟩ ∧
+      (st.conclusion = ⟨a, V.subPropertyOf, b⟩ ∨ st.conclusion = ⟨b, V.subPropertyOf, a⟩)
   | .clsSvf1, [⟨r, op, p⟩, ⟨r', sv, c⟩, ⟨x, p1, y⟩, ⟨y', t, c'⟩] =>
       op = V.onProperty ∧ sv = V.someValuesFrom ∧ r' = r ∧ p1 = p ∧ y' = y ∧
       t = V.type ∧ c' = c ∧
       k ⟨r, op, p⟩ ∧ k ⟨r', sv, c⟩ ∧ k ⟨x, p1, y⟩ ∧ k ⟨y', t, c'⟩ ∧
       st.conclusion = ⟨x, V.type, r⟩
+  | .clsAvf, [⟨r, op, p⟩, ⟨r', av, c⟩, ⟨x, t, r''⟩, ⟨x', p1, y⟩] =>
+      op = V.onProperty ∧ av = V.allValuesFrom ∧ r' = r ∧ t = V.type ∧ r'' = r ∧
+      x' = x ∧ p1 = p ∧
+      k ⟨r, op, p⟩ ∧ k ⟨r', av, c⟩ ∧ k ⟨x, t, r''⟩ ∧ k ⟨x', p1, y⟩ ∧
+      st.conclusion = ⟨y, V.type, c⟩
   | .clsHv1, [⟨r, op, p⟩, ⟨r', hv, v⟩, ⟨x, t, r''⟩] =>
       op = V.onProperty ∧ hv = V.hasValue ∧ r' = r ∧ t = V.type ∧ r'' = r ∧
       k ⟨r, op, p⟩ ∧ k ⟨r', hv, v⟩ ∧ k ⟨x, t, r''⟩ ∧

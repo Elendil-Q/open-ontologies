@@ -55,6 +55,7 @@ theorem saturated_is_a_model (G : List Triple) : Model saturated G where
       eqc := fun _ _ _ => ⟨trivial, trivial⟩
       eqp := fun _ _ _ => ⟨trivial, trivial⟩
       svf := fun _ _ _ _ _ _ _ _ _ => trivial
+      avf := fun _ _ _ _ _ _ _ _ _ => trivial
       hv := fun _ _ _ _ _ _ => Iff.intro (fun _ => trivial) (fun _ => trivial) }
   facts := fun _ _ => trivial
   int := fun _ _ _ _ _ _ _ => trivial
@@ -112,6 +113,7 @@ theorem empty_herbrand_is_a_model : Model (herbrand []) [] where
       eqc := fun a b hab => absurd hab (not_mem_pred [] V.equivalentClass (by simp) a b)
       eqp := fun a b hab => absurd hab (not_mem_pred [] V.equivalentProperty (by simp) a b)
       svf := fun r p _ hop => absurd hop (not_mem_pred [] V.onProperty (by simp) r p)
+      avf := fun r p _ hop => absurd hop (not_mem_pred [] V.onProperty (by simp) r p)
       hv := fun r p _ hop => absurd hop (not_mem_pred [] V.onProperty (by simp) r p) }
   facts := by intro t ht; simp at ht
   int := by intro c l _ hc; exact absurd hc (not_mem_pred [] V.intersectionOf (by simp) c l)
@@ -201,6 +203,8 @@ theorem svf_witness_is_a_model : Model (herbrand svfWitness) svfPremises where
       svf := fun r p c hop hsv x y hxy hy =>
         svf_closed ⟨r, V.onProperty, p⟩ hop ⟨r, V.someValuesFrom, c⟩ hsv
           ⟨x, p, y⟩ hxy ⟨y, V.type, c⟩ hy ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+      avf := fun r _ c _ hav =>
+        absurd hav (not_mem_pred svfWitness V.allValuesFrom (by decide) r c)
       hv := fun r _ v _ hhv => absurd hhv (not_mem_pred svfWitness V.hasValue (by decide) r v) }
   facts := fun t ht => List.mem_cons_of_mem _ ht
   int := by intro c l _ hc; exact absurd hc (not_mem_pred svfPremises V.intersectionOf (by decide) c l)

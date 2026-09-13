@@ -131,17 +131,22 @@ const EVERY_RULE: &str = r#"
     :a owl:sameAs :a2 .
     :E1 owl:equivalentClass :E2 . :pe1 owl:equivalentProperty :pe2 .
     :R1 a owl:Restriction ; owl:onProperty :has ; owl:someValuesFrom :F . :w :has :f . :f a :F .
+    :RA a owl:Restriction ; owl:onProperty :hasPart ; owl:allValuesFrom :Part .
+    :whole a :RA ; :hasPart :bit .
     :R2 a owl:Restriction ; owl:onProperty :col ; owl:hasValue :red .
     :K rdfs:subClassOf :R2 . :k a :K . :j :col :red .
     :I owl:intersectionOf ( :M1 :M2 ) . :i a :M1 , :M2 .
     :U owl:unionOf ( :N1 :N2 ) . :n a :N2 .
 "#;
 
-const ALL_RULES: [&str; 20] = [
+const ALL_RULES: [&str; 19] = [
     "rdfs2", "rdfs3", "rdfs5", "rdfs7", "rdfs9", "rdfs11",
     "prp-trp", "prp-symp", "prp-inv1", "prp-inv2", "eq-sym",
-    "scm-eqc1", "scm-eqc2", "scm-eqp1", "scm-eqp2",
-    "cls-svf1", "cls-hv1", "cls-hv2", "cls-int1", "cls-uni",
+    // scm-eqc1 and scm-eqp1 each license two conclusions, so they appear twice
+    // in a certificate under one id. The second used to be emitted as
+    // "scm-eqc2" / "scm-eqp2", which name different W3C rules.
+    "scm-eqc1", "scm-eqp1",
+    "cls-svf1", "cls-avf", "cls-hv1", "cls-hv2", "cls-int1", "cls-uni",
 ];
 
 #[test]

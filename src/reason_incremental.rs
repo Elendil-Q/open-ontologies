@@ -35,7 +35,6 @@ const OWL_SYMMETRIC: &str = "<http://www.w3.org/2002/07/owl#SymmetricProperty>";
 const OWL_FUNCTIONAL: &str = "<http://www.w3.org/2002/07/owl#FunctionalProperty>";
 const OWL_INVERSE_FUNCTIONAL: &str = "<http://www.w3.org/2002/07/owl#InverseFunctionalProperty>";
 const OWL_INVERSE: &str = "<http://www.w3.org/2002/07/owl#inverseOf>";
-const OWL_SAMEAS: &str = "<http://www.w3.org/2002/07/owl#sameAs>";
 
 /// Classes whose assertion `p rdf:type <class>` gives an EXISTING property a new
 /// characteristic, changing what the store already entails over that property's
@@ -327,25 +326,21 @@ impl IncrementalReasoner {
                             emit((near, p.clone(), o.clone()), &mut next);
                         }
                     }
-                    if p == OWL_SAMEAS && o.starts_with('<') {
-                        // The subject's existing triples are a question about the
-                        // whole store, so read every graph, not the default alone.
-                        let q = format!("SELECT ?p ?v WHERE {{ {s} ?p ?v }} LIMIT 10000");
-                        if let Ok(raw) = graph.sparql_select_union(&q)
-                            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw)
-                        {
-                            {
-                                for row in v.get("results").and_then(|r| r.as_array()).into_iter().flatten() {
-                                    if let (Some(pp), Some(vv)) = (
-                                        row.get("p").and_then(|x| x.as_str()),
-                                        row.get("v").and_then(|x| x.as_str()),
-                                    ) {
-                                        emit((o.clone(), pp.to_string(), vv.to_string()), &mut next);
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    // eq-rep-s (owl:sameAs subject replacement) used to run
+                    // HERE and nowhere else. The full reasoner in reason.rs does
+                    // not implement it, so loading one graph incrementally and
+                    // loading it whole produced two different closures, and the
+                    // incremental one emitted no rule ids and therefore no
+                    // certificate: its extra triples were materialised outside
+                    // the Lean guarantee entirely.
+                    //
+                    // Removed rather than promoted. eq-rep-* is quadratic in the
+                    // size of a sameAs clique, and owl:sameAs occurs exactly once
+                    // in this repository's whole corpus, so the rule bought
+                    // nothing and cost a divergence between two reasoning paths.
+                    // If entity resolution is wanted it belongs in an explicit
+                    // canonicalisation pass with its own contract, not in a
+                    // forward chainer that only one of two entry points runs.
                 }
             }
             frontier = next;

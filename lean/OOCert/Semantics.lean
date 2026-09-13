@@ -99,6 +99,10 @@ structure Conditions (I : Interp) : Prop where
   direction is assumed; the converse is not needed by any rule. -/
   svf : ∀ r p c, I.iext (I.ι V.onProperty) r p → I.iext (I.ι V.someValuesFrom) r c →
     ∀ x y, I.iext p x y → I.cext c y → I.cext r x
+  /-- cls-avf. Everything an `x` in the restriction reaches by `p` is in the
+  filler. The mirror of `svf`, and like it only the direction the rule uses. -/
+  avf : ∀ r p c, I.iext (I.ι V.onProperty) r p → I.iext (I.ι V.allValuesFrom) r c →
+    ∀ x y, I.cext r x → I.iext p x y → I.cext c y
   /-- cls-hv1 needs the forward direction, cls-hv2 the backward one. -/
   hv : ∀ r p v, I.iext (I.ι V.onProperty) r p → I.iext (I.ι V.hasValue) r v →
     ∀ x, (I.cext r x ↔ I.iext p x v)

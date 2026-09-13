@@ -267,6 +267,7 @@ impl Reasoner {
             let mut union_classes: Vec<(u32, u32, Vec<Fact>, Vec<u32>)> = Vec::new();
             let mut svf_rules: Vec<(u32, u32, u32)> = Vec::new();
             let mut hv_rules: Vec<(u32, u32, u32)> = Vec::new();
+            let mut avf_rules: Vec<(u32, u32, u32)> = Vec::new();
             if include_ext {
                 let mut restr_avf: HashMap<u32, u32> = HashMap::new();
                 for &(s, p, o) in triple_set.iter() {
@@ -275,7 +276,9 @@ impl Reasoner {
                     if p == owl_all_values { restr_avf.insert(s, o); }
                     if p == owl_has_value { restr_hv.insert(s, o); }
                 }
-                let _ = restr_avf;
+                avf_rules = restr_avf.iter()
+                    .filter_map(|(&r, &filler)| restr_prop.get(&r).map(|&prop| (prop, filler, r)))
+                    .collect();
                 svf_rules = restr_svf.iter()
                     .filter_map(|(&r, &filler)| restr_prop.get(&r).map(|&prop| (prop, filler, r)))
                     .collect();
@@ -502,15 +505,24 @@ impl Reasoner {
                 }
 
                 // scm-eqc1, scm-eqc2: equivalentClass → bidirectional subClassOf
+                // Both conclusions are W3C scm-eqc1, which licenses two of them
+                // from one premise. The second used to be emitted as "scm-eqc2",
+                // which is a DIFFERENT W3C rule: it concludes owl:equivalentClass
+                // from two subClassOf triples, the opposite direction. An auditor
+                // reading that id and looking it up found the wrong rule, which
+                // is precisely what the cls-hv1 comment below forbids. Emitting
+                // both steps under the rule that licenses them also frees the
+                // name for the real scm-eqc2 when it is implemented.
                 for &(a, b) in &equiv_class {
                     emit((a, rdfs_subclass, b), "scm-eqc1", &[(a, owl_equiv_class, b)]);
-                    emit((b, rdfs_subclass, a), "scm-eqc2", &[(a, owl_equiv_class, b)]);
+                    emit((b, rdfs_subclass, a), "scm-eqc1", &[(a, owl_equiv_class, b)]);
                 }
 
                 // scm-eqp1, scm-eqp2: equivalentProperty → bidirectional subPropertyOf
+                // Same for scm-eqp1 and the name scm-eqp2.
                 for &(a, b) in &equiv_prop {
                     emit((a, rdfs_subprop, b), "scm-eqp1", &[(a, owl_equiv_prop, b)]);
-                    emit((b, rdfs_subprop, a), "scm-eqp2", &[(a, owl_equiv_prop, b)]);
+                    emit((b, rdfs_subprop, a), "scm-eqp1", &[(a, owl_equiv_prop, b)]);
                 }
             }
 
@@ -553,6 +565,34 @@ impl Reasoner {
                                 (restr, owl_some_values, filler),
                                 (x, prop, y),
                                 (y, rdf_type, filler),
+                            ]);
+                        }
+                    }
+                }
+
+                // cls-avf: x type restriction(P, allValuesFrom c), x P y
+                //          → y type c
+                //
+                // The restriction was parsed and the parse was thrown away, so
+                // 123 owl:allValuesFrom axioms across six shipped files licensed
+                // nothing. It is the cheapest missing rule in the OWL 2 RL
+                // profile on both axes: the Rust is the cls-svf1 loop with the
+                // premises the other way round, and the semantic condition is
+                // the mirror of `svf`.
+                for &(prop, filler, restr) in &avf_rules {
+                    let in_restr: HashSet<u32> = type_idx.iter()
+                        .filter(|&&(_, cls)| cls == restr)
+                        .map(|&(inst, _)| inst).collect();
+                    if in_restr.is_empty() {
+                        continue;
+                    }
+                    for &(x, p, y) in triple_set.iter() {
+                        if p == prop && in_restr.contains(&x) {
+                            emit((y, rdf_type, filler), "cls-avf", &[
+                                (restr, owl_on_property, prop),
+                                (restr, owl_all_values, filler),
+                                (x, rdf_type, restr),
+                                (x, prop, y),
                             ]);
                         }
                     }

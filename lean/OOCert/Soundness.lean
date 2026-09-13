@@ -184,27 +184,19 @@ theorem checkStep_sound {inG derived : Triple → Bool} {st : Step}
   case scmEqc1 =>
     rcases premises with _ | ⟨⟨a, e, b⟩, _ | _⟩ <;>
       simp only [decide_eq_true_eq, Bool.false_eq_true] at h
-    obtain ⟨rfl, h1, rfl⟩ := h
+    obtain ⟨rfl, h1, hc⟩ := h
     intro I M
-    exact (M.conds.eqc _ _ (hk _ h1 I M)).1
-  case scmEqc2 =>
-    rcases premises with _ | ⟨⟨a, e, b⟩, _ | _⟩ <;>
-      simp only [decide_eq_true_eq, Bool.false_eq_true] at h
-    obtain ⟨rfl, h1, rfl⟩ := h
-    intro I M
-    exact (M.conds.eqc _ _ (hk _ h1 I M)).2
+    rcases hc with rfl | rfl
+    · exact (M.conds.eqc _ _ (hk _ h1 I M)).1
+    · exact (M.conds.eqc _ _ (hk _ h1 I M)).2
   case scmEqp1 =>
     rcases premises with _ | ⟨⟨a, e, b⟩, _ | _⟩ <;>
       simp only [decide_eq_true_eq, Bool.false_eq_true] at h
-    obtain ⟨rfl, h1, rfl⟩ := h
+    obtain ⟨rfl, h1, hc⟩ := h
     intro I M
-    exact (M.conds.eqp _ _ (hk _ h1 I M)).1
-  case scmEqp2 =>
-    rcases premises with _ | ⟨⟨a, e, b⟩, _ | _⟩ <;>
-      simp only [decide_eq_true_eq, Bool.false_eq_true] at h
-    obtain ⟨rfl, h1, rfl⟩ := h
-    intro I M
-    exact (M.conds.eqp _ _ (hk _ h1 I M)).2
+    rcases hc with rfl | rfl
+    · exact (M.conds.eqp _ _ (hk _ h1 I M)).1
+    · exact (M.conds.eqp _ _ (hk _ h1 I M)).2
   case clsSvf1 =>
     rcases premises with
       _ | ⟨⟨r, op, p⟩, _ | ⟨⟨r', sv, c⟩, _ | ⟨⟨x, p1, y⟩, _ | ⟨⟨y', t, c'⟩, _ | _⟩⟩⟩⟩ <;>
@@ -212,6 +204,13 @@ theorem checkStep_sound {inG derived : Triple → Bool} {st : Step}
     obtain ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, h1, h2, h3, h4, rfl⟩ := h
     intro I M
     exact M.conds.svf _ _ _ (hk _ h1 I M) (hk _ h2 I M) _ _ (hk _ h3 I M) (hk _ h4 I M)
+  case clsAvf =>
+    rcases premises with
+      _ | ⟨⟨r, op, p⟩, _ | ⟨⟨r', av, c⟩, _ | ⟨⟨x, t, r''⟩, _ | ⟨⟨x', p1, y⟩, _ | _⟩⟩⟩⟩ <;>
+      simp only [decide_eq_true_eq, Bool.false_eq_true] at h
+    obtain ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, h1, h2, h3, h4, rfl⟩ := h
+    intro I M
+    exact M.conds.avf _ _ _ (hk _ h1 I M) (hk _ h2 I M) _ _ (hk _ h3 I M) (hk _ h4 I M)
   case clsHv1 =>
     rcases premises with
       _ | ⟨⟨r, op, p⟩, _ | ⟨⟨r', hv, v⟩, _ | ⟨⟨x, t, r''⟩, _ | _⟩⟩⟩ <;>
