@@ -82,6 +82,24 @@ Semantics read through triples.
 The axioms the theorem depends on are pinned in the source by `#guard_msgs`:
 `propext`, `Classical.choice`, `Quot.sound`. A `sorry`, or a `native_decide`, fails `lake build`.
 
+## Why the theorem is not vacuous
+
+A soundness theorem about an unsatisfiable semantics proves nothing: if no interpretation met the
+conditions, every triple would be entailed and the checker could accept anything. `lean/OOCert/Witness.lean`
+closes that by construction, and its own axiom lists are pinned the same way.
+
+| theorem | says |
+|---|---|
+| `saturated_is_a_model` | every graph has a model, so the conditions are satisfiable and no graph is inconsistent here |
+| `not_everything_is_entailed` | some triple is not entailed, so `Entails` is not the trivial relation |
+| `the_old_svf_derivation_is_not_entailed` | `C ⊑ ∃p.D` with `x p y` and `y ∈ D` does **not** entail `x ∈ C` |
+| `the_sound_half_survives` | the same premises **do** entail `x ∈ ∃p.D`, so the fix did not overshoot |
+
+The third is the one worth reading. It is a machine-checked refutation of the derivation this engine
+used to make: a model of the premises in which `x` is not a `C`. So the removed rule was unsound in
+fact, not merely unjustified by the rule set the checker implements. The witness is the Herbrand
+interpretation of the premises plus the single consequence the semantics does force.
+
 ## What is not proved
 
 - Completeness. The checker rejects anything it cannot re-derive by pattern, including valid

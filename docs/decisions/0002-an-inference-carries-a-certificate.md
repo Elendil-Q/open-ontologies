@@ -42,12 +42,18 @@ on the engine's author having thought of the bug.
    interpretations, so soundness here implies soundness under the OWL 2 RDF-Based Semantics and
    under the Direct Semantics read through triples. Where the W3C reads a list off the graph, so
    does `Model`, through `Chain`.
-5. **Core Lean only.** No Mathlib. `Std.HashSet` for membership, with its own lemmas bridging to
+5. **The theorem is shown non-vacuous in the same directory.** A soundness result about an
+   unsatisfiable semantics proves nothing, so `lean/OOCert/Witness.lean` exhibits a model of an
+   arbitrary graph, exhibits a triple that is not entailed, and proves that the derivation
+   `cls-svf1` used to make is refuted by a model of its own premises while the half the reasoner
+   still makes is entailed. That last pair turns "we removed a rule we could not justify" into "we
+   removed a rule that was unsound", machine-checked.
+6. **Core Lean only.** No Mathlib. `Std.HashSet` for membership, with its own lemmas bridging to
    list membership in the proof. The trust surface is the Lean kernel plus `lean/`.
-6. **The gate is proved able to fail.** The test suite appends a forged conclusion, a premise
+7. **The gate is proved able to fail.** The test suite appends a forged conclusion, a premise
    outside the graph, and the exact line the old `cls-svf1` emitted, and requires each to be
    rejected. A gate that cannot fail is decoration.
-7. **The reasoner derives less from malformed lists.** `owl:intersectionOf` and `owl:unionOf`
+8. **The reasoner derives less from malformed lists.** `owl:intersectionOf` and `owl:unionOf`
    lists are read only when every node carries `rdf:first` and `rdf:rest` and the chain reaches
    `rdf:nil`. The old lenient walk fired the class rules on whatever it recovered; the checker has
    no rule for a list it cannot walk, so neither does the reasoner. Deriving less from malformed
