@@ -1009,6 +1009,28 @@ was in the engine: `cls-svf1` derived the converse of a subclass axiom. Details
 in [docs/lean-certificates.md](docs/lean-certificates.md) and
 [decision 0002](docs/decisions/0002-an-inference-carries-a-certificate.md).
 
+### Certified satisfiability, and the asymmetry it rests on
+
+A theorem prover's refutation cannot be replayed in core Lean, so
+[decision 0005](docs/decisions/0005-a-prover-is-an-oracle-and-a-translation-is-a-theorem.md)
+rules its verdict an oracle opinion. A MODEL is the opposite: a finite object,
+decidable to check. `fol-model` (also `onto_fol_model`) exports the ontology as
+SMT-LIB 2 or LADR, runs Z3 or Mace4, reads the structure back and hands it to a
+checker whose soundness is a theorem — `Fol.satisfiable_of_check` — so one
+direction of the SAT/SMT family is CERTIFIED while the other stays an oracle,
+and the two never share a word. With a goal, a checked countermodel is a
+machine-checked NON-ENTAILMENT, the one sentence no prover can produce.
+
+The verdict says what it rests on. `model_checked` requires the checker to have
+accepted; an exhausted BOUNDED search is `no_model_up_to_size_k` and is not
+unsatisfiability; `unsatisfiable_oracle` can only come from a run with no
+cardinality constraint, and can never be more than an opinion. A solver that
+answers `sat` whose model the checker rejects is a stop-the-line disagreement
+that fails the command. Running it over this repository's own case studies
+found an export that was silently weaker than the graph. Details in
+[docs/lean-certificates.md](docs/lean-certificates.md) and
+[decision 0006](docs/decisions/0006-a-model-is-a-certificate-and-a-refutation-is-not.md).
+
 ### Studio
 
 ```mermaid
@@ -1094,6 +1116,7 @@ flowchart TD
 | Schema Alignment | [docs/alignment.md](docs/alignment.md) |
 | SHIQ Reasoning | [docs/reasoning.md](docs/reasoning.md) |
 | Derivation certificates, Lean checker | [docs/lean-certificates.md](docs/lean-certificates.md) |
+| First-order export, and model certificates | [docs/first-order-export.md](docs/first-order-export.md) |
 | Semantic Embeddings | [docs/embeddings.md](docs/embeddings.md) |
 | Clinical Crosswalks | [docs/clinical.md](docs/clinical.md) |
 | IES Ecosystem | [docs/ies-ecosystem.md](docs/ies-ecosystem.md) |

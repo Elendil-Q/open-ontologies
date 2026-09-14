@@ -317,6 +317,40 @@ pub struct OntoFolExportInput {
     /// lose the entire content of such a file, BFO's own included. Ignored
     /// for `tptp`.
     pub clif_comments: Option<String>,
+    /// Carrier size, when `format` is `smtlib`. Omit for the UNBOUNDED
+    /// encoding (`declare-sort U 0`), where a solver's `unsat` really is
+    /// unsatisfiability and a `sat` carries no size bound. Set to `k` for the
+    /// FINITE encoding (`U` as an enumeration datatype of exactly k elements),
+    /// where a `sat` comes with a structure `oo-folmodel` can check and an
+    /// `unsat` establishes ONLY that no model of size k exists, which is not
+    /// unsatisfiability. Ignored for every other format; 0 is refused.
+    pub smt_domain: Option<u32>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct OntoFolModelInput {
+    /// Working directory. Every intermediate file lands here: the problem in
+    /// the checker's format, the problem in the solver's, the solver's raw
+    /// output, the model in the checker's format, and the checker's own JSON.
+    pub out_dir: String,
+    /// `z3` (default; SMT-LIB, and the only finder that can be asked the
+    /// UNBOUNDED question, hence the only route to `unsatisfiable_oracle`) or
+    /// `mace4` (LADR, a dedicated finite model finder whose minimum carrier
+    /// is 2, measured: `mace4 -n 1` is a fatal error).
+    pub solver: Option<String>,
+    /// Largest carrier the ladder tries. Default 16.
+    pub max_domain: Option<u32>,
+    /// Seconds per solver invocation. Default 30.
+    pub timeout_secs: Option<u32>,
+    /// After a bounded ladder finds nothing, ask the UNBOUNDED question too.
+    /// Default true, and Z3 only. This is the ONLY route to
+    /// `unsatisfiable_oracle`.
+    pub unbounded_probe: Option<bool>,
+    /// A TSV of triples to ask as conjectures, one run per line; the shape
+    /// `onto_reason` writes with `certificate_dir`.
+    pub goals_file: Option<String>,
+    /// Leading tab-separated columns to skip before the subject. Default 0.
+    pub goals_skip_columns: Option<usize>,
 }
 
 #[derive(Deserialize, JsonSchema)]

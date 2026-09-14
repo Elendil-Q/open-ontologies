@@ -1,0 +1,17 @@
+domain	2
+problem	4403d8aaa0c422f7
+source	z3
+decl1	thing
+decl1	lit
+decl1	c:Person
+decl1	c:Company
+decl2	op:worksFor
+declc	i:a
+p1	thing	11
+p1	lit	00
+p1	c:Person	10
+p1	c:Company	01
+p2	op:worksFor	0	00
+p2	op:worksFor	1	00
+const	i:a	0
+cardinality_search	1,2

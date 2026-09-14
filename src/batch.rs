@@ -64,13 +64,27 @@ impl BatchRunner {
         for (seq, cmd) in commands.iter().enumerate() {
             let result = self.execute(cmd).await;
             let has_error = result.get("error").is_some();
+            // A STOP-THE-LINE disagreement is not an `error`: the command ran
+            // and answered. It must still fail the run, because it means a
+            // verified checker and the thing it was checking disagree, and a
+            // pipeline that treated that as a normal result would be a
+            // pipeline in which the check never has to pass. This is the same
+            // rule `tools/shacl_differential.py` applies to a FALSE_CLEAN,
+            // which exits 1 while every other verdict exits 0. Keyed on the
+            // field rather than on the command name so that a later command
+            // reporting the same thing inherits it. See decision 0006.
+            let stopped = result
+                .get("stop_the_line")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                > 0;
             on_result(&json!({
                 "seq": seq,
                 "command": cmd.name,
                 "result": result,
             }));
 
-            if has_error {
+            if has_error || stopped {
                 exit_code = 1;
                 if bail {
                     break;
@@ -99,6 +113,7 @@ impl BatchRunner {
             "lint" => self.exec_lint(&cmd.args),
             "reason" => self.exec_reason(&cmd.args),
             "fol" => self.exec_fol(&cmd.args),
+            "fol-model" | "fol_model" => self.exec_fol_model(&cmd.args),
             "shacl" => self.exec_shacl(&cmd.args),
             // The CLI subcommand is spelled with a hyphen and this arm accepted
             // only the underscore, so every documented invocation was rejected
@@ -285,8 +300,13 @@ impl BatchRunner {
         let format = Self::flag_value(args, "--format").unwrap_or("tptp".to_string());
         let dialect = Self::flag_value(args, "--clif-dialect");
         let comments = Self::flag_value(args, "--clif-comments");
-        let syntax =
-            match crate::tptp::Syntax::parse(&format, dialect.as_deref(), comments.as_deref()) {
+        let domain = Self::flag_value(args, "--smt-domain").and_then(|v| v.parse::<u32>().ok());
+        let syntax = match crate::tptp::Syntax::parse(
+            &format,
+            dialect.as_deref(),
+            comments.as_deref(),
+            domain,
+        ) {
             Ok(s) => s,
             Err(e) => return json!({"error": e.to_string()}),
         };
@@ -298,6 +318,47 @@ impl BatchRunner {
             &self.graph,
             std::path::Path::new(&out),
             syntax,
+            goals.as_deref().map(std::path::Path::new),
+            skip,
+        )
+        .unwrap_or_else(|e| json!({"error": e.to_string()}).to_string());
+        serde_json::from_str(&result).unwrap_or(json!({"raw": result}))
+    }
+
+    /// The certifying pipeline. In-process for the same reason `fol` is: the
+    /// store is per process, so loading and solving have to happen in one run.
+    fn exec_fol_model(&self, args: &[String]) -> Value {
+        use crate::fol_solve::{SolveOptions, Solver, solve_export};
+        let Some(out) = Self::flag_value(args, "--out") else {
+            return json!({"error": "fol-model requires --out DIR"});
+        };
+        let solver = match Solver::parse(
+            &Self::flag_value(args, "--solver").unwrap_or("z3".to_string()),
+        ) {
+            Ok(s) => s,
+            Err(e) => return json!({"error": e.to_string()}),
+        };
+        let opts = SolveOptions {
+            solver,
+            max_domain: Self::flag_value(args, "--max-domain")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(16),
+            timeout_secs: Self::flag_value(args, "--timeout-secs")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30),
+            unbounded_probe: Self::flag_value(args, "--unbounded-probe")
+                .map(|v| v != "false")
+                .unwrap_or(true),
+            checker: Self::flag_value(args, "--checker").map(std::path::PathBuf::from),
+        };
+        let goals = Self::flag_value(args, "--goals");
+        let skip: usize = Self::flag_value(args, "--goals-skip-columns")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let result = solve_export(
+            &self.graph,
+            std::path::Path::new(&out),
+            &opts,
             goals.as_deref().map(std::path::Path::new),
             skip,
         )

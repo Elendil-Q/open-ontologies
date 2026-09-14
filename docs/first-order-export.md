@@ -1,11 +1,15 @@
 # First-order export, and what an ATP verdict is worth
 
-The engine can hand an ontology to the automated-theorem-proving ecosystem, in TPTP FOF and in
-ISO/IEC 24707 CLIF. The translation it emits is the one a machine-checked adequacy theorem is
-about, so a reader of the file can cite a kernel-checked result about what it means.
+The engine can hand an ontology to the automated-theorem-proving ecosystem, in TPTP FOF, in
+ISO/IEC 24707 CLIF, in SMT-LIB 2 and in LADR. The translation it emits is the one a machine-checked
+adequacy theorem is about, so a reader of the file can cite a kernel-checked result about what it
+means.
 
 This page is the how-to. The design and its limits are in
-[decision 0005](decisions/0005-a-prover-is-an-oracle-and-a-translation-is-a-theorem.md).
+[decision 0005](decisions/0005-a-prover-is-an-oracle-and-a-translation-is-a-theorem.md) for the
+refutation direction and
+[decision 0006](decisions/0006-a-model-is-a-certificate-and-a-refutation-is-not.md) for the model
+direction.
 
 **Read this first.** A prover's answer about an exported file is an ORACLE OPINION, not a
 certificate. Decision 0002 lets this engine say an OWL-RL inference is *checked*, because `lean/`
@@ -13,6 +17,13 @@ holds a checker whose soundness is a theorem. A superposition refutation cannot 
 way: it needs a verified first-order calculus with unification, which does not exist in core Lean.
 When E says `SZS status Theorem`, that carries exactly the weight of pyshacl agreeing with the
 SHACL validator, and nothing here calls it a proof.
+
+**And read the asymmetry second.** A MODEL is the exact opposite of a refutation. It is a finite
+object, checking a formula against it is decidable, and `lean/Fol/` holds a verified evaluator for
+that, so the SATISFIABILITY direction CAN be certified. `fol --format smtlib` and
+`fol --format ladr` write the files a model finder reads, and `fol-model` drives the whole loop and
+hands the structure to the checker. See
+[lean-certificates.md](lean-certificates.md#first-order-model-certificates-oo-folmodel).
 
 ## Export
 
@@ -24,10 +35,31 @@ printf 'load ontology.ttl\nfol --out /tmp/fol --format tptp\n' \
 # ISO/IEC 24707 CLIF. `iso` (default) writes cl:text; `colore` writes cl-text.
 printf 'load ontology.ttl\nfol --out /tmp/fol --format clif --clif-dialect iso\n' \
   | open-ontologies --no-connect --data-dir /tmp/store batch -
+
+# SMT-LIB 2, for Z3. Omit --smt-domain for the UNBOUNDED encoding, where `unsat`
+# really is unsatisfiability; give it k for an enumeration carrier of exactly k
+# elements, where a `sat` comes with a structure the verified checker can check.
+printf 'load ontology.ttl\nfol --out /tmp/fol --format smtlib --smt-domain 4\n' \
+  | open-ontologies --no-connect --data-dir /tmp/store batch -
+
+# LADR, for Mace4. Every symbol is MANGLED; the table lands in symbols.tsv.
+printf 'load ontology.ttl\nfol --out /tmp/fol --format ladr\n' \
+  | open-ontologies --no-connect --data-dir /tmp/store batch -
 ```
 
-Over MCP, `onto_fol_export` takes `out_dir`, `format`, `clif_dialect`, `goals_file` and
-`goals_skip_columns`.
+Over MCP, `onto_fol_export` takes `out_dir`, `format`, `smt_domain`, `clif_dialect`, `goals_file`
+and `goals_skip_columns`.
+
+Every run also writes `problem.tsv`, the format `oo-folmodel` reads, with its digest in the report.
+A solver result can therefore be handed to the verified checker without going back through the
+engine; `onto_fol_model` / `fol-model` does all of it in one call.
+
+**The two model-finding formats assert the NEGATED goal.** TPTP and CLIF carry a conjecture and the
+consumer negates it internally. A countermodel to `Γ ⊨ φ` is a model of `Γ ∪ {¬φ}`, so the SMT-LIB
+and LADR files carry `¬φ` as an assertion and nothing downstream negates again. A `sat` answer on
+one of those files therefore says the conjecture is NOT entailed. The negation happens once, in
+`FolProblem::checker_entries`, and `problem.tsv` is a fold over the same list, which is the
+mechanical reason the solver cannot be asked a different question from the one the checker checks.
 
 `ontology.p` (or `ontology.clif`) lands in the directory. With `--goals FILE`, where FILE is a TSV
 whose first three columns are a triple, one problem per goal lands under `goals/` with a
@@ -178,6 +210,16 @@ In the output, not in a comment. The report carries `exports_a_weaker_axiom_set`
   "annotations_ignored": {"count": 206, "why": "an annotation carries no Direct Semantics content"}
 }
 ```
+
+An ASSERTION whose subject is declared a class or a property is also outside the fragment and is
+counted as `assertion on a punned entity`. OWL 2 DL allows one IRI to be a class and an individual
+at once; `OwlLean/Syntax.lean` does not, because `Sig` gives each entity kind its own type. The
+subsumptions, domains and ranges on the same subject ARE exported, which is why this used to be
+invisible: the file looks complete. It was found by running the model-certificate pipeline over
+`case-studies/blast-furnace-ironmaking/`, where five of the nine triples the OWL-RL reasoner
+derives came back with a machine-checked countermodel, because `bf:Hanging` is an `owl:Class` that
+also carries `bf:hasSeverity bf:HighSeverity` and `rdfs2` is what the reasoner used. The export was
+genuinely weaker than the graph and the report said `exports_a_weaker_axiom_set: false`.
 
 Outside the fragment: `owl:hasKey`, datatype facets (`owl:withRestrictions`, `owl:onDatatype`),
 `owl:datatypeComplementOf`, `owl:NegativePropertyAssertion`, data cardinality restrictions,

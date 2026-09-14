@@ -86,6 +86,8 @@ pub mod tableaux;
 pub mod toolfilter;
 /// First-order export (TPTP FOF and ISO/IEC 24707 CLIF) over the translation
 /// owl-lean's machine-checked adequacy theorem is about.
+pub mod fol_model;
+pub mod fol_solve;
 pub mod tptp;
 #[cfg(feature = "turbovec")]
 pub mod turbo_index;
