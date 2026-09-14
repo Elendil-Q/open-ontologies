@@ -20,9 +20,12 @@
 //!   3. The negative answers carry NOTHING, and the emitter says so rather than
 //!      inventing a certificate. An unsatisfiable class produces `Refuted` and
 //!      writes no file.
-//!   4. The emitter refuses instead of emitting something that will not check.
-//!      One case where it refuses is not a limitation of the certificate layer
-//!      but a defect in the reasoner, and that case is pinned here.
+//!   4. The emitter writes nothing instead of emitting something that will not
+//!      check. The case pinned here was found by this layer as a defect in the
+//!      reasoner rather than in the certificate layer: an asserted edge skipped
+//!      its `rdfs:range`, so the reasoner called an inconsistent ABox consistent
+//!      and the emitter caught the discrepancy on the way out. The reasoner has
+//!      since been fixed and the test now pins the repair.
 //!
 //! The checker needs a Lean toolchain (`lake`) AND the `oo-dlmodel` target in
 //! `lean/lakefile.toml`. Without either these tests skip loudly through
@@ -415,30 +418,39 @@ fn an_unsatisfiable_class_gets_no_certificate() {
     );
 }
 
-// ── 4. The emitter refuses rather than emitting something that will not check ──
+// ── 4. The emitter writes nothing rather than something that will not check ──
 
-/// The first thing this layer caught, pinned.
+/// The first thing this layer caught, and now the regression for its repair.
 ///
-/// `check_abox` inserts an asserted role assertion straight into the edge map
-/// rather than through `create_successor`, and `create_successor` is the ONLY
-/// place `rdfs:domain` and `rdfs:range` are applied. So on an asserted edge
-/// neither constraint ever reaches the individuals.
+/// THIS TEST USED TO ENCODE THE BUG. `build_abox_tableau` wrote an asserted role
+/// assertion straight into the edge map, and `create_successor` was the ONLY
+/// place `rdfs:domain` and `rdfs:range` were consulted, so on an asserted edge
+/// neither constraint ever reached the individuals. The assertion below read
+/// `abox.consistent && !abox.undecided` and said in its own message that the
+/// answer was wrong and that the test should be rewritten once the reasoner was
+/// fixed. It has been: both edge-creating paths now go through
+/// `Tableau::add_role_edge`, which applies domain and range wherever the edge
+/// came from. The assertion is now on the CORRECT behaviour.
 ///
 /// The ontology below is inconsistent and it takes three axioms to see why:
 /// `worksFor` has range `Company`, `alice worksFor carol` forces carol into
 /// `Company`, carol is asserted a `Person`, and `Person` and `Company` are
-/// disjoint. `check_abox` reports it CONSISTENT, and reports `undecided: false`,
-/// so the claim is not hedged. That is a wrong positive answer, which is the
-/// direction that matters: an ontology with a contradiction in it passes.
+/// disjoint. `check_abox` must report it INCONSISTENT, and must report
+/// `undecided: false`, because it really did find the clash rather than run out
+/// of budget. A false `consistent` here is the failure that matters: an ontology
+/// with a contradiction in it passing.
 ///
-/// The certificate layer cannot fix that and does not try. What it does is
-/// refuse to certify: the completion graph is not a model of the range axiom, so
-/// no file is written and the refusal names the axiom. The assertion below is on
-/// the CURRENT behaviour of both. When the reasoner is fixed, `abox_consistent`
-/// becomes false and this test has to be rewritten, which is the correct moment
-/// to notice.
+/// The certificate layer's half of this test is unchanged in meaning and only in
+/// verdict. It never certifies something that will not check, and an ABox with no
+/// model has nothing to certify, so it writes no file. What changed is which
+/// negative it returns: it used to hand back `Refused`, because the reasoner
+/// claimed a completion graph that was not in fact a model of the range axiom and
+/// the emitter caught the discrepancy on the way out. Now the reasoner finds the
+/// clash itself, so the emitter gets no completion graph at all and returns
+/// `Refuted`, the same answer it gives for any unsatisfiable input. Either way
+/// the gate holds: nothing is written.
 #[test]
-fn an_asserted_edge_skips_its_range_and_the_emitter_refuses_to_certify() {
+fn an_asserted_edge_applies_its_range_and_the_emitter_certifies_nothing() {
     let dir = scratch("range-gap");
     let reasoner = reasoner_for(&format!(
         r#"{PREFIXES}
@@ -452,28 +464,30 @@ fn an_asserted_edge_skips_its_range_and_the_emitter_refuses_to_certify() {
         "#
     ));
 
-    // The reasoner's own answer, and it is wrong.
+    // The reasoner's own answer, and it is now right.
     let abox = reasoner.check_abox();
     assert!(
-        abox.consistent && !abox.undecided,
-        "this test exists because the reasoner reports this inconsistent ABox as consistent; \
-         if that has been fixed, rewrite the test rather than deleting it"
+        !abox.consistent,
+        "the asserted edge forces carol into Company, which is disjoint from the \
+         Person she is asserted to be; reporting this ABox consistent is a false clean"
+    );
+    assert!(
+        !abox.undecided,
+        "the clash is reachable well inside the budget, so this must be a proof \
+         and not a hedge"
     );
 
     let outcome = reasoner.certify_abox_consistent(&dir).unwrap();
     match &outcome {
-        ModelOutcome::Refused(why) => assert!(
-            why.contains("range"),
-            "the refusal should name the axiom that fails: {why}"
-        ),
+        ModelOutcome::Refuted => {}
         other => panic!(
-            "expected a refusal because the asserted edge never had its range applied, got {}",
+            "an ABox with no model must be refuted and carry no certificate, got {}",
             other.describe()
         ),
     }
     assert!(
-        !dir.join("axioms.tsv").exists(),
-        "a refusal must write nothing"
+        !dir.join("axioms.tsv").exists() && !dir.join("model.tsv").exists(),
+        "a negative answer must write nothing"
     );
 }
 
