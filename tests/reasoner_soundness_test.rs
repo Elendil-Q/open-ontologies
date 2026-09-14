@@ -206,34 +206,57 @@ const RS_PREFIXES: &str = "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
     ex:D a owl:Class . ex:E a owl:Class . ex:D owl:disjointWith ex:E .\n\
     ex:r a owl:ObjectProperty . ex:s a owl:ObjectProperty ; owl:inverseOf ex:r .\n";
 
-/// Read the consistency verdict, refusing to accept one the reasoner never
-/// proved.
+/// Read the ABox verdict, refusing to accept one the reasoner never proved.
 ///
 /// `consistent` starts true and is falsified by finding a clash, so an
-/// unfinished run reports `consistent: true` with `complete: false`. Reading
-/// the first field and ignoring the second treats "I ran out of budget" as
-/// "I proved it", which is the exact confusion `incomplete_runs_are_declared_in_the_output`
-/// exists to prevent, and it made these two tests fail intermittently on a
-/// loaded machine with a message accusing the reasoner of unsoundness. The
-/// engine was right; the reading was wrong. Fail on the unfinished run and say
-/// what actually happened.
-fn is_consistent(body: &str) -> bool {
-    let result = classify(&format!("{RS_PREFIXES}{body}"));
-    assert_ne!(
-        result.get("complete").and_then(|v| v.as_bool()),
-        Some(false),
-        "the reasoner hit a budget before finishing, so this run proves nothing          either way. Raise [reasoner] tableaux_max_nodes / tableaux_max_depth, or          give the run more time, rather than reading an unfinished run as a          verdict. Full result: {result}"
+/// unfinished run reports `consistent: true` with `undecided: true`. Reading the
+/// first field and ignoring the second treats "I ran out of budget" as "I proved
+/// it", which is the exact confusion `incomplete_runs_are_declared_in_the_output`
+/// exists to prevent, and it made these tests fail intermittently on a loaded
+/// machine with a message accusing the reasoner of unsoundness. The engine was
+/// right; the reading was wrong. Fail on the unfinished run and say what
+/// actually happened.
+///
+/// This asks `check_abox` directly rather than going through `DlReasoner::run`,
+/// and that is not a shortcut, it is what these tests are about. `run` also
+/// classifies every class and every ordered pair of classes across a rayon pool
+/// sized to the machine, and none of these tests reads the classification. The
+/// cost was not just wasted: every tableau in a run shares ONE wall-clock
+/// deadline fixed when the reasoner is built, `cargo test` runs this file's
+/// tests concurrently, and each opens a pool of its own, so on a machine with
+/// fewer cores than that product the subsumption sweep starved, burned the whole
+/// deadline on six trivial pairs, and the ABox check that runs after it reported
+/// `undecided` on an ontology it decides in under a millisecond. The three tests
+/// below failed about half the time on `fol-export` for that reason alone, with
+/// no defect in the reasoner. Asking the ABox question directly removes the
+/// dependency on a sweep nobody reads. The headline `consistent` flag, which
+/// must carry an ABox contradiction rather than report around it, is covered by
+/// `tests/tableaux_test.rs::test_dl_asserted_edge_applies_its_domain`, which
+/// keeps the whole pipeline in the loop and lives in a binary that does not
+/// deliberately exhaust budgets.
+fn abox_is_consistent(body: &str) -> bool {
+    let ttl = format!("{RS_PREFIXES}{body}");
+    let store = Arc::new(GraphStore::new());
+    store.load_turtle(&ttl, None).expect("ontology must parse");
+    let reasoner = DlReasoner::from_graph(&store).expect("reasoner must build");
+    let abox = reasoner.check_abox();
+    assert!(
+        !abox.undecided,
+        "the ABox check hit a budget before finishing, so this run proves nothing \
+         either way. Raise [reasoner] tableaux_max_nodes / tableaux_max_depth, or \
+         give the run more time, rather than reading an unfinished run as a verdict."
     );
-    result
-        .get("consistent")
-        .and_then(|v| v.as_bool())
-        .expect("consistent must be present")
+    assert!(
+        abox.individuals_checked > 0,
+        "no individual was checked, so this test would pass on an empty ABox"
+    );
+    abox.consistent
 }
 
 #[test]
 fn direct_role_clash_is_detected_control() {
     // B forces its r-fillers to be D; b is E; D disjoint E. a r b => clash on b.
-    let inconsistent = !is_consistent(
+    let inconsistent = !abox_is_consistent(
         "ex:B a owl:Class ; rdfs:subClassOf [ a owl:Restriction ; owl:onProperty ex:r ; owl:allValuesFrom ex:D ] .\n\
          ex:a a ex:B ; ex:r ex:b .\n\
          ex:b a ex:E .\n",
@@ -245,7 +268,7 @@ fn direct_role_clash_is_detected_control() {
 fn inverse_role_clash_is_detected() {
     // Same clash but reachable only through the inverse role s = r-inverse.
     // b:B forces its s-fillers to be D; a r b => b s a => a:D; a also E => clash.
-    let inconsistent = !is_consistent(
+    let inconsistent = !abox_is_consistent(
         "ex:B a owl:Class ; rdfs:subClassOf [ a owl:Restriction ; owl:onProperty ex:s ; owl:allValuesFrom ex:D ] .\n\
          ex:b a ex:B .\n\
          ex:a a ex:E ; ex:unused ex:noop .\n\
@@ -258,7 +281,7 @@ fn inverse_role_clash_is_detected() {
 fn symmetric_role_clash_is_detected() {
     // A symmetric role is its own inverse. p symmetric, a p b => b p a.
     // B forces p-fillers to D; a:B and a p b => b:D; b:E; D disjoint E => clash.
-    let inconsistent = !is_consistent(
+    let inconsistent = !abox_is_consistent(
         "ex:p a owl:SymmetricProperty .\n\
          ex:B a owl:Class ; rdfs:subClassOf [ a owl:Restriction ; owl:onProperty ex:p ; owl:allValuesFrom ex:D ] .\n\
          ex:m a ex:B, ex:E ; ex:p ex:n .\n\
@@ -307,7 +330,7 @@ fn anonymous_class_type_on_individual_is_enforced() {
     // a is directly typed by the anonymous (∀r.D); a r b; b is E.
     // ∀r.D forces b:D; b is E; D disjoint E => clash. Requires the anonymous type
     // to be enforced, which it was not before the fix.
-    let inconsistent = !is_consistent(
+    let inconsistent = !abox_is_consistent(
         "ex:a a [ a owl:Restriction ; owl:onProperty ex:r ; owl:allValuesFrom ex:D ] ; ex:r ex:b .\n\
          ex:b a ex:E .\n\
          ex:a2 a ex:E .\n",
@@ -322,12 +345,158 @@ fn anonymous_class_type_on_individual_is_enforced() {
 fn anonymous_class_type_only_individual_is_still_checked() {
     // b typed ONLY by an anonymous restriction (∀r.D). No named class on b at all.
     // b r c ; c is E ; ∀r.D => c:D ; D disjoint E => clash.
-    let inconsistent = !is_consistent(
+    let inconsistent = !abox_is_consistent(
         "ex:b a [ a owl:Restriction ; owl:onProperty ex:r ; owl:allValuesFrom ex:D ] ; ex:r ex:c .\n\
          ex:c a ex:E .\n",
     );
     assert!(
         inconsistent,
         "an individual typed only by an anonymous class expression must still be checked"
+    );
+}
+
+// ── rdfs:domain and rdfs:range on an ASSERTED edge ───────────────────────────
+//
+// `create_successor` was the only place the tableau consulted `role_domain` and
+// `role_range`, and `build_abox_tableau` wrote asserted role assertions straight
+// into the edge map without going through it. A GENERATED successor therefore
+// got its domain and range and an ASSERTED edge got neither, so an ABox made
+// inconsistent by an asserted edge alone came back `consistent: true` with
+// `undecided: false`, the strongest answer this checker can give. Both paths now
+// go through `Tableau::add_role_edge`.
+
+/// The reported shape was `consistent: true` with `undecided: false`, the
+/// strongest answer this checker can give, for an ABox with a contradiction in
+/// it. That report is asserted on the whole pipeline in
+/// `tests/tableaux_test.rs::test_dl_asserted_edge_applies_its_domain`, which
+/// lives there because this file deliberately exhausts budgets and would starve
+/// it. Here the same repair is checked against `check_abox` directly.
+#[test]
+fn an_asserted_edge_applies_its_domain_to_the_subject() {
+    // domain(p) = D, a is E, D disjoint E, and a has an asserted p-edge out.
+    // The edge alone forces a into D, which clashes with E.
+    let inconsistent = !abox_is_consistent(
+        "ex:p a owl:ObjectProperty ; rdfs:domain ex:D .\n\
+         ex:a a ex:E ; ex:p ex:b .\n",
+    );
+    assert!(
+        inconsistent,
+        "an asserted edge must apply its rdfs:domain to the subject"
+    );
+}
+
+#[test]
+fn an_asserted_edge_applies_its_range_to_the_object() {
+    // range(q) = D, b is E, D disjoint E, and b is the object of an asserted
+    // q-edge. The edge alone forces b into D, which clashes with E.
+    let inconsistent = !abox_is_consistent(
+        "ex:q a owl:ObjectProperty ; rdfs:range ex:D .\n\
+         ex:a a ex:E ; ex:q ex:b .\n\
+         ex:b a ex:E .\n",
+    );
+    assert!(
+        inconsistent,
+        "an asserted edge must apply its rdfs:range to the object"
+    );
+}
+
+/// A GENERATED successor, for contrast. This path always applied domain and
+/// range, and is here so that a regression in the shared primitive cannot be
+/// mistaken for the asserted-edge case coming back.
+#[test]
+fn a_generated_successor_still_applies_its_range_control() {
+    // x is a C, C needs an r-successor in E, range(r) = D, D disjoint E. The
+    // successor the tableau invents for x cannot be both.
+    let inconsistent = !abox_is_consistent(
+        "ex:r rdfs:range ex:D .\n\
+         ex:C a owl:Class ; rdfs:subClassOf \
+             [ a owl:Restriction ; owl:onProperty ex:r ; owl:someValuesFrom ex:E ] .\n\
+         ex:x a ex:C .\n",
+    );
+    assert!(
+        inconsistent,
+        "a generated successor must apply its rdfs:range"
+    );
+}
+
+// ── The same constraints through a role's INVERSE ────────────────────────────
+//
+// `a r b` entails `b inv(r) a` in every model, so domain(inv(r)) binds b and
+// range(inv(r)) binds a. NEITHER path consulted the inverse role's domain or
+// range at all, which is the same defect one step removed: a constraint stated
+// on `s owl:inverseOf r` was invisible to every r-edge in the ontology, asserted
+// or generated. A symmetric role is its own inverse in `inverse_roles`, so it
+// rides on the same clause.
+
+#[test]
+fn a_generated_successor_applies_the_inverse_roles_domain() {
+    // x is a C, C needs an r-successor in E. s is the inverse of r and has
+    // domain D, so that successor is also a D, and D is disjoint from E.
+    let inconsistent = !abox_is_consistent(
+        "ex:s rdfs:domain ex:D .\n\
+         ex:C a owl:Class ; rdfs:subClassOf \
+             [ a owl:Restriction ; owl:onProperty ex:r ; owl:someValuesFrom ex:E ] .\n\
+         ex:x a ex:C .\n",
+    );
+    assert!(
+        inconsistent,
+        "the inverse role's rdfs:domain must bind the target of the edge"
+    );
+}
+
+#[test]
+fn an_asserted_edge_applies_the_inverse_roles_range() {
+    // s is the inverse of r and has range D, so `a r b` makes a a D. a is an E,
+    // and D is disjoint from E.
+    let inconsistent = !abox_is_consistent(
+        "ex:s rdfs:range ex:D .\n\
+         ex:a a ex:E ; ex:r ex:b .\n",
+    );
+    assert!(
+        inconsistent,
+        "the inverse role's rdfs:range must bind the source of an asserted edge"
+    );
+}
+
+// ── GCIs reach every node in the ABox tableau ────────────────────────────────
+//
+// Found in the sweep for the same shape of mistake as the domain/range split,
+// and it is the same shape: a node created outside the path that applies the
+// constraint. `build_abox_tableau` gives the GCIs to every TYPED individual and
+// `create_successor` gives them to every generated successor, but an individual
+// named only as the OBJECT of a role assertion got a bare node carrying nothing
+// but its own nominal. A GCI holds of every element of the domain, so that node
+// was a hole the check could not see into, and an ABox whose only contradiction
+// landed there was reported consistent.
+
+#[test]
+fn gcis_reach_an_individual_named_only_as_the_object_of_an_edge() {
+    // X is equivalent to owl:Thing, which is a GCI saying every element is an X,
+    // and no X is an E. B's r-fillers are all E. a is a B with an r-edge to b,
+    // so b is an E and an X at once. b has no rdf:type of its own.
+    let body = "ex:X a owl:Class ; owl:equivalentClass owl:Thing .\n\
+                ex:X owl:disjointWith ex:E .\n\
+                ex:B a owl:Class ; rdfs:subClassOf \
+                    [ a owl:Restriction ; owl:onProperty ex:r ; owl:allValuesFrom ex:E ] .\n\
+                ex:a a ex:B ; ex:r ex:b .\n";
+    assert!(
+        !abox_is_consistent(body),
+        "the GCIs must reach an individual that is only ever an edge's object"
+    );
+
+    // Control: the identical ontology with b given a type of its own, so it goes
+    // down the path that always applied the GCIs. Both must answer the same way,
+    // because whether b happens to carry an rdf:type changes nothing about
+    // whether the ontology has a model.
+    let typed = "ex:X a owl:Class ; owl:equivalentClass owl:Thing .\n\
+                 ex:X owl:disjointWith ex:E .\n\
+                 ex:Neutral a owl:Class .\n\
+                 ex:B a owl:Class ; rdfs:subClassOf \
+                     [ a owl:Restriction ; owl:onProperty ex:r ; owl:allValuesFrom ex:E ] .\n\
+                 ex:a a ex:B ; ex:r ex:b .\n\
+                 ex:b a ex:Neutral .\n";
+    assert!(
+        !abox_is_consistent(typed),
+        "the control must be inconsistent too, or the test is measuring the wrong thing"
     );
 }

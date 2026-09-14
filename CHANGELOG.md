@@ -70,6 +70,36 @@ All notable changes to Open Ontologies are documented here.
   trace. See docs/lean-certificates.md and decision 0002.
 
 ### Fixed
+- **An ASSERTED role edge skipped its `rdfs:domain` and `rdfs:range`, so an
+  inconsistent ABox was reported consistent.** Domain and range are deliberately
+  not GCIs: as `∃p.⊤ ⊑ D` and `⊤ ⊑ ∀p.R` they put a disjunction on every node,
+  and hqdm.owl alone carries 525 of them, so they are held as role metadata and
+  applied when an edge is created. Two places create an edge and only one
+  consulted that metadata. `Tableau::create_successor` applied it; the ABox
+  builder wrote asserted role assertions, and the inverse back-edges it
+  materialises for them, straight into the edge map. Every other role-sensitive
+  rule reads edges through `successors()` and so was unaffected, which is why
+  exactly these two constraints were weaker on an asserted edge than on a
+  generated one. The consequence was a false clean: an ontology whose only
+  contradiction is that an asserted edge forces its subject into a class
+  disjoint from one it already carries came back `consistent: true` with
+  `undecided: false`, the strongest answer the checker can give. Both paths now
+  go through one `Tableau::add_role_edge` primitive. It also applies the
+  constraints stated on the role's INVERSE, which NEITHER path applied before:
+  `a r b` entails `b r⁻ a`, so `r⁻`'s domain binds `b` and its range binds `a`,
+  and a symmetric role is its own inverse and rides the same clause. Found by
+  the model-certificate layer, which had been refusing to certify these
+  completion graphs because they are not models of the range axiom;
+  `tests/dl_model_certificate_test.rs` pinned the defect and now pins the
+  repair.
+- **GCIs did not reach an individual named only as the object of a role
+  assertion.** The ABox builder gives the GCIs to every typed individual and
+  `create_successor` gives them to every generated successor, but an IRI that
+  appears only as an edge's object got a bare node carrying nothing but its own
+  nominal. A GCI holds of every element of the domain, so that node was a hole
+  the check could not see into, and an ABox whose only contradiction landed
+  there was reported consistent. Same shape as the domain/range split, found in
+  the sweep for it.
 - **The CLIF export produced files that parse cleanly and yield NOTHING.**
   Every sentence was emitted as `(cl:comment '...' SENTENCE)`, the shape
   ISO/IEC 21838-2's BFO files use. Measured against both CLIF parsers that

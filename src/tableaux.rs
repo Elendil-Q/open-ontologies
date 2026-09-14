@@ -1320,25 +1320,78 @@ impl Tableau {
         result
     }
 
+    /// Add a role edge, and apply everything the edge itself entails.
+    ///
+    /// `rdfs:domain` binds the SOURCE and `rdfs:range` binds the TARGET. The
+    /// inverse edge `to inv(role) from` holds in every model in which `from role
+    /// to` does, so the inverse role's domain and range bind the same two nodes
+    /// the other way round. A symmetric role is its own inverse in
+    /// `inverse_roles`, so that clause covers it too.
+    ///
+    /// This is the ONLY sanctioned way to add an edge, and that is the whole
+    /// point of it existing. `create_successor` used to be the only place
+    /// `role_domain` and `role_range` were consulted, while `build_abox_tableau`
+    /// wrote asserted role assertions straight into the edge map. A GENERATED
+    /// successor therefore carried its domain and its range and an ASSERTED edge
+    /// carried neither, so an ABox that is inconsistent precisely because an
+    /// asserted edge forces its subject into a class disjoint from one it
+    /// already has came back `consistent: true, undecided: false` — the
+    /// strongest answer this checker can give, and wrong. The defect was the
+    /// split between the two edge-creating paths, not either path on its own, so
+    /// the repair is a single primitive both of them go through.
+    ///
+    /// Termination is unaffected. This adds labels to nodes that already exist
+    /// and creates none, and the labels are drawn from the same finite
+    /// sub-concept closure every other rule draws on, so no node's label set can
+    /// grow without bound and blocking still fires on the same condition.
+    fn add_role_edge(&mut self, from: u32, role: u32, to: u32) {
+        if !self.nodes.contains_key(&from) || !self.nodes.contains_key(&to) {
+            return;
+        }
+        self.nodes
+            .get_mut(&from)
+            .unwrap()
+            .edges
+            .entry(role)
+            .or_default()
+            .insert(to);
+
+        // Keeping domain and range out of the GCI list is deliberate: as GCIs
+        // they are `∃p.⊤ ⊑ D` and `⊤ ⊑ ∀p.R`, both with a non-atomic left-hand
+        // side, so both land a disjunction on every node in the tableau. Applied
+        // here they cost one label each on the two nodes actually involved.
+        if let Some(ds) = self.tbox.role_domain.get(&role).cloned() {
+            for c in ds {
+                self.add_label(from, c);
+            }
+        }
+        if let Some(rs) = self.tbox.role_range.get(&role).cloned() {
+            for c in rs {
+                self.add_label(to, c);
+            }
+        }
+
+        if let Some(&inv) = self.tbox.inverse_roles.get(&role) {
+            if let Some(ds) = self.tbox.role_domain.get(&inv).cloned() {
+                for c in ds {
+                    self.add_label(to, c);
+                }
+            }
+            if let Some(rs) = self.tbox.role_range.get(&inv).cloned() {
+                for c in rs {
+                    self.add_label(from, c);
+                }
+            }
+        }
+    }
+
     /// Create a new successor node and set up edges (including inverse back-edges).
     fn create_successor(&mut self, parent_id: u32, role: u32, filler: Concept) -> u32 {
         let succ = self.fresh_node(Some(parent_id), Some(role));
+        // The edge goes in through the shared primitive, which is what applies
+        // rdfs:domain to this node and rdfs:range to the new one.
+        self.add_role_edge(parent_id, role, succ);
         self.add_label(succ, filler);
-
-        // rdfs:range binds the target, rdfs:domain binds the source. Doing it
-        // here keeps both out of the GCI list, so they cost one label each on
-        // the two nodes actually involved instead of a disjunction on every
-        // node in the tableau.
-        if let Some(rs) = self.tbox.role_range.get(&role).cloned() {
-            for c in rs {
-                self.add_label(succ, c);
-            }
-        }
-        if let Some(ds) = self.tbox.role_domain.get(&role).cloned() {
-            for c in ds {
-                self.add_label(parent_id, c);
-            }
-        }
 
         // Add GCIs to new node
         for gci in self.tbox.gcis.clone() {
@@ -1378,14 +1431,8 @@ impl Tableau {
             }
         }
 
-        // Add forward edge
-        self.nodes
-            .get_mut(&parent_id)
-            .unwrap()
-            .edges
-            .entry(role)
-            .or_default()
-            .insert(succ);
+        // The forward edge was added by `add_role_edge` above, together with the
+        // domain and range it entails.
 
         self.trace.record(&format!(
             "∃-rule: node {} creates successor {} via role {}",
@@ -2478,6 +2525,17 @@ impl DlReasoner {
             let node_id = tableau.fresh_node(None, None);
             ind_to_node.insert(b, node_id);
             tableau.add_label(node_id, Concept::Atom(b));
+            // A GCI holds of EVERY element of the domain, so a node that does not
+            // carry the GCIs is a hole this check cannot see into. These nodes were
+            // the only ones in the tableau created without them — the loop above
+            // adds them to every typed individual and `create_successor` adds them
+            // to every generated successor — and the omission was a second false
+            // clean of the same shape as the domain/range one: an ABox whose only
+            // contradiction lands on an individual named just as the object of a
+            // role assertion was reported consistent.
+            for gci in tableau.tbox.gcis.clone() {
+                tableau.add_label(node_id, gci);
+            }
         }
 
         // Add role assertions as edges. An asserted edge a R b also means b has an
@@ -2487,25 +2545,16 @@ impl DlReasoner {
         // `inverse_roles`, a symmetric) role is silently missed. Unlike the tree
         // tableau, ABox individuals form an arbitrary graph, so the parent back-link
         // successors() uses cannot stand in for the inverse neighbour. Materialise it.
+        //
+        // Both edges go in through `add_role_edge`, which is what applies rdfs:domain
+        // and rdfs:range. Writing them into the edge map directly, as this used to,
+        // is what made an asserted edge weaker than a generated one.
         for &(a, r, b) in &self.role_assertions {
             if let (Some(&a_node), Some(&b_node)) = (ind_to_node.get(&a), ind_to_node.get(&b)) {
-                tableau
-                    .nodes
-                    .get_mut(&a_node)
-                    .unwrap()
-                    .edges
-                    .entry(r)
-                    .or_default()
-                    .insert(b_node);
-                if let Some(&r_inv) = tableau.tbox.inverse_roles.get(&r) {
-                    tableau
-                        .nodes
-                        .get_mut(&b_node)
-                        .unwrap()
-                        .edges
-                        .entry(r_inv)
-                        .or_default()
-                        .insert(a_node);
+                let r_inv = tableau.tbox.inverse_roles.get(&r).copied();
+                tableau.add_role_edge(a_node, r, b_node);
+                if let Some(r_inv) = r_inv {
+                    tableau.add_role_edge(b_node, r_inv, a_node);
                 }
             }
         }
