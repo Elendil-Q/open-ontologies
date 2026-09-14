@@ -1,4 +1,4 @@
-.PHONY: build test lint audit bench bench-pizza bench-ontoaxiom bench-mushroom bench-vision bench-reasoner bench-oaei docker clean demo demo-verify demo-verify-pipeline
+.PHONY: build test lint audit verify bench bench-pizza bench-ontoaxiom bench-mushroom bench-vision bench-reasoner bench-oaei docker clean demo demo-verify demo-verify-pipeline
 
 # ─── Development ─────────────────────────────────────────────────────────────
 
@@ -13,6 +13,24 @@ lint:
 
 audit:
 	cargo audit
+
+# Bounded model checking of the pure functions on the certificate layer's
+# trusted boundary (docs/trusted-computing-base.md). Needs
+# `cargo install --locked kani-verifier && cargo kani setup`, which pulls its
+# own toolchain, so this is NOT part of `check`: it is minutes per harness and
+# a developer without Kani installed must still be able to run the gates.
+# `cargo test` covers the same statements by sampling.
+# `parse_pat_and_render_are_inverse` is deliberately NOT here. It is a fourth
+# harness in the same module and it does not terminate: no verdict at 14 minutes
+# and 9.5GB, worse when the input is constrained, because `parse_pat` returns
+# `anyhow::Result` and CBMC flattens the error-formatting machinery whether or
+# not the refusal paths are reachable. The harness carries the measurements and
+# what would close it. A target that hangs is worse than one that is honest
+# about its coverage.
+verify:
+	cargo kani --harness asserted_line_round_trips
+	cargo kani --harness triple_fields_append_exactly_three
+	cargo kani --harness writable_triple_decides_both_positions
 
 check: lint test audit
 

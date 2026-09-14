@@ -96,6 +96,20 @@ plugins = ["dep:wasmi"]
 # is not an inner product on the ambient coordinates).
 turbovec = ["dep:turbovec", "embeddings"]
 
+[lints.rust]
+# `cfg(kani)` is set by the Kani model checker's own compiler driver, never by
+# cargo, so an ordinary build has no way to know the name is real and warns that
+# the `#[cfg(kani)]` harnesses in `src/reason.rs` are a typo. Declaring it here
+# says the name is expected; it does not enable anything.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
 [dev-dependencies]
 tempfile = "3"
 wat = "1.256.0"
+# Property testing for the certificate boundary (docs/trusted-computing-base.md).
+# The Lean proofs are conditional on the Rust writing down the truth, and that
+# boundary is a tab-separated format carrying arbitrary RDF terms: exactly the
+# shape where a hand-written example passes and an adversarial one forges a
+# derivation. DEV-ONLY on purpose. The shipped binary's dependency surface does
+# not grow by a single crate.
+proptest = "1"
