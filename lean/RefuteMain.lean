@@ -33,11 +33,15 @@ refutation does not.
 
 # What a rejected refutation does NOT mean
 
-It does not mean the graph is consistent. `RefuteConditions` carries one
-condition, for `cax-dw`, and fifteen other clash rules of OWL 2 RL have no
-condition here at all. A graph that only `prp-irp` or `eq-diff1` could refute is
-rejected by this checker and is still contradictory. The checker is a gate, not
-an oracle, in that direction as in the other.
+It does not mean the graph is consistent. Seventeen OWL 2 RL rules conclude
+`false`; `RefuteConditions` carries one condition, for `cax-dw`, and the other
+sixteen have no condition here at all. Fifteen of those sixteen are expressible
+in this layer and simply absent. The sixteenth, `dt-not-type`, is not
+expressible at all, because `OOCert.Semantics` has no datatype value space.
+`Refute.lean` lists all seventeen with their tables and states that split at the
+count. A graph that only `prp-irp` or `eq-diff1` could refute is rejected by
+this checker and is still contradictory. The checker is a gate, not an oracle,
+in that direction as in the other.
 -/
 open OOCert
 
@@ -103,7 +107,8 @@ def runCheck (gPath rPath : String) : IO UInt32 := do
         \"prefix\":{r.steps.length},\"rule\":{jsonStr r.final.rule.name},\
         \"reason\":{jsonStr (whyRejected G r)},\
         \"means\":\"the refutation was not accepted. That is not a proof of consistency: \
-        fifteen other OWL 2 RL clash rules have no condition in this checker.\"}"
+        seventeen OWL 2 RL rules conclude false, this checker implements cax-dw, and the other \
+        sixteen have no condition in it.\"}"
       return 1
   | .error e, _ => IO.eprintln e; return 2
   | _, .error e => IO.eprintln e; return 2
