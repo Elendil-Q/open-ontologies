@@ -1,0 +1,2 @@
+0	2	s	<http://ex.org/a>	o	"hello"@en	<http://ex.org/a>	<http://ex.org/tag>	"hello"@en	<http://ex.org/a>	<http://ex.org/label>	"hello"@en
+0	2	s	<http://ex.org/b>	o	"42"^^<http://www.w3.org/2001/XMLSchema#integer>	<http://ex.org/b>	<http://ex.org/tag>	"42"^^<http://www.w3.org/2001/XMLSchema#integer>	<http://ex.org/b>	<http://ex.org/label>	"42"^^<http://www.w3.org/2001/XMLSchema#integer>

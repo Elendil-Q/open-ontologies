@@ -18,3 +18,16 @@
 # RDF serialisations, for the same reason: a stray CR changes a literal.
 *.ttl text eol=lf
 *.trig text eol=lf
+
+# ONE EXCEPTION, and it is the exception that proves the rule above. The
+# `probe_crlf_*` files in isabelle/fixtures-differential/ exist to feed the two
+# certificate checkers a file that DOES carry carriage returns, and to pin that
+# both of them reject it for the same reason. Normalising them to LF would leave
+# a probe that tests nothing while still reporting green, which is the failure
+# this repository is built to catch. `-text` stores and checks out the bytes
+# verbatim on every platform.
+#
+# `the_untested_corners_of_the_term_format_agree` asserts the CR is present
+# before it runs them, so if this line is ever removed the test fails rather
+# than quietly passing over a normalised file.
+isabelle/fixtures-differential/probe_crlf_*.tsv -text
