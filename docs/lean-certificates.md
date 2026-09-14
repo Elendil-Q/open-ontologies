@@ -94,6 +94,15 @@ Table 5.8's connective, which carries `rowspan="4"` in the source and so states 
 `rdfs:subClassOf`, `rdfs:subPropertyOf`, `rdfs:domain` and `rdfs:range`. RDFS alone gives those rows
 only the `if-then` direction, and the twelve `scm-*` arms among the fourteen do not follow from it.
 
+One step is an argument rather than a theorem, and it is labelled as one in the file. Reading a
+conforming interpretation as a Lean `Interp` needs a bridge, `iext p x y := IP p and (x, y) in
+IEXT p`, under which `Interp.sat` unfolds to RDF 1.1 Semantics section 5's truth clause including
+its `I(p) is in IP` conjunct. Core Lean has nothing to quantify over on the specification side, so
+that step is prose. It is four lines and checkable by hand. `W3CModel` is also deliberately weaker
+than conformance, because `W3C` omits every table row no rule consumes, so its class is larger than
+the bridge image. Both gaps run in the safe direction for soundness, where a larger class makes the
+conclusion stronger, and neither runs in the safe direction for a non-entailment result.
+
 **The claim that the result carries over to the OWL 2 Direct Semantics read through triples is
 withdrawn.** Nobody verified it, and it is false as written for those twelve arms, which need a
 backward direction the Direct Semantics has no `rdfs:subClassOf` triples to carry. Do not reinstate

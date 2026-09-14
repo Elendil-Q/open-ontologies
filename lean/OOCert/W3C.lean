@@ -15,9 +15,11 @@ without touching `Conditions`, `Interp`, `Entails` or any existing statement.
 `W3C I IP` carries the specification's semantic conditions at FULL strength,
 one field per table row, each with the cell quoted verbatim above it.
 `W3CModel I IP G` adds the asserted graph and the three list-constructor rows.
-`W3CModel.toModel` builds a `Model I G` from it, and fourteen of the
-twenty-three condition fields it supplies are DERIVATIONS rather than
-projections. Those fourteen are exactly the arms that used to be assumed:
+`W3CModel.toModel` builds a `Model I G` from it, and TWELVE of the twenty-three
+condition fields it supplies are DERIVATIONS rather than projections. Those
+twelve fields carry FOURTEEN of the soundness proof's arms, because `eqc` and
+`eqp` each license two conclusions and `Soundness.lean` consumes each of them
+twice. Counted as arms, they are exactly the ones that used to be assumed:
 
 | arm | rule id | derived in |
 |---|---|---|
@@ -170,10 +172,14 @@ One field per table row, at full strength, with the cell quoted above it. Read
 the quotes as the licence for every strengthening in this file: a field with no
 quote above it is a field nobody checked.
 
-Three fields of `Conditions` survive here unchanged (`same_fwd`, `sym_fwd`,
-`trp_fwd`). Fourteen become halves of the conditions that derive them. Twelve
-disappear entirely, because they are theorems about this structure rather than
-assumptions in it. -/
+`Conditions` has twenty-three fields and they land here in three groups. THREE
+survive unchanged (`same_fwd`, `sym_fwd`, `trp_fwd`). EIGHT are consequences of
+a strictly stronger field here (`sc_sub`, `sp_sub`, `dom`, `rng` and `inv` of
+the forward conditions that also carry the `IC` and `IP` memberships; `svf`,
+`avf` and `hv` of the Table 5.6 equalities). TWELVE have no counterpart in this
+structure at all, because over it they are theorems rather than assumptions.
+`Conditions` itself is untouched and still carries all twenty-three; `toModel`
+is what supplies them, and for those twelve it supplies a proof. -/
 
 /-- The OWL 2 RDF-Based Semantics conditions that the twenty-nine rules consume,
 at FULL specification strength. -/
@@ -293,10 +299,11 @@ structure W3C (I : Interp) (IP : I.D → Prop) : Prop where
   the repair: faced with a failing `scm-svf1` the natural move is to add a
   fresh field asserting the missing direction in slightly different words, and
   that is a strengthening in a place the specification did not strengthen, it
-  turns everything green, and nobody writes it down. The twelve fields this
-  file removes from `Conditions` are that move, made twelve times. The equality
-  is written here ONCE, as the specification has it, and no second field in
-  this area may be added to close a proof. -/
+  turns everything green, and nobody writes it down. The twelve fields of
+  `Conditions` that this structure does not restate are that move, made twelve
+  times, and they are derived below instead. The equality is written here ONCE,
+  as the specification has it, and no second field in this area may be added to
+  close a proof. -/
   svf_eq : ∀ z c p, I.iext (I.ι V.someValuesFrom) z c → I.iext (I.ι V.onProperty) z p →
     ∀ x, (I.cext z x ↔ ∃ y, I.iext p x y ∧ I.cext c y)
   /-- RBS Table 5.6.
@@ -587,12 +594,13 @@ structure W3CModel (I : Interp) (IP : I.D → Prop) (G : List Triple) : Prop whe
 
 /-- **Every conforming interpretation is a model here.**
 
-Fourteen of the twenty-three `Conditions` fields below are derivations rather
-than projections, and they are exactly the arms that `Semantics.lean` posits:
-`sc_trans`, `sp_trans`, `eqc`, `eqp`, `svf_sc`, `svf_sp`, `avf_sc`, `avf_sp`,
-`dom_sc`, `dom_sp`, `rng_sc`, `rng_sp`. The other nine and the four list fields
-are projections out of the corresponding quoted table cell, which is what they
-were meant to be all along. -/
+Twelve of the twenty-three `Conditions` fields below are derivations rather than
+projections: `sc_trans`, `sp_trans`, `eqc`, `eqp`, `svf_sc`, `svf_sp`,
+`avf_sc`, `avf_sp`, `dom_sc`, `dom_sp`, `rng_sc`, `rng_sp`. They are exactly the
+fields `Semantics.lean` posits, and they carry fourteen of the soundness proof's
+arms, because `Soundness.lean` consumes `eqc` and `eqp` twice each. The other
+eleven fields and the four list fields are projections out of the corresponding
+quoted table cell, which is what they were meant to be all along. -/
 theorem W3CModel.toModel {I : Interp} {IP : I.D → Prop} {G : List Triple}
     (W : W3CModel I IP G) : Model I G where
   conds :=
@@ -649,10 +657,22 @@ theorem W3CEntails.of_entails {G : List Triple} {t : Triple} (h : Entails G t) :
     W3CEntails G t :=
   fun _ _ W => h _ W.toModel
 
-/-- The checker's verdict, restated over the specification's model class. Same
-certificates, same checker, same `checkCert`; the only thing that changed is
-that the word "entailed" now names the OWL 2 RDF-Based conforming
-interpretations rather than the weaker set of conditions the Lean posited. -/
+/-- The checker's verdict, restated over the specification's conditions. Same
+certificates, same checker, same `checkCert`; what changed is that "entailed"
+now quantifies over every interpretation meeting the quoted table cells, rather
+than over the weaker set of conditions the Lean posited, and that the fourteen
+arms which used to be posited are steps inside the proof.
+
+**This is not yet the sentence "true in every conforming interpretation", and
+the difference is the bridge in the module docstring above, which is an argument
+and not a theorem.** `W3CModel` is a Lean structure; a conforming interpretation
+is an object of the specification's metatheory, and nothing here quantifies over
+those. The bridge says how to read one as the other, and it is checkable by
+hand, but it is prose. `W3CModel` is also strictly weaker than conformance,
+because `W3C` deliberately omits every table row no rule consumes, so its class
+is larger than the bridge image. Both gaps run in the safe direction for THIS
+theorem, since a larger class makes the conclusion stronger; neither runs in the
+safe direction for a non-entailment result. -/
 theorem certificate_w3c_sound (G : List Triple) (steps : List Step)
     (h : checkCert G steps = true) :
     ∀ st ∈ steps, W3CEntails G st.conclusion :=

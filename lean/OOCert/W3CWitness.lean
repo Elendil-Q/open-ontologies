@@ -595,6 +595,74 @@ theorem scm_avf2_runs_one_way_under_the_specification :
   ⟨the_avf2_direction_the_table_gives_is_w3c_entailed,
    the_natural_avf2_direction_is_not_w3c_entailed⟩
 
+/-! ## The degenerate model, proved rather than asserted
+
+`Witness.lean` says in English, beside `saturated_is_a_model`, that `saturated`
+also satisfies the conditions in `W3C.lean`. An unproved claim in a docstring is
+the defect this whole file exists to remove, so it is a theorem here. -/
+
+/-- **`W3C` is satisfiable trivially, and that is exactly why bare satisfiability
+is not the gate.** `saturated` has domain `Unit` and every relation total, so
+both sides of every equality in `W3C` are all of `Unit` and every field holds
+without saying anything. It distinguishes no condition from any other and
+refutes nothing.
+
+Note what it does NOT extend to. `W3CModel` would additionally demand
+`oneOf_eq`, and that fails here whenever the graph carries an `owl:oneOf` triple
+whose list is EMPTY: the left side is `ICEXT(c)`, which is all of `Unit`, and the
+right side is `∃ m ∈ [], x = I(m)`, which is false. Table 5.5's equality forces an
+empty enumeration to denote the empty class, and a model in which every class is
+the whole universe cannot do that. `Conditions.oneOf` carries only the `⊇` half
+and so never notices. That is the same asymmetry recorded at `Model.oneOf` in
+`Semantics.lean`, seen from the other side. -/
+theorem saturated_meets_the_w3c_conditions : W3C saturated (fun _ => True) where
+  sc_fwd := fun _ _ _ => ⟨trivial, trivial, fun _ _ => trivial⟩
+  sc_bwd := fun _ _ _ _ _ => trivial
+  sp_fwd := fun _ _ _ => ⟨trivial, trivial, fun _ _ _ => trivial⟩
+  sp_bwd := fun _ _ _ _ _ => trivial
+  dom_fwd := fun _ _ _ => ⟨trivial, trivial, fun _ _ _ => trivial⟩
+  dom_bwd := fun _ _ _ _ _ => trivial
+  rng_fwd := fun _ _ _ => ⟨trivial, trivial, fun _ _ _ => trivial⟩
+  rng_bwd := fun _ _ _ _ _ => trivial
+  eqc_fwd := fun _ _ _ => ⟨trivial, trivial, fun _ => Iff.rfl⟩
+  eqp_fwd := fun _ _ _ => ⟨trivial, trivial, fun _ _ => Iff.rfl⟩
+  same_fwd := fun a b _ => by cases a; cases b; rfl
+  inv_fwd := fun _ _ _ => ⟨trivial, trivial, fun _ _ => Iff.rfl⟩
+  sym_fwd := fun _ _ _ _ _ => trivial
+  trp_fwd := fun _ _ _ _ _ _ _ => trivial
+  svf_eq := fun _ _ _ _ _ _ => ⟨fun _ => ⟨(), trivial, trivial⟩, fun _ => trivial⟩
+  avf_eq := fun _ _ _ _ _ _ => ⟨fun _ _ _ => trivial, fun _ => trivial⟩
+  hv_eq := fun _ _ _ _ _ _ => Iff.rfl
+  restr_IC := fun _ _ => trivial
+  svf_typ := fun _ _ _ => ⟨trivial, trivial⟩
+  avf_typ := fun _ _ _ => ⟨trivial, trivial⟩
+  onp_typ := fun _ _ _ => ⟨trivial, trivial⟩
+
+/-- A one-triple graph enumerating nothing: `E owl:oneOf rdf:nil`. -/
+def emptyOneOfG : List Triple := [⟨"<e:E>", V.oneOf, V.nil⟩]
+
+/-- **And the gap in the docstring above is a theorem too.** `saturated` meets
+every field of `W3C`, and it is still not a `W3CModel` of this graph, because
+Table 5.5's equality forces an empty enumeration to denote the empty class while
+`saturated` makes every class the whole universe.
+
+So `W3C` and `W3CModel` genuinely differ, the list rows are not decoration, and
+"`saturated` satisfies the specification conditions" is true of the conditions
+and false of the models. `Conditions.oneOf` carries only the `⊇` half and never
+notices, which is why `saturated_is_a_model` holds for EVERY graph including
+this one. -/
+theorem saturated_is_not_a_w3c_model_of_an_empty_enumeration :
+    ¬ W3CModel saturated (fun _ => True) emptyOneOfG := by
+  intro W
+  have h := (W.oneOf_eq "<e:E>" V.nil [] (by simp [emptyOneOfG]) Chain.nil ()).mp trivial
+  simp at h
+
+/-- The same graph, modelled by the weaker conditions without complaint. The two
+sit side by side on purpose: this is what the `⊆` half of Table 5.5 buys, and
+what leaving it out costs. -/
+theorem saturated_is_a_model_of_the_same_graph : Model saturated emptyOneOfG :=
+  saturated_is_a_model emptyOneOfG
+
 /-! ## And `W3CEntails` is not everything either
 
 `live` closes one vacuity hole: `W3C` has a non-degenerate model, so
@@ -678,5 +746,16 @@ footprint below. -/
 /-- info: 'OOCert.not_everything_is_w3c_entailed' depends on axioms: [propext, Quot.sound] -/
 #guard_msgs in
 #print axioms not_everything_is_w3c_entailed
+
+/-- info: 'OOCert.saturated_meets_the_w3c_conditions' does not depend on any axioms -/
+#guard_msgs in
+#print axioms saturated_meets_the_w3c_conditions
+
+/--
+info: 'OOCert.saturated_is_not_a_w3c_model_of_an_empty_enumeration' depends on axioms: [propext,
+Quot.sound]
+-/
+#guard_msgs in
+#print axioms saturated_is_not_a_w3c_model_of_an_empty_enumeration
 
 end OOCert

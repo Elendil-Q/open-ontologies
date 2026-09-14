@@ -191,6 +191,95 @@ All notable changes to Open Ontologies are documented here.
   now resolves every such citation in `python/` against the current file and
   fails when a line stops containing the token it names. A citation written in a
   shape the test cannot read fails too, rather than going quietly unguarded.
+
+- **Fourteen arms of the OWL 2 RL soundness proof were assumed, and are now
+  derived.** A second formalisation in Isabelle/HOL, written from the W3C
+  specifications with the Lean deliberately unread, found that fourteen arms
+  across twelve of the twenty-nine rules were sound because a field of
+  `Conditions` said the rule holds. Twelve of those arms are stated by no cell
+  of any specification table: `scm-eqc1` and `scm-eqp1` with two conclusions
+  each, `scm-svf1`, `scm-svf2`, `scm-avf1`, `scm-avf2`, `scm-dom1`, `scm-dom2`,
+  `scm-rng1`, `scm-rng2`. The other two, `rdfs5` and `rdfs11`, were licensed by
+  RDF 1.1 Semantics but redundant once the stronger cell is present. For those
+  arms the machine-checked content was close to nothing, while the proofs passed
+  and the axiom footprints were clean.
+
+  `lean/OOCert/W3C.lean` now states the OWL 2 RDF-Based Semantics conditions at
+  full strength, one field per table row with the cell quoted above it, and
+  derives all fourteen. `OOCert.W3CModel.toModel` and every one of the twelve
+  derivation theorems depend on no axiom at all. `OOCert.W3CEntails.of_entails`
+  proves that everything `Entails` already gave is true in every conforming
+  interpretation, and `OOCert.certificate_w3c_sound` restates the checker's
+  verdict over that class.
+
+  `Conditions`, `Interp`, `Entails` and `certificate_sound` are untouched and
+  `certificate_sound` keeps its exact axiom footprint, because strengthening
+  `Conditions` in place would have shrunk the model class and weakened the
+  headline theorem with every proof still passing. The cell that makes the
+  twelve derivable is Table 5.8's connective, which carries `rowspan="4"` in the
+  specification's HTML and therefore states an `iff` where RDFS alone gives only
+  `if-then`. It was re-fetched from the raw HTML and not from a rendering: a
+  markdown conversion of that table drops the `rowspan` and shows `if`, which
+  would make the result unprovable and the mistake invisible.
+
+- **A live, non-degenerate model of those conditions, with its liveness compiled
+  into the build.** `lean/OOCert/W3CWitness.lean` builds a seventeen-element
+  interpretation meeting the quoted cells of Tables 5.2, 5.3, 5.6, 5.8, 5.9,
+  5.12 and 5.13, with every condition settled by the kernel's `decide`. A
+  soundness theorem over a degenerate model class would prove less than the
+  assumption it replaced while looking better, so `live_is_live` pins the facts
+  that make it non-degenerate: `IC` has three members and is not the carrier,
+  one class extension is the whole carrier, another is a proper subset witnessed
+  on both sides, a third is empty, `ICEXT(owl:Restriction)` is a proper subset of
+  `IC`, and the property that matters carries a pair. `dom_bwd` and `rng_bwd` are
+  discharged over that pair rather than vacuously, which the second kernel's own
+  witness does not manage. `the_natural_avf2_direction_is_not_w3c_entailed` is
+  the first non-entailment in this repository that is about the conforming model
+  class rather than the Lean's own.
+
+- **Two more English claims turned into theorems, one of which was wrong.**
+  `Witness.lean` asserted in prose that `saturated` also satisfies the new
+  specification conditions. It does, and `saturated_meets_the_w3c_conditions`
+  now proves it, which matters only because it shows how little that is worth:
+  a model in which every relation is total distinguishes no condition from any
+  other. The claim does **not** extend from the conditions to the models, and
+  `saturated_is_not_a_w3c_model_of_an_empty_enumeration` proves the gap on the
+  one-triple graph `E owl:oneOf rdf:nil`. Table 5.5's equality forces an empty
+  enumeration to denote the empty class, and `saturated` makes every class the
+  whole universe. `Conditions.oneOf` carries only the `⊇` half and so models the
+  same graph without complaint, which is the cost of that omission stated as a
+  pair of theorems rather than as a remark.
+
+### Fixed
+- **Four claims the certificate layer made and had not earned, withdrawn rather
+  than edited away.** (1) Soundness here does **not** carry over to the OWL 2
+  Direct Semantics read through triples; nobody verified it, and it is false as
+  written for the twelve arms that need Table 5.8's backward direction. (2) The
+  W3C tables do **not** read a list off the graph. The sequence notation
+  quantifies over `IEXT(I(rdf:first))` and `IEXT(I(rdf:rest))`, and the
+  specification says explicitly that no semantic constraint enforces well-formed
+  sequence structures. `Chain` is still right, for the opposite reason to the one
+  given: it fires on fewer lists, so the model class stays larger. (3)
+  `an_unlisted_individual_is_not_entailed` was nominated as the check that the
+  `⊆` half of `owl:oneOf` was really left out, and it cannot detect that half's
+  absence: its witness already satisfies the full equality and passes unchanged
+  either way. That omission is undetected by anything in this repository. (4)
+  Non-entailment never transferred outward. Every `¬ Entails`, every `¬ Unsat`
+  and every exhibited `Model` here is a statement about this layer's model class
+  alone. Each of these is now recorded at the point of the assumption, and
+  `docs/decisions/0002` carries a dated correction.
+
+- **A quote that was not a quote.** The RDF 1.1 truth clause cited in the new
+  bridge argument was the RDF 1.0 (2004) wording. RDF 1.1 replaced the
+  definedness phrasing with an explicit `I(p) is in IP` conjunct, which makes the
+  argument stronger, not weaker. Corrected against the raw HTML, with the
+  substitution recorded in the file.
+
+- `docs/lean-certificates.md` said the semantics was "the RDF-based reading of
+  the twenty rules' vocabulary". There are twenty-nine rule ids, as
+  `tests/certificate_boundary_proptest.rs` has asserted since it landed.
+
+### Added
 - **The refutation checker has a producer.** `lean/OOCert/Refute.lean` has
   checked refutations since it landed and nothing in `src/` could write one: a
   checker with no producer, which is the same shape of defect as a gate that

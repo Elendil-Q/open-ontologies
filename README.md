@@ -147,6 +147,28 @@ makes this different. If you are evaluating the claim, read
 The second kernel is in [isabelle/](isabelle/), written from the W3C specifications with the Lean
 deliberately unread, and it is run over the same bytes on every differential run.
 
+Its sharpest catch was not a disagreement about a certificate. It was that fourteen arms of the
+Lean's soundness proof, across twelve of its twenty-nine rules, were sound because a field of the
+condition record said the rule holds. Twelve of those arms are stated by no cell of any
+specification table. The proofs passed, the axiom footprints were clean, and the machine-checked
+content for those arms was close to nothing. All fourteen are now derived from cells quoted out of
+the specification's raw HTML, in [lean/OOCert/W3C.lean](lean/OOCert/W3C.lean), and
+`OOCert.certificate_w3c_sound` restates the checker's verdict over every interpretation meeting
+those cells, rather than over the weaker conditions this Lean used to posit. Same certificates,
+same checker, and not one of those derivations depends on any axiom at all.
+
+One step short of that is still an argument rather than a theorem, and it is labelled as one in the
+file: reading a conforming interpretation as a Lean `Interp` is a bridge written in prose, because
+nothing in core Lean quantifies over the specification's metatheory. The bridge is four lines and
+checkable by hand. It is not machine-checked, and the file says so where a reader will hit it.
+
+The same review found the limit of that result, and it is written down rather than buried.
+Entailment transfers outward and non-entailment does not, so every `¬ Entails` in the repository is
+a statement about this layer's model class and not about the specification's. One of them now has a
+conforming replacement, one of them was nominated as a detector for a condition it cannot detect,
+and the rest carry the obstruction at the point of the assumption. See
+[docs/lean-certificates.md](docs/lean-certificates.md).
+
 The discipline matters more than the machinery, and it runs through all of it.
 
 A rule **you** supplied is an assumption the certificate carries, never a fact it establishes, so
