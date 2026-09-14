@@ -285,6 +285,41 @@ pub struct OntoReasonInput {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct OntoFolExportInput {
+    /// Directory to write the export to. `ontology.p` (TPTP) or
+    /// `ontology.clif` lands here, plus one problem per goal under `goals/`.
+    pub out_dir: String,
+    /// `tptp` (FOF, what E and Vampire read) or `clif` (ISO/IEC 24707 Common
+    /// Logic Interchange Format, restricted to the first-order-equivalent
+    /// fragment). Default `tptp`. Both are renderings of ONE translation.
+    pub format: Option<String>,
+    /// A TSV of triples to ask as conjectures, one problem file per line. The
+    /// `derivations.tsv` written by `onto_reason` with `certificate_dir` is
+    /// the intended input; set `goals_skip_columns` to 1 for it, because its
+    /// first column is the rule name.
+    pub goals_file: Option<String>,
+    /// Number of leading tab-separated columns to skip on each goals line
+    /// before the subject. Default 0.
+    pub goals_skip_columns: Option<usize>,
+    /// Which CLIF spelling to emit, when `format` is `clif`. `iso` (default)
+    /// writes `cl:text` / `cl:comment`, ISO/IEC 24707's own reserved tokens
+    /// and what ISO publishes the BFO axiomatisation in with ISO/IEC 21838-2.
+    /// `colore` writes `cl-text` / `cl-comment`, which is what the COLORE
+    /// repository uses and what the Macleod toolchain's shipped lexer accepts;
+    /// Macleod cannot read the ISO spelling. Ignored for `tptp`.
+    pub clif_dialect: Option<String>,
+    /// Where a formula's label goes, when `format` is `clif`. `standalone`
+    /// (default) writes `(cl:comment '...')` as its own phrase and the
+    /// sentence bare; `wrapped` writes `(cl:comment '...' SENTENCE)`, the
+    /// shape ISO/IEC 21838-2's BFO files use. Wrapped is correct CLIF and,
+    /// measured, unreadable: py-typedlogic discards the form and returns an
+    /// EMPTY theory, and Macleod has no production for it, so both parsers
+    /// lose the entire content of such a file, BFO's own included. Ignored
+    /// for `tptp`.
+    pub clif_comments: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct OntoDlExplainInput {
     /// IRI of the class to explain unsatisfiability for
     pub class_iri: String,

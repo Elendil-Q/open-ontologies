@@ -5,6 +5,56 @@ All notable changes to Open Ontologies are documented here.
 ## [Unreleased]
 
 ### Added
+- **First-order export, over the translation a machine-checked adequacy theorem
+  is about.** `fol --out DIR --format tptp|clif` (also `onto_fol_export` and
+  batch `fol`) writes the loaded ontology as TPTP FOF or as ISO/IEC 24707
+  Common Logic, and with `--goals FILE` one problem per conjecture, so an
+  ontology can be handed to E, Vampire or any other first-order prover. The
+  translation in `src/tptp.rs` transcribes `OwlLean/Translation.lean` from the
+  sibling `owl-lean` project, whose `OwlLean.adequacy` is machine-checked with
+  no `sorry`, no Mathlib and axioms `propext`, `Classical.choice`,
+  `Quot.sound`. Everyone else's OWL-to-FOL exporter is validated empirically
+  (FOWL, over 168 ChEBI modules) or proved on paper (Hets); LATIN's
+  `OWL2toFOL.elf` has its cardinality constructors and `objectPropertyChain`
+  commented out, and those are used by 37.2% and 45.9% of constrained real
+  ontologies. The background axioms and the individual typing axioms the
+  theorem requires are emitted, the freshness side condition is enforced at
+  every call site rather than assumed, and both have machine-checked
+  countermodels in `OwlLean/Refutations.lean` showing what goes wrong without
+  them. **The correspondence between the Rust and the Lean is pinned by
+  `tests/fol_translation_correspondence_test.rs` and is NOT itself proved**,
+  which is stated in the module docs, in the JSON report and in the header of
+  every emitted file. Constructs outside the fragment are named in the output
+  with counts and reasons through `exports_a_weaker_axiom_set` and
+  `constructs_not_exported`, the shape the description-logic layer already uses
+  for `certifies_a_weaker_axiom_set`. CLIF is a second serialiser over the one
+  translation, never a second translation, and is restricted to the
+  first-order-equivalent fragment of Common Logic: no sequence markers, fixed
+  arity, no quantification into a predicate position. See
+  docs/first-order-export.md and decision 0005.
+- **The CLIF export is gated against leaving the exactly semantically
+  conformant subdialect.** ISO/IEC 24707 first edition A.4.2 says the
+  subdialect using neither numerals nor quoted strings is exactly semantically
+  conformant, so staying inside it makes CLIF entailment and Common Logic
+  entailment coincide and the adequacy theorem needs no qualification at the
+  CLIF end. `clif_stays_in_the_exactly_conformant_subdialect` walks every
+  emitted sentence and fails on a bare decimal or a single-quoted string. The
+  scope is stated exactly: no numerals and no quoted strings IN SENTENCE
+  POSITIONS, with comment annotations the named exception.
+- **`tools/fol_differential.py`, an ATP as a differential oracle and never as
+  an authority.** It reasons with a certificate, exports one problem per
+  claimed entailment from a separate unreasoned store, and asks E or Vampire.
+  A conclusion the engine derives and the prover refutes is
+  `CLAIMED_NOT_ENTAILED` and exits 1; a prover that gives up is
+  `UNDETERMINED` and is never read as agreement. **An ATP verdict is an oracle
+  opinion, exactly like pyshacl's in `tools/shacl_differential.py`**: a
+  superposition refutation cannot be checked without a verified first-order
+  calculus with unification, which does not exist in core Lean, so a
+  disagreement is a bug in one of the two and the tool says so rather than
+  adjudicating. With no prover installed it skips loudly with the install line,
+  and `FOL_DIFF_REQUIRE_ATP=1` turns that skip into a failure. Run against E
+  3.2.5 over FOAF it reported 58 disagreements on first use, all of them
+  defects in the new export layer, listed under Fixed below.
 - **Derivation certificates, checked by a proved-sound Lean checker.**
   `reason --certificate DIR` (also `onto_reason`'s `certificate_dir` and batch
   `reason --certificate`) writes `asserted.tsv` and `derivations.tsv`: every
@@ -20,6 +70,63 @@ All notable changes to Open Ontologies are documented here.
   trace. See docs/lean-certificates.md and decision 0002.
 
 ### Fixed
+- **The CLIF export produced files that parse cleanly and yield NOTHING.**
+  Every sentence was emitted as `(cl:comment '...' SENTENCE)`, the shape
+  ISO/IEC 21838-2's BFO files use. Measured against both CLIF parsers that
+  exist, that form is discarded: py-typedlogic returns an empty theory and
+  Macleod has no production for it, and both do the same to BFO's own files. A
+  file that is formally valid and practically empty is the assurance-laundering
+  shape this project exists to attack, and it was in this project's own output.
+  The default is now a standalone `(cl:comment '...')` phrase followed by a
+  bare sentence, which py-typedlogic reads back at exactly the count the
+  exporter reports (7, 161, 251, 107 and 705 sentences over five ontologies);
+  `--clif-comments wrapped` keeps the old shape and the docs say what it costs.
+- **CLIF comment strings were double-quoted, and quote style was bound to
+  operator spelling so no flag combination could emit conforming CLIF.**
+  ISO/IEC 24707 A.2.2.2 makes the single quote the string delimiter. The choice
+  had been justified by matching the CLIF files ISO hosts for ISO/IEC 21838-2,
+  and that corpus has been withdrawn by its own maintainers: BFO's release
+  notes of 7 December 2025 say "Comment texts are surrounded by single, not
+  double quotes". The ISO-hosted files carry 369 double-quoted `cl:comment`
+  forms; BFO master carries 356 single-quoted and none double-quoted. Comment
+  strings are now single-quoted in both dialects and the two settings are
+  independent.
+- **The CLIF text was unnamed.** All 227 COLORE texts are named, Macleod
+  refuses an unnamed one with "Error in ontology: bad URI", and py-typedlogic
+  otherwise reports the first comment as the theory's name. The text now
+  carries the ontology's own `owl:Ontology` IRI where it declares one, written
+  bare because Macleod's lexer has no double-quote token.
+- **Two false claims in the first-order export docs.** They said a CLIF file in
+  one dialect's spelling does not parse in the other's tools; py-typedlogic
+  maps both spellings to identical results with identical sentence counts. They
+  also implied Macleod reads the `colore` output; it reads neither, because it
+  cannot lex an IRI in a symbol position at all. Both are corrected and the
+  measurements are in docs/first-order-export.md.
+- **A property characteristic overrode an explicit `owl:DatatypeProperty`
+  declaration in the first-order export.** FOAF declares `foaf:msnChatID` as
+  both `owl:DatatypeProperty` and `owl:InverseFunctionalProperty`, which OWL 2
+  DL forbids and RDF-serialised vocabularies assert anyway. The characteristic
+  won, so the property was exported as an object property throughout and every
+  axiom about it used the wrong symbol. `OwlP2` is a disjoint sum, so `op:p`
+  and `dp:p` are unrelated predicates and the difference is not cosmetic. The
+  declaration now wins and a characteristic on a data property is dropped and
+  named. Found by `tools/fol_differential.py` on its first real run.
+- **The goal builder did not map `owl:Thing` and `owl:Nothing`, and did not
+  consult the entity-kind classification.** A derived triple
+  `X rdfs:subClassOf owl:Thing` became a subsumption under an atomic class
+  symbol occurring in no axiom rather than under the translation's `top`, and a
+  goal about a data property asked about `op:p` while the axioms spoke about
+  `dp:p`. Fifty-two of FOAF's 181 claimed entailments came back as
+  disagreements that were entirely this; the remaining six were the
+  declaration-versus-characteristic defect above. Also found by the
+  differential.
+- **The differential exported from the store the reasoner had just materialised
+  into**, so every conjecture was entailed by the theory already stating it and
+  the run could not fail. A deliberately broken exporter still scored clean
+  under it. The reasoner and the exporter now run against separate stores, the
+  export loads the certificate's own `asserted.tsv` so the two see the same
+  graph down to the blank node labels, and a triple-count mismatch aborts the
+  run rather than reporting a differential that cannot fail.
 - **`sh:sparql` ignored `sh:prefixes` and merged every `sh:declare` in the
   shapes graph into one prologue.** A prefix bound to two namespaces emitted
   two `PREFIX` lines, SPARQL took the last, and which one won was decided by

@@ -1922,6 +1922,26 @@ impl OpenOntologiesServer {
             .unwrap_or_else(Self::err_json)
     }
 
+    #[tool(name = "onto_fol_export", description = "Export the loaded ontology as first-order logic, so it can be handed to the automated-theorem-proving ecosystem. Two syntaxes over ONE translation: `tptp` (FOF, what E, Vampire and every other first-order prover read) and `clif` (ISO/IEC 24707 Common Logic Interchange Format, restricted to the first-order-equivalent fragment: no sequence markers, fixed arity, no quantification into a predicate position). The translation is the one a MACHINE-CHECKED ADEQUACY THEOREM is about: `OwlLean.adequacy` in the sibling owl-lean project, axioms propext + Classical.choice + Quot.sound, no sorry, no Mathlib. That theorem is why the emitted file means what it says. THE CORRESPONDENCE BETWEEN THIS EMITTER AND THAT LEAN IS PINNED BY TESTS AND IS NOT ITSELF PROVED. The output includes the background axioms (the two domains are disjoint, the object domain is non-empty) and the individual typing axioms `thing(a)`, whose ABSENCE REFUTES ADEQUACY OUTRIGHT (OwlLean.Refutations.adequacy_needs_ind_axioms). Constructs outside the fragment are NOT dropped silently: `exports_a_weaker_axiom_set` and `constructs_not_exported` name every one with its count and the reason, and `reduced_to_fragment` names every construct rewritten before translation. Pass `goals_file` (a TSV of triples, e.g. the `derivations.tsv` from onto_reason with certificate_dir, with goals_skip_columns=1) to also write one problem per conjecture. A PROVER'S VERDICT ON THESE FILES IS AN ORACLE OPINION AND NEVER A CERTIFICATE: checking a superposition refutation needs a verified first-order calculus with unification, which does not exist in core Lean. Use tools/fol_differential.py, which reports disagreement between this engine and an ATP and does not adjudicate it.")]
+    async fn onto_fol_export(&self, Parameters(input): Parameters<OntoFolExportInput>) -> String {
+        let syntax = match crate::tptp::Syntax::parse(
+            input.format.as_deref().unwrap_or("tptp"),
+            input.clif_dialect.as_deref(),
+            input.clif_comments.as_deref(),
+        ) {
+            Ok(s) => s,
+            Err(e) => return Self::err_json(e),
+        };
+        crate::tptp::export(
+            &self.graph,
+            std::path::Path::new(&input.out_dir),
+            syntax,
+            input.goals_file.as_deref().map(std::path::Path::new),
+            input.goals_skip_columns.unwrap_or(0),
+        )
+        .unwrap_or_else(Self::err_json)
+    }
+
     #[tool(name = "onto_dl_explain", description = "Explain why a class is unsatisfiable using DL tableaux reasoning. Returns an explanation trace showing the logical contradictions that make the class impossible to instantiate.")]
     async fn onto_dl_explain(&self, Parameters(input): Parameters<OntoDlExplainInput>) -> String {
         use crate::tableaux::DlReasoner;

@@ -98,6 +98,7 @@ impl BatchRunner {
             "validate" => self.exec_validate(&cmd.args),
             "lint" => self.exec_lint(&cmd.args),
             "reason" => self.exec_reason(&cmd.args),
+            "fol" => self.exec_fol(&cmd.args),
             "shacl" => self.exec_shacl(&cmd.args),
             // The CLI subcommand is spelled with a hyphen and this arm accepted
             // only the underscore, so every documented invocation was rejected
@@ -271,6 +272,36 @@ impl BatchRunner {
             )
             .unwrap_or_else(|e| format!(r#"{{"error":"{}"}}"#, e)),
         };
+        serde_json::from_str(&result).unwrap_or(json!({"raw": result}))
+    }
+
+    /// First-order export. The store is in-memory per process, so this is the
+    /// only way to load and export in one run, exactly as for `reason
+    /// --certificate`.
+    fn exec_fol(&self, args: &[String]) -> Value {
+        let Some(out) = Self::flag_value(args, "--out") else {
+            return json!({"error": "fol requires --out DIR"});
+        };
+        let format = Self::flag_value(args, "--format").unwrap_or("tptp".to_string());
+        let dialect = Self::flag_value(args, "--clif-dialect");
+        let comments = Self::flag_value(args, "--clif-comments");
+        let syntax =
+            match crate::tptp::Syntax::parse(&format, dialect.as_deref(), comments.as_deref()) {
+            Ok(s) => s,
+            Err(e) => return json!({"error": e.to_string()}),
+        };
+        let goals = Self::flag_value(args, "--goals");
+        let skip: usize = Self::flag_value(args, "--goals-skip-columns")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let result = crate::tptp::export(
+            &self.graph,
+            std::path::Path::new(&out),
+            syntax,
+            goals.as_deref().map(std::path::Path::new),
+            skip,
+        )
+        .unwrap_or_else(|e| json!({"error": e.to_string()}).to_string());
         serde_json::from_str(&result).unwrap_or(json!({"raw": result}))
     }
 

@@ -1,0 +1,2947 @@
+//! First-order export: hand an ontology to the automated-theorem-proving
+//! ecosystem, in TPTP FOF and in ISO/IEC 24707 CLIF.
+//!
+//! # What makes this different from every other OWL-to-FOL exporter
+//!
+//! A sibling project, `owl-lean`, carries a machine-checked adequacy theorem
+//! for an OWL-to-first-order translation: `OwlLean.adequacy`, with axiom
+//! footprint `[propext, Classical.choice, Quot.sound]`, no `sorry` and no
+//! Mathlib. Everyone else's exporter is validated empirically (FOWL, over 168
+//! ChEBI modules) or proved on paper (Hets, via the institution satisfaction
+//! condition). The translation in this file is written to be the SAME
+//! translation that theorem is about, function for function, so a reader can
+//! cite a kernel-checked result about what the emitted file means.
+//!
+//! `adequacy` says, for an ontology `O` and an axiom `a`:
+//!
+//! ```text
+//! Entails O a  ↔  FOL.Entails (background ++ indAxioms inds ++ O.map trAx) (trAx a)
+//! ```
+//!
+//! given `hinds : ∀ x : S.Ind, x ∈ inds`, i.e. `inds` enumerates the whole
+//! individual vocabulary of the signature.
+//!
+//! # The correspondence is PINNED BY TESTS AND IS NOT ITSELF PROVED
+//!
+//! This is Rust and that is Lean. Nothing mechanically checks that
+//! `Translation::concept` below is `OwlLean.tr`, or that `Translation::axiom`
+//! is `OwlLean.trAx`. What exists is
+//! `tests/fol_translation_correspondence_test.rs`, which takes worked cases,
+//! computes the expected formula by hand from `OwlLean/Translation.lean`, and
+//! pins the emitted string against it. If the Rust and the Lean drift apart,
+//! that test is the only thing that will notice. Read the claim as: the
+//! translation is the one the theorem is about, up to a test suite, not up to
+//! a proof.
+//!
+//! # The two things the theorem needs, and how they are handled here
+//!
+//! ## Freshness
+//!
+//! `tr` allocates bound variables from a counter, and `tr_bridge` needs
+//! `Fresh n x`, that is `x < n`: the subject variable must lie strictly below
+//! the counter. It is not bookkeeping.
+//! `OwlLean.Refutations.tr_bridge_needs_freshness` is a machine-checked
+//! countermodel in which the translation of `∃r.⊤` at subject `0` with counter
+//! `0` captures its own subject, so the formula stops saying "`a` has an
+//! `r`-successor" and starts saying "something is `r`-related to itself".
+//!
+//! How this file handles it: the exporter never picks a counter. Every entry
+//! into the concept translation goes through [`Translation::concept_fresh`],
+//! which returns `Err` unless `x < counter`, and the four call sites reproduce
+//! `trAx`'s own choices (`tr c 0 2`, `tr c 1 2`, `tr c 0 1`) rather than
+//! inventing them. An edit that changes a counter fails a test instead of
+//! silently emitting a captured formula.
+//!
+//! ## Individual typing axioms
+//!
+//! Nothing in `background` forces a constant to denote an OBJECT, so an
+//! arbitrary first-order model may interpret an individual name outside
+//! `thing`. `OwlLean.Refutations.adequacy_needs_ind_axioms` refutes the
+//! left-to-right direction of adequacy outright with the empty ontology and
+//! the axiom `⊤(a)`: the countermodel `Mbad` sends the name to a literal. The
+//! fix is `indAxioms`, i.e. `Thing(a)` for every individual name. This was a
+//! real defect found while proving the theorem, not a hypothetical.
+//!
+//! How this file handles it: [`FolProblem::ind_axioms`] emits `thing(i)` for
+//! every individual in the signature, and the signature is built from exactly
+//! the individual names occurring in the exported axioms and in the goal. The
+//! theorem's hypothesis is `∀ x : S.Ind, x ∈ inds`, which holds here because
+//! `S.Ind` IS the occurring set by construction. (`owl-lean`'s README lists
+//! weakening that hypothesis to "the occurring vocabulary" as open work; the
+//! exporter sits on the side of the gap where the hypothesis is satisfied.)
+//! `tests/fol_translation_correspondence_test.rs` reconstructs the `Mbad`
+//! scenario and fails if the typing axiom is ever absent.
+//!
+//! # What an ATP's answer is worth
+//!
+//! Nothing here certifies anything. A derivation certificate from the
+//! forward-chaining reasoner can be checked because `lean/` holds a checker
+//! whose soundness is a theorem (decision 0002). A superposition refutation
+//! cannot: checking one needs a verified first-order calculus with
+//! unification, which does not exist in core Lean. So when E or Vampire says
+//! "Theorem", that is an ORACLE OPINION, exactly like pyshacl's verdict in
+//! `tools/shacl_differential.py`, and `tools/fol_differential.py` reports
+//! disagreement rather than adjudicating it. The word "proved" does not appear
+//! next to an ATP verdict anywhere in this codebase.
+//!
+//! # The quoting trap, which points opposite ways in the two syntaxes
+//!
+//! [`fof::quoted`] uses SINGLE-quoted TPTP atoms and [`clif::enclosed`] uses
+//! DOUBLE-quoted CLIF enclosed names. That is not an inconsistency and it is
+//! the reverse of what most people assume, so both halves are written down.
+//!
+//! In TPTP a single-quoted atom is an ordinary constant, and a DOUBLE-quoted
+//! string is a "distinct object", which is pairwise unequal to every other
+//! distinct object by fiat. Had the TPTP printer used double quotes for IRIs it
+//! would have silently asserted that all individuals are pairwise distinct.
+//! OWL has no unique name assumption, so that would make every `owl:sameAs`
+//! export unsound, and the file would still parse and still prove things.
+//!
+//! In CLIF the polarity flips. A single-quoted string is an INTERPRETED name
+//! that denotes itself, and a double-quoted enclosed name is an ordinary
+//! interpretable name, which is why A.2.2.4 recommends the enclosed-name
+//! syntax for writing IRIs. Using single quotes for IRIs there would take the
+//! text out of the subdialect A.4.2 calls exactly semantically conformant.
+//!
+//! So: single quotes in TPTP, double quotes in CLIF, for the same IRI, for
+//! opposite reasons.
+//!
+//! # Two serialisers, one translation
+//!
+//! [`Form`] is computed once. [`tptp`] and [`clif`] are renderings of it and
+//! contain no OWL-specific logic at all; each is a fold over `Form`. CLIF is
+//! restricted to the first-order-equivalent fragment of Common Logic on
+//! purpose: no sequence markers, fixed arity at every position, no
+//! quantification into a predicate position. Common Logic is NOT plain
+//! first-order logic, and the adequacy theorem is about a translation into
+//! plain first-order logic, so anything outside that fragment would sit
+//! outside the theorem. [`Form`] cannot express the excluded constructs, which
+//! is the structural reason the restriction holds; `clif_uses_only_fol_fragment`
+//! in the correspondence test is the check that it still holds.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
+
+// ── The target logic: OwlLean/FOL/Basic.lean ────────────────────────────────
+
+/// A first-order term. Mirrors `OwlLean.FOL.Term`: a `Nat`-indexed variable or
+/// a constant, and constants are individual names (`FSig.Const := S.Ind`).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Term {
+    Var(u32),
+    Const(String),
+}
+
+/// Unary predicate symbols. Mirrors `OwlLean.OwlP1`.
+///
+/// The four arms are a disjoint sum in Lean and are disjoint symbols here, so
+/// an IRI used as both a class and a datatype yields two unrelated predicates.
+/// That is what the Structural Specification's separation of entity kinds
+/// means, and it is what `Sig` encodes by giving each kind its own type.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum P1 {
+    Cls(String),
+    Dt(String),
+    Thing,
+    Lit,
+}
+
+/// Binary predicate symbols. Mirrors `OwlLean.OwlP2`.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum P2 {
+    Op(String),
+    Dp(String),
+}
+
+/// A first-order formula. Mirrors `OwlLean.FOL.Form` constructor for
+/// constructor, including the explicit `Nat` on each binder: `owl-lean` uses
+/// named variables rather than de Bruijn indices precisely so that freshness
+/// is a proof obligation and not a silent convention, and an exporter that
+/// renumbered would be emitting a different formula.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Form {
+    App1(P1, Term),
+    App2(P2, Term, Term),
+    Eq(Term, Term),
+    Tru,
+    Fls,
+    Neg(Box<Form>),
+    And(Box<Form>, Box<Form>),
+    Or(Box<Form>, Box<Form>),
+    Imp(Box<Form>, Box<Form>),
+    All(u32, Box<Form>),
+    Ex(u32, Box<Form>),
+}
+
+impl Form {
+    fn neg(f: Form) -> Form {
+        Form::Neg(Box::new(f))
+    }
+    fn and(f: Form, g: Form) -> Form {
+        Form::And(Box::new(f), Box::new(g))
+    }
+    fn or(f: Form, g: Form) -> Form {
+        Form::Or(Box::new(f), Box::new(g))
+    }
+    fn imp(f: Form, g: Form) -> Form {
+        Form::Imp(Box::new(f), Box::new(g))
+    }
+    fn all(n: u32, f: Form) -> Form {
+        Form::All(n, Box::new(f))
+    }
+    fn ex(n: u32, f: Form) -> Form {
+        Form::Ex(n, Box::new(f))
+    }
+
+    /// `OwlLean.FOL.Form.conj`. Right-associated, `[]` is `tru`, `[f]` is `f`.
+    /// The shape matters: `conj [a, b, c]` is `and a (and b c)` and not
+    /// `and (and a b) c`, and the correspondence test pins the difference.
+    fn conj(mut fs: Vec<Form>) -> Form {
+        match fs.len() {
+            0 => Form::Tru,
+            1 => fs.pop().expect("length checked"),
+            _ => {
+                let head = fs.remove(0);
+                Form::and(head, Form::conj(fs))
+            }
+        }
+    }
+
+    /// `OwlLean.FOL.Form.disj`.
+    fn disj(mut fs: Vec<Form>) -> Form {
+        match fs.len() {
+            0 => Form::Fls,
+            1 => fs.pop().expect("length checked"),
+            _ => {
+                let head = fs.remove(0);
+                Form::or(head, Form::disj(fs))
+            }
+        }
+    }
+
+    /// Every individual name occurring in the formula. Used to build the
+    /// signature's individual vocabulary, which is what `indAxioms` ranges
+    /// over and what the adequacy theorem's `hinds` hypothesis is about.
+    fn individuals(&self, out: &mut BTreeSet<String>) {
+        fn t(term: &Term, out: &mut BTreeSet<String>) {
+            if let Term::Const(a) = term {
+                out.insert(a.clone());
+            }
+        }
+        match self {
+            Form::App1(_, x) => t(x, out),
+            Form::App2(_, x, y) | Form::Eq(x, y) => {
+                t(x, out);
+                t(y, out);
+            }
+            Form::Tru | Form::Fls => {}
+            Form::Neg(f) | Form::All(_, f) | Form::Ex(_, f) => f.individuals(out),
+            Form::And(f, g) | Form::Or(f, g) | Form::Imp(f, g) => {
+                f.individuals(out);
+                g.individuals(out);
+            }
+        }
+    }
+}
+
+// Smart constructors for the atoms `Translation.lean` defines by name, kept
+// with the same names so the two files read alike.
+fn v(n: u32) -> Term {
+    Term::Var(n)
+}
+fn k(a: &str) -> Term {
+    Term::Const(a.to_string())
+}
+fn cls(a: &str, t: Term) -> Form {
+    Form::App1(P1::Cls(a.to_string()), t)
+}
+fn dt(d: &str, t: Term) -> Form {
+    Form::App1(P1::Dt(d.to_string()), t)
+}
+fn thing(t: Term) -> Form {
+    Form::App1(P1::Thing, t)
+}
+fn lit(t: Term) -> Form {
+    Form::App1(P1::Lit, t)
+}
+fn op(r: &str, t: Term, u: Term) -> Form {
+    Form::App2(P2::Op(r.to_string()), t, u)
+}
+fn dp(p: &str, t: Term, u: Term) -> Form {
+    Form::App2(P2::Dp(p.to_string()), t, u)
+}
+
+/// `OwlLean.exObj`: guarded existential over the object domain.
+fn ex_obj(n: u32, f: Form) -> Form {
+    Form::ex(n, Form::and(thing(v(n)), f))
+}
+/// `OwlLean.allObj`: guarded universal over the object domain.
+fn all_obj(n: u32, f: Form) -> Form {
+    Form::all(n, Form::imp(thing(v(n)), f))
+}
+/// `OwlLean.exDat`.
+fn ex_dat(n: u32, f: Form) -> Form {
+    Form::ex(n, Form::and(lit(v(n)), f))
+}
+/// `OwlLean.allDat`.
+fn all_dat(n: u32, f: Form) -> Form {
+    Form::all(n, Form::imp(lit(v(n)), f))
+}
+
+/// `OwlLean.substT`.
+fn subst_t(x: u32, u: &Term, t: &Term) -> Term {
+    match t {
+        Term::Var(m) if *m == x => u.clone(),
+        other => other.clone(),
+    }
+}
+
+/// `OwlLean.substVar`. Capture-avoiding for the constant terms it is used
+/// with: a binder that rebinds the index stops the descent.
+fn subst_var(x: u32, u: &Term, f: &Form) -> Form {
+    match f {
+        Form::App1(p, t) => Form::App1(p.clone(), subst_t(x, u, t)),
+        Form::App2(p, t, w) => Form::App2(p.clone(), subst_t(x, u, t), subst_t(x, u, w)),
+        Form::Eq(t, w) => Form::Eq(subst_t(x, u, t), subst_t(x, u, w)),
+        Form::Tru => Form::Tru,
+        Form::Fls => Form::Fls,
+        Form::Neg(g) => Form::neg(subst_var(x, u, g)),
+        Form::And(g, h) => Form::and(subst_var(x, u, g), subst_var(x, u, h)),
+        Form::Or(g, h) => Form::or(subst_var(x, u, g), subst_var(x, u, h)),
+        Form::Imp(g, h) => Form::imp(subst_var(x, u, g), subst_var(x, u, h)),
+        Form::All(n, g) => {
+            if *n == x {
+                Form::All(*n, g.clone())
+            } else {
+                Form::all(*n, subst_var(x, u, g))
+            }
+        }
+        Form::Ex(n, g) => {
+            if *n == x {
+                Form::Ex(*n, g.clone())
+            } else {
+                Form::ex(*n, subst_var(x, u, g))
+            }
+        }
+    }
+}
+
+/// `OwlLean.mkEx`.
+fn mk_ex(ns: &[u32], f: Form) -> Form {
+    match ns.split_first() {
+        None => f,
+        Some((n, rest)) => ex_obj(*n, mk_ex(rest, f)),
+    }
+}
+
+/// `OwlLean.mkAll`.
+fn mk_all(ns: &[u32], f: Form) -> Form {
+    match ns.split_first() {
+        None => f,
+        Some((n, rest)) => all_obj(*n, mk_all(rest, f)),
+    }
+}
+
+/// `OwlLean.distinctPairs`. The order is the Lean order: for `n :: ns`, every
+/// pair `(n, m)` with `m` in `ns` first, then recursively over `ns`.
+fn distinct_pairs(ys: &[u32]) -> Vec<Form> {
+    match ys.split_first() {
+        None => Vec::new(),
+        Some((n, rest)) => {
+            let mut out: Vec<Form> = rest
+                .iter()
+                .map(|m| Form::neg(Form::Eq(v(*n), v(*m))))
+                .collect();
+            out.extend(distinct_pairs(rest));
+            out
+        }
+    }
+}
+
+/// `OwlLean.somePairEq`.
+fn some_pair_eq(ys: &[u32]) -> Vec<Form> {
+    match ys.split_first() {
+        None => Vec::new(),
+        Some((n, rest)) => {
+            let mut out: Vec<Form> = rest.iter().map(|m| Form::Eq(v(*n), v(*m))).collect();
+            out.extend(some_pair_eq(rest));
+            out
+        }
+    }
+}
+
+// ── The source logic: OwlLean/Syntax.lean ───────────────────────────────────
+
+/// Class expressions. Mirrors `OwlLean.Concept`. `MinCard`/`MaxCard` are the
+/// QUALIFIED forms; the unqualified ones are recovered with `Top` as filler,
+/// exactly as in the Lean.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Concept {
+    Top,
+    Bot,
+    Atom(String),
+    Inter(Box<Concept>, Box<Concept>),
+    Union(Box<Concept>, Box<Concept>),
+    Compl(Box<Concept>),
+    OneOf(Vec<String>),
+    Some_(String, Box<Concept>),
+    All_(String, Box<Concept>),
+    HasVal(String, String),
+    HasSelf(String),
+    MinCard(u32, String, Box<Concept>),
+    MaxCard(u32, String, Box<Concept>),
+    DataSome(String, String),
+    DataAll(String, String),
+}
+
+/// Object property expressions. Mirrors `OwlLean.OPE`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Ope {
+    Named(String),
+    Inv(String),
+}
+
+/// Axioms. Mirrors `OwlLean.Axiom`, all twenty-two forms.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OwlAxiom {
+    SubClass(Concept, Concept),
+    EquivClass(Concept, Concept),
+    DisjointWith(Concept, Concept),
+    SubOProp(Ope, Ope),
+    OPropDomain(Ope, Concept),
+    OPropRange(Ope, Concept),
+    DPropDomain(String, Concept),
+    DPropRange(String, String),
+    Transitive(String),
+    Symmetric(String),
+    Asymmetric(String),
+    Reflexive(String),
+    Irreflexive(String),
+    Functional(String),
+    InvFunctional(String),
+    InverseOf(String, String),
+    PropDisjoint(String, String),
+    Chain(Vec<String>, String),
+    ClassAssert(Concept, String),
+    OPropAssert(String, String, String),
+    SameAs(String, String),
+    DifferentFrom(String, String),
+}
+
+// ── The translation: OwlLean/Translation.lean ───────────────────────────────
+
+/// A violation of the freshness side condition the adequacy theorem carries.
+///
+/// `tr_bridge` holds only under `Fresh n x`, i.e. `x < n`. This error exists
+/// so that a future edit to a counter fails loudly rather than emitting a
+/// formula in which the subject variable has been captured. See
+/// `OwlLean.Refutations.tr_bridge_needs_freshness`, the machine-checked
+/// countermodel for exactly this.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotFresh {
+    pub subject: u32,
+    pub counter: u32,
+}
+
+impl std::fmt::Display for NotFresh {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "freshness violated: subject variable X{} is not below the counter {}. \
+             OwlLean.tr_bridge holds only under `Fresh n x` (x < n); without it the \
+             existential `tr` allocates CAPTURES the subject variable, and \
+             OwlLean.Refutations.tr_bridge_needs_freshness is the countermodel",
+            self.subject, self.counter
+        )
+    }
+}
+
+impl std::error::Error for NotFresh {}
+
+/// The translation. Every method is a transcription of the Lean function named
+/// in its doc comment; nothing here is an optimisation or a normalisation of
+/// it, because the emitted formula has to be the formula the theorem is about
+/// and not one equivalent to it.
+pub struct Translation;
+
+impl Translation {
+    /// `OwlLean.tr` under the theorem's freshness side condition.
+    ///
+    /// Callers must satisfy `subject < counter`. The unchecked body is
+    /// [`Translation::concept`], which exists only because the recursive calls
+    /// inside it maintain the invariant themselves (`tr_mono`: the counter
+    /// never decreases) and re-checking on every node would be noise.
+    pub fn concept_fresh(c: &Concept, subject: u32, counter: u32) -> Result<(Form, u32), NotFresh> {
+        if subject >= counter {
+            return Err(NotFresh { subject, counter });
+        }
+        Ok(Self::concept(c, subject, counter))
+    }
+
+    /// `OwlLean.tr`: translate a class expression at subject variable `x` with
+    /// next free index `c`, returning the formula and the next free index.
+    fn concept(c: &Concept, x: u32, counter: u32) -> (Form, u32) {
+        match c {
+            Concept::Top => (Form::Tru, counter),
+            Concept::Bot => (Form::Fls, counter),
+            Concept::Atom(a) => (cls(a, v(x)), counter),
+            Concept::Inter(p, q) => {
+                let (f, c1) = Self::concept(p, x, counter);
+                let (g, c2) = Self::concept(q, x, c1);
+                (Form::and(f, g), c2)
+            }
+            Concept::Union(p, q) => {
+                let (f, c1) = Self::concept(p, x, counter);
+                let (g, c2) = Self::concept(q, x, c1);
+                (Form::or(f, g), c2)
+            }
+            Concept::Compl(p) => {
+                let (f, c1) = Self::concept(p, x, counter);
+                (Form::neg(f), c1)
+            }
+            Concept::OneOf(as_) => (
+                Form::disj(as_.iter().map(|a| Form::Eq(v(x), k(a))).collect()),
+                counter,
+            ),
+            Concept::Some_(r, p) => {
+                let y = counter;
+                let (f, c1) = Self::concept(p, y, counter + 1);
+                (ex_obj(y, Form::and(op(r, v(x), v(y)), f)), c1)
+            }
+            Concept::All_(r, p) => {
+                let y = counter;
+                let (f, c1) = Self::concept(p, y, counter + 1);
+                (all_obj(y, Form::imp(op(r, v(x), v(y)), f)), c1)
+            }
+            Concept::HasVal(r, a) => (op(r, v(x), k(a)), counter),
+            Concept::HasSelf(r) => (op(r, v(x), v(x)), counter),
+            Concept::DataSome(p, t) => (
+                ex_dat(
+                    counter,
+                    Form::and(dp(p, v(x), v(counter)), dt(t, v(counter))),
+                ),
+                counter + 1,
+            ),
+            Concept::DataAll(p, t) => (
+                all_dat(
+                    counter,
+                    Form::imp(dp(p, v(x), v(counter)), dt(t, v(counter))),
+                ),
+                counter + 1,
+            ),
+            // The two cases LATIN's OWL2toFOL.elf has commented out, and the
+            // ones 37.2% of constrained real ontologies and gchq/HQDM's 357
+            // cardinality-bearing restrictions depend on.
+            Concept::MinCard(n, r, p) => {
+                let ys: Vec<u32> = (0..*n).map(|i| counter + i).collect();
+                let (bodies, c1) = Self::concept_list(p, &ys, counter + n);
+                let mut parts = distinct_pairs(&ys);
+                parts.extend(
+                    ys.iter()
+                        .zip(bodies)
+                        .map(|(y, f)| Form::and(op(r, v(x), v(*y)), f)),
+                );
+                (mk_ex(&ys, Form::conj(parts)), c1)
+            }
+            Concept::MaxCard(n, r, p) => {
+                let ys: Vec<u32> = (0..=*n).map(|i| counter + i).collect();
+                let (bodies, c1) = Self::concept_list(p, &ys, counter + n + 1);
+                let body: Vec<Form> = ys
+                    .iter()
+                    .zip(bodies)
+                    .map(|(y, f)| Form::and(op(r, v(x), v(*y)), f))
+                    .collect();
+                (
+                    mk_all(
+                        &ys,
+                        Form::imp(Form::conj(body), Form::disj(some_pair_eq(&ys))),
+                    ),
+                    c1,
+                )
+            }
+        }
+    }
+
+    /// `OwlLean.tr.trList`: translate one concept once per subject variable,
+    /// threading the freshness counter left to right.
+    fn concept_list(p: &Concept, ys: &[u32], counter: u32) -> (Vec<Form>, u32) {
+        match ys.split_first() {
+            None => (Vec::new(), counter),
+            Some((y, rest)) => {
+                let (f, c1) = Self::concept(p, *y, counter);
+                let (mut fs, c2) = Self::concept_list(p, rest, c1);
+                fs.insert(0, f);
+                (fs, c2)
+            }
+        }
+    }
+
+    /// `OwlLean.trAx.ope`.
+    fn ope(r: &Ope, i: u32, j: u32) -> Form {
+        match r {
+            Ope::Named(r) => op(r, v(i), v(j)),
+            Ope::Inv(r) => op(r, v(j), v(i)),
+        }
+    }
+
+    /// `OwlLean.trAx`: translate an axiom to a closed formula.
+    ///
+    /// The counters are `trAx`'s own and are not a choice this file makes.
+    /// Each is routed through [`Translation::concept_fresh`], so `0 < 2`,
+    /// `1 < 2` and `0 < 1` are checked at run time rather than asserted in a
+    /// comment.
+    pub fn axiom(a: &OwlAxiom) -> Result<Form, NotFresh> {
+        Ok(match a {
+            OwlAxiom::SubClass(c, d) => {
+                let (f, n) = Self::concept_fresh(c, 0, 2)?;
+                let (g, _) = Self::concept_fresh(d, 0, n)?;
+                all_obj(0, Form::imp(f, g))
+            }
+            OwlAxiom::EquivClass(c, d) => {
+                let (f, n) = Self::concept_fresh(c, 0, 2)?;
+                let (g, _) = Self::concept_fresh(d, 0, n)?;
+                all_obj(
+                    0,
+                    Form::and(Form::imp(f.clone(), g.clone()), Form::imp(g, f)),
+                )
+            }
+            OwlAxiom::DisjointWith(c, d) => {
+                let (f, n) = Self::concept_fresh(c, 0, 2)?;
+                let (g, _) = Self::concept_fresh(d, 0, n)?;
+                all_obj(0, Form::neg(Form::and(f, g)))
+            }
+            OwlAxiom::SubOProp(r, s) => all_obj(
+                0,
+                all_obj(1, Form::imp(Self::ope(r, 0, 1), Self::ope(s, 0, 1))),
+            ),
+            OwlAxiom::OPropDomain(r, c) => {
+                let (f, _) = Self::concept_fresh(c, 0, 2)?;
+                all_obj(0, all_obj(1, Form::imp(Self::ope(r, 0, 1), f)))
+            }
+            OwlAxiom::OPropRange(r, c) => {
+                let (f, _) = Self::concept_fresh(c, 1, 2)?;
+                all_obj(0, all_obj(1, Form::imp(Self::ope(r, 0, 1), f)))
+            }
+            OwlAxiom::DPropDomain(p, c) => {
+                let (f, _) = Self::concept_fresh(c, 0, 2)?;
+                all_obj(0, all_dat(1, Form::imp(dp(p, v(0), v(1)), f)))
+            }
+            OwlAxiom::DPropRange(p, t) => all_obj(
+                0,
+                all_dat(1, Form::imp(dp(p, v(0), v(1)), dt(t, v(1)))),
+            ),
+            OwlAxiom::Transitive(r) => all_obj(
+                0,
+                all_obj(
+                    1,
+                    all_obj(
+                        2,
+                        Form::imp(
+                            Form::and(op(r, v(0), v(1)), op(r, v(1), v(2))),
+                            op(r, v(0), v(2)),
+                        ),
+                    ),
+                ),
+            ),
+            OwlAxiom::Symmetric(r) => all_obj(
+                0,
+                all_obj(1, Form::imp(op(r, v(0), v(1)), op(r, v(1), v(0)))),
+            ),
+            OwlAxiom::Asymmetric(r) => all_obj(
+                0,
+                all_obj(
+                    1,
+                    Form::imp(op(r, v(0), v(1)), Form::neg(op(r, v(1), v(0)))),
+                ),
+            ),
+            OwlAxiom::Reflexive(r) => all_obj(0, op(r, v(0), v(0))),
+            OwlAxiom::Irreflexive(r) => all_obj(0, Form::neg(op(r, v(0), v(0)))),
+            OwlAxiom::Functional(r) => all_obj(
+                0,
+                all_obj(
+                    1,
+                    all_obj(
+                        2,
+                        Form::imp(
+                            Form::and(op(r, v(0), v(1)), op(r, v(0), v(2))),
+                            Form::Eq(v(1), v(2)),
+                        ),
+                    ),
+                ),
+            ),
+            OwlAxiom::InvFunctional(r) => all_obj(
+                0,
+                all_obj(
+                    1,
+                    all_obj(
+                        2,
+                        Form::imp(
+                            Form::and(op(r, v(0), v(2)), op(r, v(1), v(2))),
+                            Form::Eq(v(0), v(1)),
+                        ),
+                    ),
+                ),
+            ),
+            OwlAxiom::InverseOf(r, s) => all_obj(
+                0,
+                all_obj(
+                    1,
+                    Form::and(
+                        Form::imp(op(r, v(0), v(1)), op(s, v(1), v(0))),
+                        Form::imp(op(s, v(1), v(0)), op(r, v(0), v(1))),
+                    ),
+                ),
+            ),
+            OwlAxiom::PropDisjoint(r, s) => all_obj(
+                0,
+                all_obj(
+                    1,
+                    Form::neg(Form::and(op(r, v(0), v(1)), op(s, v(0), v(1)))),
+                ),
+            ),
+            // `OwlLean.trAx.chainForm`: a chain of length n needs n+1 variables.
+            OwlAxiom::Chain(rs, s) => {
+                let n = rs.len() as u32;
+                let vars: Vec<u32> = (0..=n).collect();
+                let body: Vec<Form> = rs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, r)| op(r, v(i as u32), v(i as u32 + 1)))
+                    .collect();
+                mk_all(
+                    &vars,
+                    Form::imp(Form::conj(body), op(s, v(0), v(n))),
+                )
+            }
+            // The `thing(a)` conjunct here is NOT the individual typing axiom.
+            // It is part of `trAx` itself, and it is what `Mbad` refutes when
+            // the typing axioms are absent from the background theory.
+            OwlAxiom::ClassAssert(c, a) => {
+                let (f, _) = Self::concept_fresh(c, 0, 1)?;
+                Form::and(thing(k(a)), subst_var(0, &k(a), &f))
+            }
+            OwlAxiom::OPropAssert(r, a, b) => op(r, k(a), k(b)),
+            OwlAxiom::SameAs(a, b) => Form::Eq(k(a), k(b)),
+            OwlAxiom::DifferentFrom(a, b) => Form::neg(Form::Eq(k(a), k(b))),
+        })
+    }
+
+    /// `OwlLean.background`: the two domains are disjoint, and the object
+    /// domain is non-empty.
+    ///
+    /// These are the Direct Semantics' side conditions on an interpretation
+    /// and MUST accompany any translated ontology. Note that both quantifiers
+    /// are UNGUARDED in the Lean (`.all 0`, `.ex 0`, not `allObj`/`exObj`),
+    /// which is exactly what makes the second one say "some element of the
+    /// domain is an object" rather than a tautology.
+    ///
+    /// `owl-lean` also records that the disjointness axiom is never USED by
+    /// the proof: `ofStruc` cuts the single first-order domain into two Lean
+    /// types whether or not they overlap as sets, and every quantifier `tr`
+    /// emits is guarded. It is discharged, not consumed. It is emitted anyway,
+    /// because it is part of the theory the theorem is stated about and
+    /// because a consumer reading the file has no other way to learn that the
+    /// two sorts are meant to be disjoint.
+    pub fn background() -> Vec<Form> {
+        vec![
+            Form::all(0, Form::neg(Form::and(thing(v(0)), lit(v(0))))),
+            Form::ex(0, thing(v(0))),
+        ]
+    }
+
+    /// `OwlLean.indAxioms`: `Thing(a)` for each individual name.
+    ///
+    /// The absence of these was a real defect found while proving adequacy,
+    /// refuted by `OwlLean.Refutations.adequacy_needs_ind_axioms`. Real
+    /// OWL-to-FOL tools emit them; the theorem says what it costs to leave
+    /// them out.
+    pub fn ind_axioms(inds: &BTreeSet<String>) -> Vec<Form> {
+        inds.iter().map(|a| thing(k(a))).collect()
+    }
+}
+
+// ── One problem, two serialisations ─────────────────────────────────────────
+
+/// The first-order content of an export: a background theory, the individual
+/// typing axioms, the translated ontology, and optionally one conjecture.
+///
+/// Computed once. [`FolProblem::to_tptp`] and [`FolProblem::to_clif`] are
+/// renderings of it and share every formula; neither contains OWL-specific
+/// logic.
+#[derive(Clone, Debug)]
+pub struct FolProblem {
+    pub background: Vec<Form>,
+    pub ind_axioms: Vec<Form>,
+    /// Translated ontology axioms, each paired with a short label naming the
+    /// OWL axiom form it came from, so a reader of the file can find the
+    /// source construct without re-deriving it.
+    pub axioms: Vec<(String, Form)>,
+    pub conjecture: Option<(String, Form)>,
+    /// Individual names the typing axioms range over, in a fixed order.
+    pub individuals: BTreeSet<String>,
+}
+
+impl FolProblem {
+    /// Build the problem for an ontology and an optional goal.
+    ///
+    /// The individual vocabulary is collected from the translated formulas
+    /// themselves, including the goal's, so `indAxioms` covers exactly the
+    /// constants that can appear. That is what makes the adequacy theorem's
+    /// `hinds : ∀ x : S.Ind, x ∈ inds` hold for the signature this export
+    /// defines.
+    pub fn build(
+        axioms: &[OwlAxiom],
+        goal: Option<&OwlAxiom>,
+    ) -> Result<FolProblem, NotFresh> {
+        let mut translated = Vec::with_capacity(axioms.len());
+        let mut individuals = BTreeSet::new();
+        for a in axioms {
+            let f = Translation::axiom(a)?;
+            f.individuals(&mut individuals);
+            translated.push((axiom_label(a).to_string(), f));
+        }
+        let conjecture = match goal {
+            None => None,
+            Some(g) => {
+                let f = Translation::axiom(g)?;
+                f.individuals(&mut individuals);
+                Some((axiom_label(g).to_string(), f))
+            }
+        };
+        Ok(FolProblem {
+            background: Translation::background(),
+            ind_axioms: Translation::ind_axioms(&individuals),
+            axioms: translated,
+            conjecture,
+            individuals,
+        })
+    }
+
+    /// Every formula in the problem, in emission order, paired with the role
+    /// it plays. Both serialisers walk exactly this, which is the mechanical
+    /// reason they cannot disagree about which formulas are in the file.
+    pub fn formulas(&self) -> Vec<(String, &'static str, &Form)> {
+        let mut out: Vec<(String, &'static str, &Form)> = Vec::new();
+        for (i, f) in self.background.iter().enumerate() {
+            out.push((format!("background_{}", i + 1), "axiom", f));
+        }
+        for (i, f) in self.ind_axioms.iter().enumerate() {
+            out.push((format!("ind_typing_{}", i + 1), "axiom", f));
+        }
+        for (i, (label, f)) in self.axioms.iter().enumerate() {
+            out.push((format!("owl_{}_{}", i + 1, label), "axiom", f));
+        }
+        if let Some((label, f)) = &self.conjecture {
+            out.push((format!("goal_{label}"), "conjecture", f));
+        }
+        out
+    }
+
+    /// TPTP FOF.
+    pub fn to_tptp(&self) -> String {
+        let mut s = String::new();
+        s.push_str(&header("%", self.conjecture.is_some()));
+        for (name, role, f) in self.formulas() {
+            let _ = writeln!(s, "fof({name}, {role}, {}).", fof::form(f));
+        }
+        s
+    }
+
+    /// ISO/IEC 24707 CLIF, restricted to the first-order-equivalent fragment.
+    ///
+    /// Everything in the file is CLIF: there are no lexical comments, because
+    /// the standard defines `cl:comment` as a reserved element and this
+    /// project could not establish a `//` or `/* */` line-comment convention
+    /// from the standard's own text. The header therefore rides on
+    /// `cl:comment` attached to `(and)`, the empty conjunction, which ISO/IEC
+    /// 24707 A.2.3.7 makes the truth value TRUE. It is true in every model, so
+    /// it adds nothing to the theory and the file still denotes exactly the
+    /// formula set [`FolProblem::formulas`] lists.
+    pub fn to_clif(
+        &self,
+        dialect: ClifDialect,
+        comments: ClifComments,
+        name: &str,
+    ) -> String {
+        let mut s = String::new();
+        // A NAMED text. All 227 COLORE texts are named, Macleod rejects an
+        // unnamed one with "Error in ontology: bad URI", and py-typedlogic
+        // otherwise reports the first comment as the theory's name.
+        let _ = writeln!(s, "({} {}", dialect.text_op(), clif::text_name(name));
+        let _ = writeln!(
+            s,
+            "  {}",
+            clif::standalone_comment(dialect, &header_text(self.conjecture.is_some(), true))
+        );
+        for (label, role, f) in self.formulas() {
+            match comments {
+                ClifComments::Standalone => {
+                    let _ = writeln!(
+                        s,
+                        "  {}",
+                        clif::standalone_comment(dialect, &format!("{label} ({role})"))
+                    );
+                    let _ = writeln!(s, "  {}", clif::form(f));
+                }
+                ClifComments::Wrapped => {
+                    let _ = writeln!(
+                        s,
+                        "  {}",
+                        clif::commented(dialect, &format!("{label} ({role})"), f)
+                    );
+                }
+            }
+        }
+        s.push_str(")\n");
+        s
+    }
+}
+
+/// The header both serialisers carry, with each line prefixed by the syntax's
+/// comment marker. It is not decoration: a file that leaves its own limits to
+/// a README gets read without one.
+fn header(comment: &str, has_goal: bool) -> String {
+    header_text(has_goal, comment == "//")
+        .lines()
+        .map(|l| {
+            if l.is_empty() {
+                format!("{comment}\n")
+            } else {
+                format!("{comment} {l}\n")
+            }
+        })
+        .collect()
+}
+
+/// The header, unprefixed, so CLIF can carry it inside a `cl:comment` string.
+fn header_text(has_goal: bool, clif: bool) -> String {
+    let mut lines: Vec<&str> = vec![
+        "Generated by open-ontologies `fol` export.",
+        "",
+        "The translation is the one owl-lean's machine-checked adequacy theorem",
+        "`OwlLean.adequacy` is about (axioms: propext, Classical.choice, Quot.sound;",
+        "no sorry, no Mathlib). The CORRESPONDENCE between this emitter and that Lean",
+        "translation is PINNED BY TESTS AND IS NOT ITSELF PROVED.",
+        "",
+        "`thing` and `lit` are the soft-typing predicates: object positions are",
+        "relativised by `thing`, data positions by `lit`. The first two axioms are",
+        "owl-lean's `background`; the `ind_typing_*` axioms are its `indAxioms`, and",
+        "omitting them refutes adequacy outright (OwlLean.Refutations).",
+    ];
+    if clif {
+        lines.extend([
+            "",
+            "CLIF RESTRICTION. Common Logic is not plain first-order logic. This text",
+            "uses only the first-order-equivalent fragment: no sequence markers, fixed",
+            "arity at every position, and no quantification into a predicate position.",
+            "Sequence markers are what actually take Common Logic past first order",
+            "(ISO/IEC 24707 clause 6.5: the logic with them is not compact), and the",
+            "adequacy theorem is about plain first-order logic, so anything outside this",
+            "fragment would sit outside the theorem.",
+            "",
+            "`(and)` with no arguments is truth and `(or)` with no arguments is falsity",
+            "(A.2.3.7). CLIF defines no truth constants, and these are its readings.",
+            "Names are enclosed names in DOUBLE QUOTES (A.2.2.2 namequote), which A.2.2.4",
+            "recommends for writing IRIs as names. The vertical bar is an ordinary name",
+            "character in CLIF and is not a quoting construct.",
+            "",
+            "EXACTLY CONFORMANT SUBDIALECT. ISO/IEC 24707 first edition Annex A.4.2: \"The",
+            "subdialect of CLIF which does not use numerals or quoted strings is exactly",
+            "semantically conformant\". This text stays in it, so CLIF entailment and",
+            "Common Logic entailment coincide here and the adequacy theorem needs no",
+            "qualification at the CLIF end. The scope of that claim, exactly: no decimal",
+            "numerals and no quoted strings IN SENTENCE POSITIONS. Comment annotations are",
+            "the named exception, since a comment text is a quoted string by definition;",
+            "the CLIF files ISO hosts for ISO/IEC 21838-2 are in the same position. The",
+            "property is checked, not asserted: clif_stays_in_the_exactly_conformant_subdialect",
+            "in tests/fol_translation_correspondence_test.rs. Nothing here is claimed about",
+            "the second edition's Annex A.3, which this project has not read.",
+            "",
+            "DIALECT. This file uses one of the two spellings in circulation. `cl:text`",
+            "and `cl:comment` are ISO/IEC 24707's reserved tokens and are what ISO",
+            "publishes with ISO/IEC 21838-2 (BFO-2020 CLIF). The COLORE repository and",
+            "the Macleod toolchain's shipped lexer use `cl-text` and `cl-comment`",
+            "instead, and will not read the colon spelling. Re-export with the other",
+            "dialect rather than hand-editing.",
+        ]);
+    }
+    if has_goal {
+        lines.extend([
+            "",
+            "A prover's verdict on this file is an ORACLE OPINION, not a certificate.",
+            "Checking a superposition refutation needs a verified first-order calculus",
+            "with unification, which does not exist in core Lean. Disagreement between",
+            "a prover and this engine is a bug in one of the two and nothing here says",
+            "which.",
+        ]);
+    }
+    lines.join("\n")
+}
+
+fn axiom_label(a: &OwlAxiom) -> &'static str {
+    match a {
+        OwlAxiom::SubClass(..) => "subClassOf",
+        OwlAxiom::EquivClass(..) => "equivalentClass",
+        OwlAxiom::DisjointWith(..) => "disjointWith",
+        OwlAxiom::SubOProp(..) => "subObjectPropertyOf",
+        OwlAxiom::OPropDomain(..) => "objectPropertyDomain",
+        OwlAxiom::OPropRange(..) => "objectPropertyRange",
+        OwlAxiom::DPropDomain(..) => "dataPropertyDomain",
+        OwlAxiom::DPropRange(..) => "dataPropertyRange",
+        OwlAxiom::Transitive(..) => "transitiveProperty",
+        OwlAxiom::Symmetric(..) => "symmetricProperty",
+        OwlAxiom::Asymmetric(..) => "asymmetricProperty",
+        OwlAxiom::Reflexive(..) => "reflexiveProperty",
+        OwlAxiom::Irreflexive(..) => "irreflexiveProperty",
+        OwlAxiom::Functional(..) => "functionalProperty",
+        OwlAxiom::InvFunctional(..) => "inverseFunctionalProperty",
+        OwlAxiom::InverseOf(..) => "inverseOf",
+        OwlAxiom::PropDisjoint(..) => "propertyDisjointWith",
+        OwlAxiom::Chain(..) => "propertyChainAxiom",
+        OwlAxiom::ClassAssert(..) => "classAssertion",
+        OwlAxiom::OPropAssert(..) => "objectPropertyAssertion",
+        OwlAxiom::SameAs(..) => "sameAs",
+        OwlAxiom::DifferentFrom(..) => "differentFrom",
+    }
+}
+
+// ── Serialiser 1: TPTP FOF ──────────────────────────────────────────────────
+
+/// TPTP FOF rendering of [`Form`]. A fold over the formula and nothing else.
+///
+/// Named `fof` rather than `tptp` so it sits beside [`clif`] as one of two
+/// syntaxes, which is what it is.
+pub mod fof {
+    use super::{Form, P1, P2, Term};
+
+    /// Symbols are single-quoted TPTP atoms carrying a kind prefix.
+    ///
+    /// The prefix is not cosmetic. `OwlP1` and `OwlP2` are disjoint sums in
+    /// the Lean, so a class and an object property that happen to share an IRI
+    /// are two unrelated symbols, and a rendering that collapsed them would
+    /// emit a different theory. Every prefix contains a colon, which is not
+    /// legal in an unquoted TPTP lower-word, so no prefixed symbol can ever
+    /// collide with the bare atoms `thing` and `lit`.
+    fn quoted(prefix: &str, iri: &str) -> String {
+        let mut s = String::with_capacity(iri.len() + prefix.len() + 4);
+        s.push('\'');
+        s.push_str(prefix);
+        for ch in iri.chars() {
+            if ch == '\\' || ch == '\'' {
+                s.push('\\');
+            }
+            s.push(ch);
+        }
+        s.push('\'');
+        s
+    }
+
+    fn p1(p: &P1) -> String {
+        match p {
+            P1::Cls(a) => quoted("c:", a),
+            P1::Dt(d) => quoted("d:", d),
+            P1::Thing => "thing".to_string(),
+            P1::Lit => "lit".to_string(),
+        }
+    }
+
+    fn p2(p: &P2) -> String {
+        match p {
+            P2::Op(r) => quoted("op:", r),
+            P2::Dp(d) => quoted("dp:", d),
+        }
+    }
+
+    fn term(t: &Term) -> String {
+        match t {
+            Term::Var(n) => format!("X{n}"),
+            Term::Const(a) => quoted("i:", a),
+        }
+    }
+
+    /// True when the rendering is already a TPTP unitary formula and so needs
+    /// no extra bracket under `~` or after a quantifier's colon.
+    ///
+    /// The binary connectives qualify because [`form`] brackets them itself.
+    /// `Eq`, `Neg` and the quantifiers do not: `~ ~ p` is not legal TPTP,
+    /// unary connectives being non-associative, and an unbracketed `X0 = X1`
+    /// under a `~` is likewise not a unit formula.
+    fn already_unit(f: &Form) -> bool {
+        matches!(
+            f,
+            Form::App1(..)
+                | Form::App2(..)
+                | Form::Tru
+                | Form::Fls
+                | Form::And(..)
+                | Form::Or(..)
+                | Form::Imp(..)
+        )
+    }
+
+    fn unit(f: &Form) -> String {
+        if already_unit(f) {
+            form(f)
+        } else {
+            format!("({})", form(f))
+        }
+    }
+
+    /// Render a formula. Compound connectives are fully bracketed, which keeps
+    /// the output independent of any reader's precedence table.
+    pub fn form(f: &Form) -> String {
+        match f {
+            Form::App1(p, t) => format!("{}({})", p1(p), term(t)),
+            Form::App2(p, t, u) => format!("{}({},{})", p2(p), term(t), term(u)),
+            Form::Eq(t, u) => format!("{} = {}", term(t), term(u)),
+            Form::Tru => "$true".to_string(),
+            Form::Fls => "$false".to_string(),
+            Form::Neg(g) => format!("~ {}", unit(g)),
+            Form::And(g, h) => format!("({} & {})", form(g), form(h)),
+            Form::Or(g, h) => format!("({} | {})", form(g), form(h)),
+            Form::Imp(g, h) => format!("({} => {})", form(g), form(h)),
+            Form::All(n, g) => format!("! [X{n}] : {}", unit(g)),
+            Form::Ex(n, g) => format!("? [X{n}] : {}", unit(g)),
+        }
+    }
+}
+
+// ── Serialiser 2: ISO/IEC 24707 CLIF ────────────────────────────────────────
+
+/// Which spelling of the Common Logic operators to emit.
+///
+/// This is not a style choice. Two spellings are in circulation and the two
+/// main consumers disagree, so a file in one dialect is unreadable to half the
+/// ecosystem.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClifDialect {
+    /// `cl:text`, `cl:comment`.
+    ///
+    /// The spelling in ISO/IEC 24707's own reserved-token list, and what ISO
+    /// publishes the BFO axiomatisation in.
+    Iso,
+    /// `cl-text`, `cl-comment`.
+    ///
+    /// What the COLORE repository is written in and what the Macleod
+    /// toolchain's shipped lexer maps; `src/macleod/parsing/parser.py` has the
+    /// colon spellings present and commented out.
+    Colore,
+}
+
+/// Where a formula's label goes.
+///
+/// This is not cosmetic. It decides whether the file has any content a reader
+/// can recover, and the measurement is in `docs/first-order-export.md`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClifComments {
+    /// A standalone `(cl:comment '...')` phrase, then the sentence on its own.
+    ///
+    /// The default, because it is the only shape either available CLIF parser
+    /// gives back any content from. py-typedlogic treats a `(cl:comment ...)`
+    /// form as discardable, so a file whose sentences are all inside one
+    /// parses cleanly and yields ZERO sentences; Macleod has no
+    /// commented-sentence production at all. A file that is formally valid and
+    /// practically empty is the assurance-laundering shape this project exists
+    /// to attack, so it is not the default here.
+    Standalone,
+    /// `(cl:comment '...' SENTENCE)`, the shape ISO/IEC 21838-2's BFO files
+    /// use.
+    ///
+    /// Off by default. Correct CLIF, and unreadable by both parsers that exist
+    /// today, including on BFO's own files.
+    Wrapped,
+}
+
+impl ClifComments {
+    pub fn parse(s: &str) -> anyhow::Result<ClifComments> {
+        match s.to_ascii_lowercase().as_str() {
+            "standalone" | "separate" => Ok(ClifComments::Standalone),
+            "wrapped" | "bfo" => Ok(ClifComments::Wrapped),
+            other => anyhow::bail!(
+                "unknown CLIF comment placement {other:?}; expected `standalone` (the \
+                 default, the only shape either available parser recovers sentences from) \
+                 or `wrapped` (what BFO uses, and what both parsers read as empty)"
+            ),
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            ClifComments::Standalone => "standalone",
+            ClifComments::Wrapped => "wrapped",
+        }
+    }
+}
+
+impl ClifDialect {
+    pub fn parse(s: &str) -> anyhow::Result<ClifDialect> {
+        match s.to_ascii_lowercase().as_str() {
+            "iso" | "iso24707" | "colon" => Ok(ClifDialect::Iso),
+            "colore" | "macleod" | "hyphen" => Ok(ClifDialect::Colore),
+            other => anyhow::bail!(
+                "unknown CLIF dialect {other:?}; expected `iso` (cl:text, what ISO/IEC \
+                 21838-2 publishes) or `colore` (cl-text, what COLORE and Macleod read)"
+            ),
+        }
+    }
+    fn text_op(self) -> &'static str {
+        match self {
+            ClifDialect::Iso => "cl:text",
+            ClifDialect::Colore => "cl-text",
+        }
+    }
+    fn comment_op(self) -> &'static str {
+        match self {
+            ClifDialect::Iso => "cl:comment",
+            ClifDialect::Colore => "cl-comment",
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            ClifDialect::Iso => "iso",
+            ClifDialect::Colore => "colore",
+        }
+    }
+}
+
+/// CLIF rendering of [`Form`], restricted to the first-order-equivalent
+/// fragment of Common Logic.
+///
+/// Common Logic is not first-order logic: it has sequence markers, arity-free
+/// predicates, and a single universe in which relations are themselves
+/// individuals. The adequacy theorem is about a translation into PLAIN
+/// first-order logic, so the emitted text stays inside the fragment where the
+/// two coincide:
+///
+/// * no sequence markers (`...x`), which are what actually take Common Logic
+///   past first order: clause 6.5 of ISO/IEC 24707 states that a logic with
+///   them is not compact and therefore not first-order,
+/// * fixed arity everywhere: `thing` and `lit` and every class and datatype at
+///   arity one, every property at arity two, always. Arity-freedom alone does
+///   not escape first-order logic (clause 6.6.1 gives the de-punning
+///   reduction), but fixing arity is what makes the text expressible in TPTP
+///   FOF at all,
+/// * no quantification into a predicate position: every bound variable occurs
+///   only as an argument.
+///
+/// [`Form`] cannot express any of the three, which is the structural reason
+/// the restriction holds. `clif_uses_only_fol_fragment` in
+/// `tests/fol_translation_correspondence_test.rs` is the check that it still
+/// does.
+pub mod clif {
+    use super::{ClifDialect, Form, P1, P2, Term};
+
+    /// Names are written as CLIF **enclosed names**, delimited by DOUBLE
+    /// QUOTES, with `"` and `\` escaped.
+    ///
+    /// Not vertical bars. ISO/IEC 24707 A.2.2.2 sets `namequote = '"'`, and
+    /// A.2.2.4 recommends the enclosed-name syntax specifically for writing
+    /// IRIs as names. The vertical bar is an ordinary name character in CLIF
+    /// (it is in the `char` production), so `|x|` would lex as a bare name
+    /// containing two pipes and would not protect a slash or a colon. The
+    /// bar convention belongs to Common Lisp and to KIF, not to CLIF.
+    ///
+    /// The kind prefixes are the TPTP serialiser's, for the same reason:
+    /// `OwlP1` and `OwlP2` are disjoint sums in the Lean.
+    fn enclosed(prefix: &str, iri: &str) -> String {
+        let mut s = String::with_capacity(iri.len() + prefix.len() + 4);
+        s.push('"');
+        s.push_str(prefix);
+        for ch in iri.chars() {
+            if ch == '\\' || ch == '"' {
+                s.push('\\');
+            }
+            s.push(ch);
+        }
+        s.push('"');
+        s
+    }
+
+    /// A comment string, in SINGLE quotes, with `\\` and `'` escaped.
+    ///
+    /// ISO/IEC 24707 A.2.2.2 makes the single quote the string delimiter
+    /// (`stringquote`) and the double quote the enclosed-name delimiter
+    /// (`namequote`), so a comment's text is a quoted string and takes single
+    /// quotes. This exporter emitted double quotes until it was measured: the
+    /// CLIF files ISO hosts for ISO/IEC 21838-2 carry 369 double-quoted
+    /// `cl:comment` forms, and BFO's own release notes of 7 December 2025
+    /// retract exactly that, saying "Comment texts are surrounded by single,
+    /// not double quotes". BFO master has 356 single-quoted and none
+    /// double-quoted. Matching the corpus was the wrong test; the corpus had
+    /// been withdrawn by its maintainers.
+    ///
+    /// The quote style does NOT vary with the dialect. Binding the two
+    /// together meant no combination of flags could emit conforming CLIF.
+    pub fn comment_string(text: &str) -> String {
+        let mut s = String::with_capacity(text.len() + 2);
+        s.push('\'');
+        for ch in text.chars() {
+            if ch == '\\' || ch == '\'' {
+                s.push('\\');
+            }
+            s.push(ch);
+        }
+        s.push('\'');
+        s
+    }
+
+    /// A text name. Bare when the IRI has no character that would break a
+    /// name token, and a double-quoted enclosed name otherwise.
+    ///
+    /// Bare is preferred because both available parsers accept it and name the
+    /// theory correctly, while Macleod's lexer has no double-quote token at
+    /// all. CLIF's `char` production admits `:` and `/`, and COLORE names all
+    /// 227 of its texts with a bare IRI.
+    pub fn text_name(iri: &str) -> String {
+        let safe = !iri.is_empty()
+            && !iri
+                .chars()
+                .any(|c| c.is_whitespace() || matches!(c, '(' | ')' | '\'' | '"' | '|'));
+        if safe {
+            iri.to_string()
+        } else {
+            let mut s = String::from("\"");
+            for ch in iri.chars() {
+                if ch == '\\' || ch == '"' {
+                    s.push('\\');
+                }
+                s.push(ch);
+            }
+            s.push('"');
+            s
+        }
+    }
+
+    /// A standalone `(cl:comment '...')` phrase.
+    ///
+    /// Lexical comments are not used anywhere in the emitted text: ISO/IEC
+    /// 24707 defines `cl:comment` as a reserved element, whereas a `//` or
+    /// `/* */` line comment is a convention this project could not establish
+    /// from the standard's own text.
+    pub fn standalone_comment(dialect: ClifDialect, label: &str) -> String {
+        format!("({} {})", dialect.comment_op(), comment_string(label))
+    }
+
+    /// `(cl:comment '...' SENTENCE)`, the shape BFO uses.
+    ///
+    /// Correct CLIF and, measured, unreadable: py-typedlogic discards the form
+    /// and returns an empty theory, and Macleod has no production for it. It
+    /// does the same to BFO's own files. Reachable only through
+    /// `ClifComments::Wrapped`, which is not the default.
+    pub fn commented(dialect: ClifDialect, label: &str, f: &Form) -> String {
+        format!(
+            "({} {} {})",
+            dialect.comment_op(),
+            comment_string(label),
+            form(f)
+        )
+    }
+
+    fn p1(p: &P1) -> String {
+        match p {
+            P1::Cls(a) => enclosed("c:", a),
+            P1::Dt(d) => enclosed("d:", d),
+            P1::Thing => "thing".to_string(),
+            P1::Lit => "lit".to_string(),
+        }
+    }
+
+    fn p2(p: &P2) -> String {
+        match p {
+            P2::Op(r) => enclosed("op:", r),
+            P2::Dp(d) => enclosed("dp:", d),
+        }
+    }
+
+    fn term(t: &Term) -> String {
+        match t {
+            Term::Var(n) => format!("X{n}"),
+            Term::Const(a) => enclosed("i:", a),
+        }
+    }
+
+    /// Render a formula.
+    ///
+    /// `(and)` and `(or)` with no arguments are truth and falsity: CLIF's
+    /// boolean sentence takes zero or more arguments and defines no truth
+    /// constants of its own.
+    pub fn form(f: &Form) -> String {
+        match f {
+            Form::App1(p, t) => format!("({} {})", p1(p), term(t)),
+            Form::App2(p, t, u) => format!("({} {} {})", p2(p), term(t), term(u)),
+            Form::Eq(t, u) => format!("(= {} {})", term(t), term(u)),
+            Form::Tru => "(and)".to_string(),
+            Form::Fls => "(or)".to_string(),
+            Form::Neg(g) => format!("(not {})", form(g)),
+            Form::And(g, h) => format!("(and {} {})", form(g), form(h)),
+            Form::Or(g, h) => format!("(or {} {})", form(g), form(h)),
+            Form::Imp(g, h) => format!("(if {} {})", form(g), form(h)),
+            Form::All(n, g) => format!("(forall (X{n}) {})", form(g)),
+            Form::Ex(n, g) => format!("(exists (X{n}) {})", form(g)),
+        }
+    }
+}
+
+// ── Reading an ontology out of the graph ────────────────────────────────────
+
+const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
+const RDF_FIRST: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#first";
+const RDF_REST: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#rest";
+const RDF_NIL: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#nil";
+const RDFS_SUBCLASS: &str = "http://www.w3.org/2000/01/rdf-schema#subClassOf";
+const RDFS_SUBPROP: &str = "http://www.w3.org/2000/01/rdf-schema#subPropertyOf";
+const RDFS_DOMAIN: &str = "http://www.w3.org/2000/01/rdf-schema#domain";
+const RDFS_RANGE: &str = "http://www.w3.org/2000/01/rdf-schema#range";
+const RDFS_DATATYPE: &str = "http://www.w3.org/2000/01/rdf-schema#Datatype";
+const OWL: &str = "http://www.w3.org/2002/07/owl#";
+
+fn owl(local: &str) -> String {
+    format!("{OWL}{local}")
+}
+
+/// A construct present in the graph and absent from the export, with the count
+/// and the reason.
+///
+/// The description says why, not merely that. An ontology whose unexported
+/// constructs are invisible is a trap; the description-logic layer already
+/// carries `certifies_a_weaker_axiom_set` for the same reason.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Dropped {
+    pub construct: String,
+    pub occurrences: u64,
+    pub why: String,
+}
+
+/// A construct rewritten into the fragment before translation, exactly and at
+/// the OWL level.
+///
+/// These are not translation choices. `EquivalentObjectProperties(p q)` is
+/// `SubObjectPropertyOf(p q)` and `SubObjectPropertyOf(q p)` under the Direct
+/// Semantics, and `AllDisjointClasses` is its pairwise expansion. Listing them
+/// keeps the difference between "the fragment covers this" and "the fragment
+/// covers a rewriting of this" visible to a reader of the report.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Reduced {
+    pub construct: String,
+    pub occurrences: u64,
+    pub how: String,
+}
+
+/// What the reader made of the graph.
+pub struct ReadOntology {
+    pub axioms: Vec<OwlAxiom>,
+    pub dropped: Vec<Dropped>,
+    pub reduced: Vec<Reduced>,
+    /// Properties whose entity kind was not declared and had to be inferred.
+    pub inferred_object_properties: Vec<String>,
+    pub inferred_data_properties: Vec<String>,
+    /// Terms the reader treated as datatypes rather than as classes.
+    ///
+    /// `OwlP1` separates `cls` from `dt`, so `c:xsd:anyURI` and `d:xsd:anyURI`
+    /// are unrelated predicates. More to the point, `OwlLean/Syntax.lean` has
+    /// no axiom form asserting that an individual belongs to a DATATYPE:
+    /// `classAssert` takes a `Concept`, and no `Concept` constructor denotes
+    /// datatype membership. A goal of that shape has to be refused rather than
+    /// translated as a class assertion under a symbol occurring in no axiom.
+    pub datatypes: BTreeSet<String>,
+    /// Properties the reader treated as object properties, and as data
+    /// properties, declarations and inferences together.
+    ///
+    /// A goal must be built with the SAME symbols the axioms use. `OwlP2` is a
+    /// disjoint sum, so `op:p` and `dp:p` are unrelated predicates, and a
+    /// conjecture that picked the wrong arm would ask about a symbol occurring
+    /// in no axiom. The prover would answer CounterSatisfiable, correctly, and
+    /// the report would read as a disagreement with the engine when it was a
+    /// defect in the question.
+    pub object_properties: BTreeSet<String>,
+    pub data_properties: BTreeSet<String>,
+    /// Literal-valued triples whose predicate is an annotation property.
+    /// Ignoring these does not weaken the axiom set, because an annotation has
+    /// no Direct Semantics content. Reported so that is a stated fact rather
+    /// than a silent omission.
+    pub annotations_ignored: u64,
+    /// Class expressions that are not named classes, keyed by the node that
+    /// carries them.
+    ///
+    /// A derived triple can name one: `rdfs9` concludes `x rdf:type _:b` where
+    /// `_:b` is a restriction. Without this map the conjecture would be built
+    /// over an atomic class symbol that occurs nowhere in the axioms, and the
+    /// prover would report no verdict on a question nobody meant to ask. That
+    /// is worse than refusing the goal, because it reads as a limitation of
+    /// the prover rather than as a defect here.
+    pub anonymous_classes: BTreeMap<String, Concept>,
+}
+
+/// Maximum cardinality the export will expand.
+///
+/// `minCard n` emits `n(n-1)/2` distinctness literals and `n` guarded
+/// existentials, so a four-figure cardinality is a file no prover will read.
+/// Anything above the cap is DROPPED AND NAMED rather than truncated.
+const MAX_CARDINALITY: u32 = 25;
+
+/// The CLIF text name used when the source declares no `owl:Ontology` IRI.
+///
+/// Named rather than left anonymous: all 227 COLORE texts carry a name,
+/// Macleod refuses an unnamed text with "Error in ontology: bad URI", and
+/// py-typedlogic otherwise takes the first comment for the theory's name.
+const UNNAMED_TEXT: &str = "http://open-ontologies.org/fol/unnamed-export";
+
+struct Reader {
+    /// subject -> [(predicate, object)]
+    by_subject: BTreeMap<String, Vec<(String, String)>>,
+    object_properties: BTreeSet<String>,
+    data_properties: BTreeSet<String>,
+    annotation_properties: BTreeSet<String>,
+    classes: BTreeSet<String>,
+    annotations_ignored: u64,
+    dropped: BTreeMap<String, (u64, String)>,
+    reduced: BTreeMap<String, (u64, String)>,
+    inferred_object: BTreeSet<String>,
+    inferred_data: BTreeSet<String>,
+}
+
+/// Strip the N-Triples spelling oxigraph hands back: `<iri>` becomes `iri`,
+/// `_:b0` and literals are left as they are.
+fn bare(term: &str) -> &str {
+    if term.len() >= 2 && term.starts_with('<') && term.ends_with('>') {
+        &term[1..term.len() - 1]
+    } else {
+        term
+    }
+}
+
+fn is_iri(term: &str) -> bool {
+    term.starts_with('<') && term.ends_with('>')
+}
+
+fn is_literal(term: &str) -> bool {
+    term.starts_with('"')
+}
+
+impl Reader {
+    fn new(triples: Vec<(String, String, String)>) -> Reader {
+        let mut by_subject: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+        for (s, p, o) in triples {
+            by_subject.entry(s).or_default().push((p, o));
+        }
+        let mut r = Reader {
+            by_subject,
+            object_properties: BTreeSet::new(),
+            data_properties: BTreeSet::new(),
+            annotation_properties: BTreeSet::new(),
+            classes: BTreeSet::new(),
+            annotations_ignored: 0,
+            dropped: BTreeMap::new(),
+            reduced: BTreeMap::new(),
+            inferred_object: BTreeSet::new(),
+            inferred_data: BTreeSet::new(),
+        };
+        r.collect_declarations();
+        r
+    }
+
+    fn objects(&self, s: &str, p: &str) -> Vec<&str> {
+        self.by_subject
+            .get(s)
+            .map(|ps| {
+                ps.iter()
+                    .filter(|(q, _)| bare(q) == p)
+                    .map(|(_, o)| o.as_str())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn object(&self, s: &str, p: &str) -> Option<&str> {
+        self.objects(s, p).into_iter().next()
+    }
+
+    fn has_type(&self, s: &str, ty: &str) -> bool {
+        self.objects(s, RDF_TYPE).iter().any(|o| bare(o) == ty)
+    }
+
+    fn drop(&mut self, construct: &str, why: &str) {
+        let e = self
+            .dropped
+            .entry(construct.to_string())
+            .or_insert((0, why.to_string()));
+        e.0 += 1;
+    }
+
+    fn reduce(&mut self, construct: &str, how: &str) {
+        let e = self
+            .reduced
+            .entry(construct.to_string())
+            .or_insert((0, how.to_string()));
+        e.0 += 1;
+    }
+
+    fn collect_declarations(&mut self) {
+        let subjects: Vec<String> = self.by_subject.keys().cloned().collect();
+        for s in subjects {
+            let bare_s = bare(&s).to_string();
+            if self.has_type(&s, &owl("ObjectProperty")) {
+                self.object_properties.insert(bare_s.clone());
+            }
+            if self.has_type(&s, &owl("DatatypeProperty")) {
+                self.data_properties.insert(bare_s.clone());
+            }
+            if self.has_type(&s, &owl("AnnotationProperty")) {
+                self.annotation_properties.insert(bare_s.clone());
+            }
+            // A property characteristic implies an OBJECT property only when
+            // nothing has declared the property a data property. FOAF declares
+            // `foaf:msnChatID` as `owl:DatatypeProperty` AND
+            // `owl:InverseFunctionalProperty`, which OWL 2 DL forbids and
+            // RDF-serialised vocabularies do anyway. Letting the characteristic
+            // win made the axioms speak about `op:msnChatID` while every goal
+            // about it spoke about `dp:msnChatID`, and the differential
+            // reported six disagreements that were entirely this.
+            if !self.data_properties.contains(&bare_s) {
+                for extra in [
+                    "TransitiveProperty",
+                    "SymmetricProperty",
+                    "AsymmetricProperty",
+                    "ReflexiveProperty",
+                    "IrreflexiveProperty",
+                    "InverseFunctionalProperty",
+                ] {
+                    if self.has_type(&s, &owl(extra)) {
+                        self.object_properties.insert(bare_s.clone());
+                    }
+                }
+            }
+            if self.has_type(&s, &owl("Class")) || self.has_type(&s, &owl("Restriction")) {
+                self.classes.insert(bare_s.clone());
+            }
+        }
+        // An IRI declared BOTH `owl:ObjectProperty` and `owl:DatatypeProperty`
+        // is outside OWL 2 DL, which forbids that overlap. `Sig` keeps the
+        // kinds apart as distinct types, so there is no reading of such a
+        // property that the fragment supports: it would have to be `op:p` and
+        // `dp:p` at once, and those are unrelated predicates. The data
+        // declaration is taken and the conflict is recorded, because a silent
+        // choice between two declarations is the kind of thing that later
+        // looks like a reasoning bug.
+        let punned = self
+            .object_properties
+            .intersection(&self.data_properties)
+            .count() as u64;
+        if punned > 0 {
+            let e = self
+                .dropped
+                .entry("property declared both object and data".to_string())
+                .or_insert((
+                    0,
+                    "OWL 2 DL forbids the overlap and OwlLean.Sig keeps OProp and DProp \
+                     apart as distinct types, so no single symbol can carry both readings. \
+                     The data declaration is used and the object reading is not exported"
+                        .to_string(),
+                ));
+            e.0 += punned;
+            let both: Vec<String> = self
+                .object_properties
+                .intersection(&self.data_properties)
+                .cloned()
+                .collect();
+            for p in both {
+                self.object_properties.remove(&p);
+            }
+        }
+    }
+
+    /// Is this node a datatype? Declared `rdfs:Datatype`, or a member of the
+    /// two families every ontology uses without declaring.
+    ///
+    /// The goal builder in `triple_as_axiom` asks the same question of the
+    /// `datatypes` set this reader publishes, so the axioms and the conjectures
+    /// cannot disagree about which symbol a term gets.
+    fn is_datatype_node(&self, node: &str) -> bool {
+        let b = bare(node);
+        b.starts_with("http://www.w3.org/2001/XMLSchema#")
+            || b == "http://www.w3.org/2000/01/rdf-schema#Literal"
+            || b == "http://www.w3.org/1999/02/22-rdf-syntax-ns#langString"
+            || self.has_type(node, RDFS_DATATYPE)
+    }
+
+    /// Is this property an object property? Declarations win; an undeclared
+    /// property is classified by whether it ever takes a literal object, and
+    /// every such inference is reported.
+    fn is_object_property(&mut self, p: &str) -> bool {
+        if self.object_properties.contains(p) {
+            return true;
+        }
+        if self.data_properties.contains(p) {
+            return false;
+        }
+        let has_literal_object = self
+            .by_subject
+            .values()
+            .flatten()
+            .any(|(q, o)| bare(q) == p && is_literal(o));
+        if has_literal_object {
+            self.inferred_data.insert(p.to_string());
+            false
+        } else {
+            self.inferred_object.insert(p.to_string());
+            true
+        }
+    }
+
+    /// Walk an `rdf:first`/`rdf:rest` chain.
+    ///
+    /// Strict, as decision 0002 requires of the reasoner's list walk: every
+    /// node must carry both, and the chain must reach `rdf:nil`. A list that
+    /// does not is `None`, and the caller drops the axiom and names it.
+    /// Deriving less from malformed input is the sound direction.
+    fn list(&self, head: &str) -> Option<Vec<String>> {
+        let mut out = Vec::new();
+        let mut node = head.to_string();
+        let mut seen = BTreeSet::new();
+        loop {
+            if bare(&node) == RDF_NIL {
+                return Some(out);
+            }
+            if !seen.insert(node.clone()) {
+                return None; // cyclic rest chain
+            }
+            let first = self.object(&node, RDF_FIRST)?.to_string();
+            let rest = self.object(&node, RDF_REST)?.to_string();
+            out.push(first);
+            node = rest;
+        }
+    }
+
+    /// Read a class expression. `None` means outside the fragment; the reason
+    /// has already been recorded.
+    fn concept(&mut self, node: &str) -> Option<Concept> {
+        if is_literal(node) {
+            self.drop(
+                "literal in class position",
+                "a literal is not a class expression",
+            );
+            return None;
+        }
+        let b = bare(node).to_string();
+        if b == owl("Thing") {
+            return Some(Concept::Top);
+        }
+        if b == owl("Nothing") {
+            return Some(Concept::Bot);
+        }
+        if self.is_datatype_node(node) {
+            // `OwlP1` separates `cls` from `dt`, and no `Concept` constructor
+            // denotes membership of a datatype. Reading `X rdf:type xsd:anyURI`
+            // as a CLASS assertion would put an axiom in the file that the
+            // ontology does not state, which is the unsound direction: a
+            // weakening is safe and an addition is not.
+            self.drop(
+                "datatype in a class position",
+                "OwlLean/Syntax.lean has no Concept constructor for membership of a \
+                 datatype, and OwlP1 keeps cls and dt apart, so this cannot be read as \
+                 a class without inventing an axiom",
+            );
+            return None;
+        }
+        if b == owl("topObjectProperty") || b == owl("bottomObjectProperty") {
+            self.drop(
+                "owl:topObjectProperty / owl:bottomObjectProperty",
+                "fixed-interpretation properties; OwlLean/Syntax.lean has no constructor \
+                 for them and treating them as ordinary names would lose their semantics",
+            );
+            return None;
+        }
+
+        // Restriction
+        if self.has_type(node, &owl("Restriction")) {
+            return self.restriction(node);
+        }
+
+        // Boolean and enumeration constructors
+        if let Some(l) = self.object(node, &owl("intersectionOf")).map(str::to_string) {
+            if self.has_type(node, RDFS_DATATYPE) {
+                self.drop(
+                    "owl:intersectionOf on a datatype",
+                    "OwlLean/Syntax.lean has no datatype-expression layer; only named \
+                     datatypes appear, via dataSome / dataAll / dPropRange",
+                );
+                return None;
+            }
+            let items = match self.list(&l) {
+                Some(i) => i,
+                None => {
+                    self.drop(
+                        "owl:intersectionOf with a malformed list",
+                        "a node missing rdf:first or rdf:rest, or a chain not reaching \
+                         rdf:nil; deriving less from malformed input is the sound direction",
+                    );
+                    return None;
+                }
+            };
+            return self.fold_boolean(&items, true);
+        }
+        if let Some(l) = self.object(node, &owl("unionOf")).map(str::to_string) {
+            if self.has_type(node, RDFS_DATATYPE) {
+                self.drop(
+                    "owl:unionOf on a datatype",
+                    "OwlLean/Syntax.lean has no datatype-expression layer",
+                );
+                return None;
+            }
+            let items = match self.list(&l) {
+                Some(i) => i,
+                None => {
+                    self.drop("owl:unionOf with a malformed list", "see above");
+                    return None;
+                }
+            };
+            return self.fold_boolean(&items, false);
+        }
+        if let Some(c) = self.object(node, &owl("complementOf")).map(str::to_string) {
+            if self.has_type(node, RDFS_DATATYPE) {
+                self.drop(
+                    "owl:datatypeComplementOf / complementOf on a datatype",
+                    "no datatype-expression layer in the fragment",
+                );
+                return None;
+            }
+            return Some(Concept::Compl(Box::new(self.concept(&c)?)));
+        }
+        if let Some(l) = self.object(node, &owl("oneOf")).map(str::to_string) {
+            if self.has_type(node, RDFS_DATATYPE) {
+                self.drop(
+                    "owl:oneOf on a datatype (a data enumeration)",
+                    "Concept.oneOf ranges over individuals, not literals",
+                );
+                return None;
+            }
+            let items = match self.list(&l) {
+                Some(i) => i,
+                None => {
+                    self.drop("owl:oneOf with a malformed list", "see above");
+                    return None;
+                }
+            };
+            if items.iter().any(|i| is_literal(i)) {
+                self.drop(
+                    "owl:oneOf containing a literal",
+                    "Concept.oneOf ranges over individuals, not literals",
+                );
+                return None;
+            }
+            return Some(Concept::OneOf(
+                items.iter().map(|i| bare(i).to_string()).collect(),
+            ));
+        }
+
+        if is_iri(node) || node.starts_with("_:") {
+            return Some(Concept::Atom(b));
+        }
+        self.drop("unreadable class position", "neither an IRI nor a blank node");
+        None
+    }
+
+    fn fold_boolean(&mut self, items: &[String], intersection: bool) -> Option<Concept> {
+        let mut parts = Vec::with_capacity(items.len());
+        for i in items {
+            parts.push(self.concept(i)?);
+        }
+        // An n-ary constructor folds RIGHT, so `and [a,b,c]` is
+        // `Inter a (Inter b c)`, matching the shape of `Form::conj`.
+        let mut it = parts.into_iter().rev();
+        let mut acc = it.next()?;
+        for p in it {
+            acc = if intersection {
+                Concept::Inter(Box::new(p), Box::new(acc))
+            } else {
+                Concept::Union(Box::new(p), Box::new(acc))
+            };
+        }
+        Some(acc)
+    }
+
+    fn cardinality(&mut self, node: &str, pred: &str) -> Option<u32> {
+        let raw = self.object(node, &owl(pred))?.to_string();
+        // A typed literal arrives as `"2"^^<...integer>`.
+        let digits: String = raw
+            .trim_start_matches('"')
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        let n: u32 = match digits.parse() {
+            Ok(n) => n,
+            Err(_) => {
+                self.drop(
+                    "cardinality that is not a non-negative integer",
+                    "the restriction is unreadable, so it is not exported",
+                );
+                return None;
+            }
+        };
+        if n > MAX_CARDINALITY {
+            self.drop(
+                "cardinality above the expansion cap",
+                &format!(
+                    "minCard n emits n(n-1)/2 distinctness literals; the cap is {MAX_CARDINALITY} \
+                     and this restriction is dropped rather than truncated"
+                ),
+            );
+            return None;
+        }
+        Some(n)
+    }
+
+    fn restriction(&mut self, node: &str) -> Option<Concept> {
+        let prop = match self.object(node, &owl("onProperty")).map(str::to_string) {
+            Some(p) => p,
+            None => {
+                self.drop(
+                    "owl:Restriction with no owl:onProperty",
+                    "not a well-formed restriction",
+                );
+                return None;
+            }
+        };
+        if !is_iri(&prop) {
+            // `owl:onProperty [ owl:inverseOf p ]`: Concept.some_ takes an
+            // S.OProp and not an OPE, so an inverse property expression inside
+            // a restriction is outside the fragment.
+            self.drop(
+                "restriction on an inverse property expression",
+                "Concept.some_ / all_ / minCard / maxCard take a named property \
+                 (S.OProp), not an OPE, in OwlLean/Syntax.lean",
+            );
+            return None;
+        }
+        let p = bare(&prop).to_string();
+        let is_obj = self.is_object_property(&p);
+
+        if let Some(f) = self.object(node, &owl("someValuesFrom")).map(str::to_string) {
+            return if is_obj {
+                Some(Concept::Some_(p, Box::new(self.concept(&f)?)))
+            } else {
+                Some(Concept::DataSome(p, bare(&f).to_string()))
+            };
+        }
+        if let Some(f) = self.object(node, &owl("allValuesFrom")).map(str::to_string) {
+            return if is_obj {
+                Some(Concept::All_(p, Box::new(self.concept(&f)?)))
+            } else {
+                Some(Concept::DataAll(p, bare(&f).to_string()))
+            };
+        }
+        if let Some(val) = self.object(node, &owl("hasValue")).map(str::to_string) {
+            if !is_obj || is_literal(&val) {
+                self.drop(
+                    "owl:hasValue on a data property",
+                    "Concept.hasVal takes an S.OProp and an S.Ind; a literal value is \
+                     outside the fragment",
+                );
+                return None;
+            }
+            return Some(Concept::HasVal(p, bare(&val).to_string()));
+        }
+        if let Some(val) = self.object(node, &owl("hasSelf")).map(str::to_string) {
+            if val.starts_with("\"true\"") {
+                return Some(Concept::HasSelf(p));
+            }
+            self.drop(
+                "owl:hasSelf with a value other than true",
+                "only the self-restriction is in the fragment",
+            );
+            return None;
+        }
+        if self.object(node, &owl("onDataRange")).is_some() {
+            self.drop(
+                "data cardinality restriction (owl:onDataRange)",
+                "OwlLean/Syntax.lean has minCard / maxCard on object properties only",
+            );
+            return None;
+        }
+        if !is_obj
+            && ["minCardinality", "maxCardinality", "cardinality"]
+                .iter()
+                .any(|c| self.object(node, &owl(c)).is_some())
+        {
+            self.drop(
+                "cardinality restriction on a data property",
+                "OwlLean/Syntax.lean has minCard / maxCard on object properties only",
+            );
+            return None;
+        }
+
+        // Qualified forms first: `owl:onClass` is what distinguishes them.
+        let on_class = self.object(node, &owl("onClass")).map(str::to_string);
+        let filler = match &on_class {
+            Some(c) => self.concept(&c.clone())?,
+            None => Concept::Top,
+        };
+
+        for (pred, qualified) in [
+            ("minQualifiedCardinality", true),
+            ("minCardinality", false),
+        ] {
+            if self.object(node, &owl(pred)).is_some() {
+                if qualified && on_class.is_none() {
+                    self.drop(
+                        "owl:minQualifiedCardinality with no owl:onClass",
+                        "not a well-formed qualified restriction",
+                    );
+                    return None;
+                }
+                let n = self.cardinality(node, pred)?;
+                return Some(Concept::MinCard(n, p, Box::new(filler)));
+            }
+        }
+        for (pred, qualified) in [
+            ("maxQualifiedCardinality", true),
+            ("maxCardinality", false),
+        ] {
+            if self.object(node, &owl(pred)).is_some() {
+                if qualified && on_class.is_none() {
+                    self.drop(
+                        "owl:maxQualifiedCardinality with no owl:onClass",
+                        "not a well-formed qualified restriction",
+                    );
+                    return None;
+                }
+                let n = self.cardinality(node, pred)?;
+                return Some(Concept::MaxCard(n, p, Box::new(filler)));
+            }
+        }
+        for pred in ["qualifiedCardinality", "cardinality"] {
+            if self.object(node, &owl(pred)).is_some() {
+                let n = self.cardinality(node, pred)?;
+                self.reduce(
+                    "exact cardinality",
+                    "expanded as Inter (minCard n) (maxCard n), which is what the \
+                     owl-lean fragment note means by \"yes, as min+max\"",
+                );
+                return Some(Concept::Inter(
+                    Box::new(Concept::MinCard(n, p.clone(), Box::new(filler.clone()))),
+                    Box::new(Concept::MaxCard(n, p, Box::new(filler))),
+                ));
+            }
+        }
+
+        self.drop(
+            "owl:Restriction with no recognised constraint",
+            "carries owl:onProperty but none of someValuesFrom, allValuesFrom, \
+             hasValue, hasSelf or a cardinality",
+        );
+        None
+    }
+
+    /// Split the literal-valued triples into genuine data property assertions
+    /// and annotations.
+    ///
+    /// An annotation property is one declared `owl:AnnotationProperty`, or one
+    /// of the vocabulary terms the OWL 2 Structural Specification fixes as
+    /// built-in annotation properties, or a term from the usual annotation
+    /// vocabularies. The distinction matters because only the first kind is a
+    /// weakening of the axiom set.
+    fn count_literal_triples(&self) -> (u64, u64) {
+        const BUILT_IN: [&str; 9] = [
+            "http://www.w3.org/2000/01/rdf-schema#label",
+            "http://www.w3.org/2000/01/rdf-schema#comment",
+            "http://www.w3.org/2000/01/rdf-schema#seeAlso",
+            "http://www.w3.org/2000/01/rdf-schema#isDefinedBy",
+            "http://www.w3.org/2002/07/owl#versionInfo",
+            "http://www.w3.org/2002/07/owl#deprecated",
+            "http://www.w3.org/2002/07/owl#backwardCompatibleWith",
+            "http://www.w3.org/2002/07/owl#incompatibleWith",
+            "http://www.w3.org/2002/07/owl#priorVersion",
+        ];
+        const PREFIXES: [&str; 4] = [
+            "http://www.w3.org/2004/02/skos/core#",
+            "http://purl.org/dc/elements/1.1/",
+            "http://purl.org/dc/terms/",
+            "http://www.w3.org/ns/prov#",
+        ];
+        let (mut data, mut anno) = (0u64, 0u64);
+        for (p, o) in self.by_subject.values().flatten() {
+            if !is_literal(o) {
+                continue;
+            }
+            let bp = bare(p);
+            let is_anno = self.annotation_properties.contains(bp)
+                || BUILT_IN.contains(&bp)
+                || PREFIXES.iter().any(|pre| bp.starts_with(pre));
+            if is_anno {
+                anno += 1;
+            } else {
+                data += 1;
+            }
+        }
+        (data, anno)
+    }
+
+    /// Constructs that have no place in the fragment at all. Counted by
+    /// scanning for the predicate or the class, the same shape as
+    /// `DlReasoner::unmodelled_constructs`.
+    fn count_out_of_fragment(&mut self) {
+        const OUT: [(&str, &str, &str); 6] = [
+            (
+                "owl:hasKey",
+                "hasKey",
+                "no constructor in OwlLean/Syntax.lean; measured at 4.3% of constrained \
+                 ontologies and excluded from the fragment on that measurement",
+            ),
+            (
+                "owl:withRestrictions",
+                "withRestrictions",
+                "datatype facets need the OWL 2 datatype map, which is a front end concern \
+                 owl-lean has not started",
+            ),
+            (
+                "owl:onDatatype",
+                "onDatatype",
+                "datatype facets; see owl:withRestrictions",
+            ),
+            (
+                "owl:datatypeComplementOf",
+                "datatypeComplementOf",
+                "no datatype-expression layer in the fragment",
+            ),
+            (
+                "owl:NegativePropertyAssertion",
+                "NegativePropertyAssertion",
+                "no constructor in OwlLean/Syntax.lean",
+            ),
+            (
+                "owl:AllDisjointProperties",
+                "AllDisjointProperties",
+                "reduced to pairwise owl:propertyDisjointWith where every member is a \
+                 declared object property, dropped otherwise",
+            ),
+        ];
+        let mut counts: BTreeMap<&str, u64> = BTreeMap::new();
+        for (s, ps) in &self.by_subject {
+            for (p, o) in ps {
+                for (label, local, _) in OUT {
+                    let iri = owl(local);
+                    if bare(p) == iri || bare(o) == iri || bare(s) == iri {
+                        *counts.entry(label).or_default() += 1;
+                    }
+                }
+            }
+        }
+        for (label, _, why) in OUT {
+            if let Some(n) = counts.get(label) {
+                let e = self
+                    .dropped
+                    .entry(label.to_string())
+                    .or_insert((0, why.to_string()));
+                e.0 += n;
+            }
+        }
+    }
+
+    fn read(mut self) -> ReadOntology {
+        let mut axioms = Vec::new();
+        let subjects: Vec<String> = self.by_subject.keys().cloned().collect();
+
+        for s in &subjects {
+            let pairs = self.by_subject.get(s).cloned().unwrap_or_default();
+            let bare_s = bare(s).to_string();
+
+            for (p, o) in &pairs {
+                let bp = bare(p).to_string();
+                let bo = bare(o).to_string();
+
+                match bp.as_str() {
+                    RDFS_SUBCLASS => {
+                        if let (Some(c), Some(d)) =
+                            (self.concept(s), self.concept(o))
+                        {
+                            axioms.push(OwlAxiom::SubClass(c, d));
+                        }
+                    }
+                    RDFS_SUBPROP => {
+                        let so = self.is_object_property(&bare_s);
+                        let oo = is_iri(o) && self.is_object_property(&bo);
+                        if so && oo {
+                            axioms.push(OwlAxiom::SubOProp(
+                                Ope::Named(bare_s.clone()),
+                                Ope::Named(bo.clone()),
+                            ));
+                        } else {
+                            self.drop(
+                                "rdfs:subPropertyOf outside the object-property case",
+                                "OwlLean/Syntax.lean's subOProp relates two OPEs; there is \
+                                 no data-property hierarchy constructor",
+                            );
+                        }
+                    }
+                    RDFS_DOMAIN => {
+                        if self.is_object_property(&bare_s) {
+                            if let Some(c) = self.concept(o) {
+                                axioms.push(OwlAxiom::OPropDomain(
+                                    Ope::Named(bare_s.clone()),
+                                    c,
+                                ));
+                            }
+                        } else if let Some(c) = self.concept(o) {
+                            axioms.push(OwlAxiom::DPropDomain(bare_s.clone(), c));
+                        }
+                    }
+                    RDFS_RANGE => {
+                        if self.is_object_property(&bare_s) {
+                            if let Some(c) = self.concept(o) {
+                                axioms.push(OwlAxiom::OPropRange(
+                                    Ope::Named(bare_s.clone()),
+                                    c,
+                                ));
+                            }
+                        } else {
+                            axioms.push(OwlAxiom::DPropRange(bare_s.clone(), bo.clone()));
+                        }
+                    }
+                    _ => {}
+                }
+
+                if bp == owl("equivalentClass") {
+                    if self.has_type(s, RDFS_DATATYPE) || self.has_type(o, RDFS_DATATYPE) {
+                        self.drop(
+                            "owl:equivalentClass between datatypes",
+                            "a datatype definition; no datatype-expression layer in the fragment",
+                        );
+                    } else if let (Some(c), Some(d)) = (self.concept(s), self.concept(o)) {
+                        axioms.push(OwlAxiom::EquivClass(c, d));
+                    }
+                } else if bp == owl("disjointWith") {
+                    if let (Some(c), Some(d)) = (self.concept(s), self.concept(o)) {
+                        axioms.push(OwlAxiom::DisjointWith(c, d));
+                    }
+                } else if bp == owl("inverseOf") {
+                    if is_iri(s) && is_iri(o) {
+                        axioms.push(OwlAxiom::InverseOf(bare_s.clone(), bo.clone()));
+                    } else {
+                        self.drop(
+                            "owl:inverseOf on an anonymous property expression",
+                            "Axiom.inverseOf relates two named object properties",
+                        );
+                    }
+                } else if bp == owl("propertyDisjointWith") {
+                    axioms.push(OwlAxiom::PropDisjoint(bare_s.clone(), bo.clone()));
+                } else if bp == owl("equivalentProperty") {
+                    let so = self.is_object_property(&bare_s);
+                    let oo = is_iri(o) && self.is_object_property(&bo);
+                    if so && oo {
+                        self.reduce(
+                            "owl:equivalentProperty",
+                            "expanded as two subOProp axioms, which is what \
+                             EquivalentObjectProperties means under the Direct Semantics",
+                        );
+                        axioms.push(OwlAxiom::SubOProp(
+                            Ope::Named(bare_s.clone()),
+                            Ope::Named(bo.clone()),
+                        ));
+                        axioms.push(OwlAxiom::SubOProp(
+                            Ope::Named(bo.clone()),
+                            Ope::Named(bare_s.clone()),
+                        ));
+                    } else {
+                        self.drop(
+                            "owl:equivalentProperty outside the object-property case",
+                            "there is no data-property hierarchy constructor in the fragment",
+                        );
+                    }
+                } else if bp == owl("propertyChainAxiom") {
+                    match self.list(o) {
+                        Some(items) if items.iter().all(|i| is_iri(i)) => {
+                            axioms.push(OwlAxiom::Chain(
+                                items.iter().map(|i| bare(i).to_string()).collect(),
+                                bare_s.clone(),
+                            ));
+                        }
+                        _ => {
+                            self.drop(
+                                "owl:propertyChainAxiom with a malformed or anonymous chain",
+                                "Axiom.chain takes a list of named object properties",
+                            );
+                        }
+                    }
+                } else if bp == owl("sameAs") {
+                    axioms.push(OwlAxiom::SameAs(bare_s.clone(), bo.clone()));
+                } else if bp == owl("differentFrom") {
+                    axioms.push(OwlAxiom::DifferentFrom(bare_s.clone(), bo.clone()));
+                } else if bp == owl("disjointUnionOf") {
+                    match self.list(o) {
+                        Some(items) => {
+                            self.reduce(
+                                "owl:disjointUnionOf",
+                                "expanded as one equivalentClass against the union plus the \
+                                 pairwise disjointness axioms, which is its definition",
+                            );
+                            let parts: Vec<Concept> = items
+                                .iter()
+                                .filter_map(|i| self.concept(i))
+                                .collect();
+                            if parts.len() == items.len()
+                                && let Some(whole) = self.concept(s)
+                                    && let Some(u) = fold_union(&parts) {
+                                        axioms.push(OwlAxiom::EquivClass(whole, u));
+                                        for (i, a) in parts.iter().enumerate() {
+                                            for b in &parts[i + 1..] {
+                                                axioms.push(OwlAxiom::DisjointWith(
+                                                    a.clone(),
+                                                    b.clone(),
+                                                ));
+                                            }
+                                        }
+                                    }
+                        }
+                        None => {
+                            self.drop("owl:disjointUnionOf with a malformed list", "see above");
+                        }
+                    }
+                }
+            }
+
+            // Property characteristics, from rdf:type. Every one of them takes
+            // an S.OProp in OwlLean/Syntax.lean, so a characteristic on a data
+            // property is outside the fragment and is named rather than
+            // exported under the wrong symbol.
+            for (ty, mk) in [
+                ("TransitiveProperty", 0u8),
+                ("SymmetricProperty", 1),
+                ("AsymmetricProperty", 2),
+                ("ReflexiveProperty", 3),
+                ("IrreflexiveProperty", 4),
+                ("InverseFunctionalProperty", 5),
+                ("FunctionalProperty", 6),
+            ] {
+                if !self.has_type(s, &owl(ty)) {
+                    continue;
+                }
+                if !self.is_object_property(&bare_s) {
+                    self.drop(
+                        &format!("owl:{ty} on a data property"),
+                        "every property characteristic in OwlLean/Syntax.lean takes an \
+                         S.OProp; OWL 2 DL forbids these on a data property and RDF \
+                         vocabularies assert them anyway",
+                    );
+                    continue;
+                }
+                axioms.push(match mk {
+                    0 => OwlAxiom::Transitive(bare_s.clone()),
+                    1 => OwlAxiom::Symmetric(bare_s.clone()),
+                    2 => OwlAxiom::Asymmetric(bare_s.clone()),
+                    3 => OwlAxiom::Reflexive(bare_s.clone()),
+                    4 => OwlAxiom::Irreflexive(bare_s.clone()),
+                    5 => OwlAxiom::InvFunctional(bare_s.clone()),
+                    _ => OwlAxiom::Functional(bare_s.clone()),
+                });
+            }
+
+            // n-ary disjointness and difference, via their pairwise readings.
+            if self.has_type(s, &owl("AllDisjointClasses"))
+                && let Some(l) = self.object(s, &owl("members")).map(str::to_string) {
+                    match self.list(&l) {
+                        Some(items) => {
+                            self.reduce(
+                                "owl:AllDisjointClasses",
+                                "expanded pairwise into Axiom.disjointWith",
+                            );
+                            let parts: Vec<Concept> =
+                                items.iter().filter_map(|i| self.concept(i)).collect();
+                            for (i, a) in parts.iter().enumerate() {
+                                for b in &parts[i + 1..] {
+                                    axioms.push(OwlAxiom::DisjointWith(a.clone(), b.clone()));
+                                }
+                            }
+                        }
+                        None => {
+                            self.drop("owl:AllDisjointClasses with a malformed list", "see above");
+                        }
+                    }
+                }
+            if self.has_type(s, &owl("AllDifferent")) {
+                let head = self
+                    .object(s, &owl("members"))
+                    .or_else(|| self.object(s, &owl("distinctMembers")))
+                    .map(str::to_string);
+                if let Some(l) = head {
+                    match self.list(&l) {
+                        Some(items) => {
+                            self.reduce(
+                                "owl:AllDifferent",
+                                "expanded pairwise into Axiom.differentFrom",
+                            );
+                            for (i, a) in items.iter().enumerate() {
+                                for b in &items[i + 1..] {
+                                    axioms.push(OwlAxiom::DifferentFrom(
+                                        bare(a).to_string(),
+                                        bare(b).to_string(),
+                                    ));
+                                }
+                            }
+                        }
+                        None => {
+                            self.drop("owl:AllDifferent with a malformed list", "see above");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Assertions. An individual is a subject that is neither a class, a
+        // property, nor a piece of OWL syntax.
+        for s in &subjects {
+            let bare_s = bare(s).to_string();
+            if self.classes.contains(&bare_s)
+                || self.object_properties.contains(&bare_s)
+                || self.data_properties.contains(&bare_s)
+                || bare_s.starts_with(OWL)
+            {
+                continue;
+            }
+            let pairs = self.by_subject.get(s).cloned().unwrap_or_default();
+            for (p, o) in &pairs {
+                let bp = bare(p).to_string();
+                if bp == RDF_TYPE {
+                    let bo = bare(o).to_string();
+                    if bo.starts_with(OWL) || bo.starts_with("http://www.w3.org/2000/01/rdf-schema#")
+                    {
+                        continue; // a declaration, not a class assertion
+                    }
+                    if let Some(c) = self.concept(o) {
+                        axioms.push(OwlAxiom::ClassAssert(c, bare_s.clone()));
+                    }
+                    continue;
+                }
+                if bp.starts_with(OWL)
+                    || bp.starts_with("http://www.w3.org/2000/01/rdf-schema#")
+                    || bp.starts_with("http://www.w3.org/1999/02/22-rdf-syntax-ns#")
+                {
+                    continue;
+                }
+                if is_literal(o) {
+                    continue; // a data property assertion; see below
+                }
+                if self.is_object_property(&bp) {
+                    axioms.push(OwlAxiom::OPropAssert(
+                        bp.clone(),
+                        bare_s.clone(),
+                        bare(o).to_string(),
+                    ));
+                }
+            }
+        }
+
+        self.count_out_of_fragment();
+        // Data property assertions have no constructor in the fragment: the
+        // Axiom type has oPropAssert and no dPropAssert.
+        //
+        // ANNOTATIONS ARE NOT COUNTED HERE. `rdfs:label` and its kin carry no
+        // Direct Semantics content, so ignoring them does not weaken the axiom
+        // set, and counting them would bury the constructs that DO weaken it
+        // under hundreds of labels. gUFO alone has 222 literal-valued triples
+        // of which almost all are annotations. They are reported separately,
+        // under their own heading, so nothing is silent either way.
+        let (dpa, annotations) = self.count_literal_triples();
+        self.annotations_ignored = annotations;
+        if dpa > 0 {
+            self.dropped.insert(
+                "data property assertion".to_string(),
+                (
+                    dpa,
+                    "OwlLean/Syntax.lean's Axiom type has oPropAssert and no dPropAssert; \
+                     a triple with a literal object is not exported"
+                        .to_string(),
+                ),
+            );
+        }
+
+        // Resolve every anonymous class expression once more, so a conjecture
+        // naming one can be built. The drop and reduce ledgers are snapshotted
+        // across this pass: it re-reads nodes the axiom walk already read, and
+        // counting them twice would misreport how much the export omits.
+        let dropped_before = self.dropped.clone();
+        let reduced_before = self.reduced.clone();
+        let mut anonymous_classes = BTreeMap::new();
+        for s in &subjects {
+            let anon = s.starts_with("_:")
+                || self.has_type(s, &owl("Restriction"))
+                || self.object(s, &owl("intersectionOf")).is_some()
+                || self.object(s, &owl("unionOf")).is_some()
+                || self.object(s, &owl("complementOf")).is_some()
+                || self.object(s, &owl("oneOf")).is_some();
+            if !anon {
+                continue;
+            }
+            if let Some(k) = self.concept(s) {
+                anonymous_classes.insert(bare(s).to_string(), k);
+            }
+        }
+        self.dropped = dropped_before;
+        self.reduced = reduced_before;
+
+        // The datatype vocabulary: anything declared rdfs:Datatype, anything
+        // standing in a datatype position in an exported axiom, plus the two
+        // families every ontology uses without declaring.
+        let mut datatypes: BTreeSet<String> = self
+            .by_subject
+            .keys()
+            .filter(|s| self.is_datatype_node(s))
+            .map(|s| bare(s).to_string())
+            .collect();
+        fn concept_datatypes(c: &Concept, out: &mut BTreeSet<String>) {
+            match c {
+                Concept::DataSome(_, t) | Concept::DataAll(_, t) => {
+                    out.insert(t.clone());
+                }
+                Concept::Inter(a, b) | Concept::Union(a, b) => {
+                    concept_datatypes(a, out);
+                    concept_datatypes(b, out);
+                }
+                Concept::Compl(a) => concept_datatypes(a, out),
+                Concept::Some_(_, a) | Concept::All_(_, a) => concept_datatypes(a, out),
+                Concept::MinCard(_, _, a) | Concept::MaxCard(_, _, a) => {
+                    concept_datatypes(a, out)
+                }
+                _ => {}
+            }
+        }
+        for a in &axioms {
+            match a {
+                OwlAxiom::DPropRange(_, t) => {
+                    datatypes.insert(t.clone());
+                }
+                OwlAxiom::SubClass(c, d)
+                | OwlAxiom::EquivClass(c, d)
+                | OwlAxiom::DisjointWith(c, d) => {
+                    concept_datatypes(c, &mut datatypes);
+                    concept_datatypes(d, &mut datatypes);
+                }
+                OwlAxiom::OPropDomain(_, c)
+                | OwlAxiom::OPropRange(_, c)
+                | OwlAxiom::DPropDomain(_, c)
+                | OwlAxiom::ClassAssert(c, _) => concept_datatypes(c, &mut datatypes),
+                _ => {}
+            }
+        }
+
+        let mut object_properties = self.object_properties.clone();
+        object_properties.extend(self.inferred_object.iter().cloned());
+        let mut data_properties = self.data_properties.clone();
+        data_properties.extend(self.inferred_data.iter().cloned());
+
+        ReadOntology {
+            axioms,
+            datatypes,
+            object_properties,
+            data_properties,
+            annotations_ignored: self.annotations_ignored,
+            anonymous_classes,
+            dropped: self
+                .dropped
+                .into_iter()
+                .map(|(construct, (occurrences, why))| Dropped {
+                    construct,
+                    occurrences,
+                    why,
+                })
+                .collect(),
+            reduced: self
+                .reduced
+                .into_iter()
+                .map(|(construct, (occurrences, how))| Reduced {
+                    construct,
+                    occurrences,
+                    how,
+                })
+                .collect(),
+            inferred_object_properties: self.inferred_object.into_iter().collect(),
+            inferred_data_properties: self.inferred_data.into_iter().collect(),
+        }
+    }
+}
+
+fn fold_union(parts: &[Concept]) -> Option<Concept> {
+    let mut it = parts.iter().rev();
+    let mut acc = it.next()?.clone();
+    for p in it {
+        acc = Concept::Union(Box::new(p.clone()), Box::new(acc));
+    }
+    Some(acc)
+}
+
+/// Read the loaded graph into the `OwlLean/Syntax.lean` fragment.
+pub fn read_graph(triples: Vec<(String, String, String)>) -> ReadOntology {
+    Reader::new(triples).read()
+}
+
+/// Translate one RDF triple into a fragment axiom, for use as a conjecture.
+///
+/// A derived triple from `reason --certificate` is one of a handful of shapes.
+/// Anything else returns `None` and the caller must report it rather than
+/// quietly not asking the question.
+pub fn triple_as_axiom(
+    read: &ReadOntology,
+    s: &str,
+    p: &str,
+    o: &str,
+) -> Result<OwlAxiom, String> {
+    let (bs, bp, bo) = (bare(s), bare(p), bare(o));
+    // A class position that is not a named class must resolve to the class
+    // EXPRESSION the graph gives it, or the goal is not asked at all. Building
+    // an atom out of a blank node would ask about a symbol that occurs in no
+    // axiom, and the prover's inevitable non-answer would look like a limit of
+    // the prover instead of a defect here.
+    // Declarations win; an undeclared property that was never seen with a
+    // literal object is an object property, which is what the reader assumed
+    // when it built the axioms.
+    let is_object = |prop: &str| -> bool { !read.data_properties.contains(prop) };
+    // A datatype is one the reader saw in a datatype position, one declared
+    // rdfs:Datatype, or a member of the two families every ontology uses
+    // without declaring.
+    let is_datatype = |node: &str| -> bool {
+        read.datatypes.contains(node)
+            || node.starts_with("http://www.w3.org/2001/XMLSchema#")
+            || node == "http://www.w3.org/2000/01/rdf-schema#Literal"
+            || node == "http://www.w3.org/1999/02/22-rdf-syntax-ns#langString"
+    };
+    let class_at = |node: &str| -> Result<Concept, String> {
+        // The same readings `Reader::concept` gives these two. Without them a
+        // goal `X rdfs:subClassOf owl:Thing` becomes a subsumption under an
+        // ATOM that occurs in no axiom, rather than under the translation's
+        // `top`, and the prover reports a countermodel to a question nobody
+        // asked. Fifty-two of FOAF's inferences came back that way, this cause
+        // and the entity-kind one below between them.
+        if node == owl("Thing") {
+            return Ok(Concept::Top);
+        }
+        if node == owl("Nothing") {
+            return Ok(Concept::Bot);
+        }
+        if is_datatype(node) {
+            return Err(format!(
+                "{node} is a DATATYPE, and OwlLean/Syntax.lean has no axiom form asserting \
+                 that something belongs to one: Axiom.classAssert takes a Concept and no \
+                 Concept constructor denotes datatype membership. Translating it as a class \
+                 assertion would name `c:{node}`, a symbol the axioms never mention, and the \
+                 prover would report a countermodel to a question nobody asked"
+            ));
+        }
+        if node.starts_with("_:") {
+            return read.anonymous_classes.get(node).cloned().ok_or_else(|| {
+                format!(
+                    "the class position is the blank node {node}, which carries no class \
+                     expression in THIS graph. Blank node labels are not stable across \
+                     loads, so a goal naming one must come from the same graph the \
+                     export was built from"
+                )
+            });
+        }
+        Ok(read
+            .anonymous_classes
+            .get(node)
+            .cloned()
+            .unwrap_or_else(|| Concept::Atom(node.to_string())))
+    };
+    let no_form = || {
+        Err(format!(
+            "no axiom form in OwlLean/Syntax.lean corresponds to the triple \
+             ({bs} {bp} {bo}), so the question cannot be put to a prover in this \
+             translation"
+        ))
+    };
+    if is_literal(s) || is_literal(o) {
+        return Err(format!(
+            "a literal stands in a position OwlLean/Syntax.lean has no constructor for \
+             ({bs} {bp} {bo}); the Axiom type has oPropAssert and no dPropAssert"
+        ));
+    }
+    match bp {
+        RDF_TYPE => {
+            if bo.starts_with(OWL) || bo.starts_with("http://www.w3.org/2000/01/rdf-schema#") {
+                return Err(format!(
+                    "{bo} is a vocabulary declaration, not a class assertion, so there is \
+                     nothing to ask"
+                ));
+            }
+            Ok(OwlAxiom::ClassAssert(class_at(bo)?, bs.to_string()))
+        }
+        RDFS_SUBCLASS => Ok(OwlAxiom::SubClass(class_at(bs)?, class_at(bo)?)),
+        RDFS_SUBPROP => {
+            if is_object(bs) && is_object(bo) {
+                Ok(OwlAxiom::SubOProp(
+                    Ope::Named(bs.to_string()),
+                    Ope::Named(bo.to_string()),
+                ))
+            } else {
+                Err(format!(
+                    "{bs} or {bo} is a data property, and OwlLean/Syntax.lean's subOProp \
+                     relates two OPEs; there is no data-property hierarchy constructor"
+                ))
+            }
+        }
+        RDFS_DOMAIN => {
+            if is_object(bs) {
+                Ok(OwlAxiom::OPropDomain(Ope::Named(bs.to_string()), class_at(bo)?))
+            } else {
+                Ok(OwlAxiom::DPropDomain(bs.to_string(), class_at(bo)?))
+            }
+        }
+        RDFS_RANGE => {
+            if is_object(bs) {
+                Ok(OwlAxiom::OPropRange(Ope::Named(bs.to_string()), class_at(bo)?))
+            } else {
+                Ok(OwlAxiom::DPropRange(bs.to_string(), bo.to_string()))
+            }
+        }
+        _ if bp == owl("sameAs") => Ok(OwlAxiom::SameAs(bs.to_string(), bo.to_string())),
+        _ if bp == owl("differentFrom") => {
+            Ok(OwlAxiom::DifferentFrom(bs.to_string(), bo.to_string()))
+        }
+        _ if bp == owl("inverseOf") => Ok(OwlAxiom::InverseOf(bs.to_string(), bo.to_string())),
+        _ if bp == owl("equivalentClass") => {
+            Ok(OwlAxiom::EquivClass(class_at(bs)?, class_at(bo)?))
+        }
+        _ if bp == owl("disjointWith") => {
+            Ok(OwlAxiom::DisjointWith(class_at(bs)?, class_at(bo)?))
+        }
+        _ if bp.starts_with(OWL)
+            || bp.starts_with("http://www.w3.org/2000/01/rdf-schema#")
+            || bp.starts_with("http://www.w3.org/1999/02/22-rdf-syntax-ns#") =>
+        {
+            no_form()
+        }
+        _ if is_object(bp) => Ok(OwlAxiom::OPropAssert(
+            bp.to_string(),
+            bs.to_string(),
+            bo.to_string(),
+        )),
+        _ => Err(format!(
+            "{bp} is a data property, and OwlLean/Syntax.lean's Axiom type has \
+             oPropAssert and no dPropAssert"
+        )),
+    }
+}
+
+// ── The export itself ───────────────────────────────────────────────────────
+
+/// Output syntax. Two serialisers over one translation, never two
+/// translations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Syntax {
+    /// TPTP FOF, the format every first-order prover reads and the one the
+    /// differential oracle runs.
+    Tptp,
+    /// ISO/IEC 24707 Common Logic Interchange Format, restricted to the
+    /// first-order-equivalent fragment. The standards-track interchange
+    /// syntax for the same first-order content, and the one ISO/IEC 21838-2
+    /// publishes BFO in.
+    Clif(ClifDialect, ClifComments),
+}
+
+impl Syntax {
+    /// `dialect` and `comments` are consulted only for CLIF and default to
+    /// `iso` and `standalone`.
+    pub fn parse(
+        s: &str,
+        dialect: Option<&str>,
+        comments: Option<&str>,
+    ) -> anyhow::Result<Syntax> {
+        match s.to_ascii_lowercase().as_str() {
+            "tptp" | "fof" | "tptp-fof" => Ok(Syntax::Tptp),
+            "clif" | "cl" | "common-logic" => Ok(Syntax::Clif(
+                ClifDialect::parse(dialect.unwrap_or("iso"))?,
+                ClifComments::parse(comments.unwrap_or("standalone"))?,
+            )),
+            other => anyhow::bail!(
+                "unknown first-order syntax {other:?}; expected `tptp` or `clif`"
+            ),
+        }
+    }
+    pub fn extension(self) -> &'static str {
+        match self {
+            Syntax::Tptp => "p",
+            Syntax::Clif(..) => "clif",
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Syntax::Tptp => "tptp",
+            Syntax::Clif(..) => "clif",
+        }
+    }
+    pub fn dialect(self) -> Option<ClifDialect> {
+        match self {
+            Syntax::Tptp => None,
+            Syntax::Clif(d, _) => Some(d),
+        }
+    }
+    pub fn comments(self) -> Option<ClifComments> {
+        match self {
+            Syntax::Tptp => None,
+            Syntax::Clif(_, c) => Some(c),
+        }
+    }
+    fn render(self, problem: &FolProblem, name: &str) -> String {
+        match self {
+            Syntax::Tptp => problem.to_tptp(),
+            Syntax::Clif(d, c) => problem.to_clif(d, c, name),
+        }
+    }
+}
+
+/// One goal that could not be asked.
+#[derive(Debug, serde::Serialize)]
+pub struct GoalNotAsked {
+    pub triple: [String; 3],
+    pub why: String,
+}
+
+/// Export the loaded ontology to `dir`, and optionally one problem per goal.
+///
+/// `goals` is a TSV whose first three tab-separated columns are a triple in
+/// N-Triples spelling. `derivations.tsv` from `reason --certificate` has the
+/// rule in column one, so `goals_skip_columns` is 1 for that file and 0 for a
+/// plain triple list.
+pub fn export(
+    graph: &std::sync::Arc<crate::graph::GraphStore>,
+    dir: &std::path::Path,
+    syntax: Syntax,
+    goals: Option<&std::path::Path>,
+    goals_skip_columns: usize,
+) -> anyhow::Result<String> {
+    let triples = graph.all_triples()?;
+    let initial_triples = triples.len();
+    // The text name, for CLIF. The ontology's own IRI when it declares one,
+    // because a name that identifies the source is worth more than a unique
+    // one, and a stated fallback otherwise.
+    let ontology_iri = triples
+        .iter()
+        .find(|(_, p, o)| bare(p) == RDF_TYPE && bare(o) == owl("Ontology"))
+        .map(|(s, _, _)| bare(s).to_string())
+        .filter(|s| !s.starts_with("_:"))
+        .unwrap_or_else(|| UNNAMED_TEXT.to_string());
+    let read = read_graph(triples);
+
+    let problem = FolProblem::build(&read.axioms, None)?;
+    std::fs::create_dir_all(dir)?;
+    let main = dir.join(format!("ontology.{}", syntax.extension()));
+    std::fs::write(&main, syntax.render(&problem, &ontology_iri))?;
+
+    let mut goal_files = Vec::new();
+    let mut not_asked: Vec<GoalNotAsked> = Vec::new();
+    if let Some(path) = goals {
+        let text = std::fs::read_to_string(path)?;
+        let goals_dir = dir.join("goals");
+        std::fs::create_dir_all(&goals_dir)?;
+        let mut manifest = Vec::new();
+        for (i, line) in text.lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let cols: Vec<&str> = line.split('\t').collect();
+            if cols.len() < goals_skip_columns + 3 {
+                not_asked.push(GoalNotAsked {
+                    triple: [line.to_string(), String::new(), String::new()],
+                    why: format!(
+                        "fewer than {} tab-separated columns",
+                        goals_skip_columns + 3
+                    ),
+                });
+                continue;
+            }
+            let (s, p, o) = (
+                cols[goals_skip_columns],
+                cols[goals_skip_columns + 1],
+                cols[goals_skip_columns + 2],
+            );
+            let ax = match triple_as_axiom(&read, s, p, o) {
+                Ok(ax) => ax,
+                Err(why) => {
+                    not_asked.push(GoalNotAsked {
+                        triple: [s.to_string(), p.to_string(), o.to_string()],
+                        why,
+                    });
+                    continue;
+                }
+            };
+            let gp = FolProblem::build(&read.axioms, Some(&ax))?;
+            let name = format!("goal_{i:05}.{}", syntax.extension());
+            std::fs::write(
+                goals_dir.join(&name),
+                syntax.render(&gp, &format!("{ontology_iri}#goal-{i:05}")),
+            )?;
+            manifest.push(serde_json::json!({
+                "file": name,
+                "triple": [s, p, o],
+                "axiom_form": axiom_label(&ax),
+            }));
+            goal_files.push(1);
+        }
+        std::fs::write(
+            dir.join("goals.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "goals": manifest,
+                "not_asked": not_asked,
+            }))?,
+        )?;
+    }
+
+    let report = serde_json::json!({
+        "syntax": syntax.name(),
+        "clif_dialect": syntax.dialect().map(|d| d.name()),
+        "clif_comments": syntax.comments().map(|c| c.name()),
+        "clif_text_name": syntax.dialect().map(|_| ontology_iri.clone()),
+        "dir": dir.display().to_string(),
+        "ontology_file": main.display().to_string(),
+        "initial_triples": initial_triples,
+        "axioms_exported": problem.axioms.len(),
+        "background_axioms": problem.background.len(),
+        "individual_typing_axioms": problem.ind_axioms.len(),
+        "individuals": problem.individuals.len(),
+        "goal_problems": goal_files.len(),
+        "goals_not_asked": not_asked.len(),
+        // The description-logic layer already carries this flag for its model
+        // certificates. An ontology whose unexported constructs are invisible
+        // is a trap, so the flag and the list are in the OUTPUT and not only
+        // in a comment.
+        "exports_a_weaker_axiom_set": !read.dropped.is_empty(),
+        "constructs_not_exported": read.dropped,
+        "reduced_to_fragment": read.reduced,
+        "annotations_ignored": {
+            "count": read.annotations_ignored,
+            "why": "an annotation carries no OWL 2 Direct Semantics content, so ignoring \
+                    one does not weaken the axiom set. Counted separately from \
+                    constructs_not_exported for that reason, and counted rather than \
+                    passed over in silence",
+        },
+        "entity_kinds_inferred": {
+            "why": "a property with no owl:ObjectProperty or owl:DatatypeProperty \
+                    declaration is classified by whether it ever takes a literal object. \
+                    That is an inference, not a reading, so it is listed",
+            "as_object_property": read.inferred_object_properties,
+            "as_data_property": read.inferred_data_properties,
+        },
+        "translation": {
+            "mirrors": "owl-lean OwlLean/Translation.lean (tr, trAx, background, indAxioms)",
+            "theorem": "OwlLean.adequacy",
+            "theorem_axioms": ["propext", "Classical.choice", "Quot.sound"],
+            "correspondence": "PINNED BY tests/fol_translation_correspondence_test.rs AND \
+                               NOT ITSELF PROVED. Nothing mechanically checks that this Rust \
+                               is that Lean",
+            "freshness": "every entry into the concept translation goes through \
+                          Translation::concept_fresh, which refuses unless the subject \
+                          variable is strictly below the counter. OwlLean.tr_bridge holds \
+                          only under that condition and \
+                          OwlLean.Refutations.tr_bridge_needs_freshness is the countermodel",
+            "individual_typing": "thing(a) is emitted for every individual name in the \
+                                  signature. Without these axioms adequacy is FALSE: \
+                                  OwlLean.Refutations.adequacy_needs_ind_axioms refutes the \
+                                  left-to-right direction with the empty ontology and the \
+                                  axiom Top(a)",
+        },
+        "not_certified": "a prover's verdict on these files is an ORACLE OPINION and never a \
+                          certificate. Checking a superposition refutation needs a verified \
+                          first-order calculus with unification, which does not exist in core \
+                          Lean. Use tools/fol_differential.py, which reports disagreement and \
+                          does not adjudicate it",
+    });
+    Ok(report.to_string())
+}

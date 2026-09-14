@@ -443,6 +443,41 @@ enum Commands {
         #[arg(long)]
         rules: Option<String>,
     },
+    /// Export the loaded ontology as first-order logic, for an ATP
+    ///
+    /// The translation is the one owl-lean's machine-checked adequacy theorem
+    /// (`OwlLean.adequacy`) is about. The correspondence between this emitter
+    /// and that Lean is PINNED BY TESTS AND NOT ITSELF PROVED, and a prover's
+    /// verdict on the output is an oracle opinion, never a certificate.
+    Fol {
+        /// Output directory. `ontology.p` (or `.clif`) lands here, plus one
+        /// problem per goal under `goals/` when --goals is given.
+        #[arg(long)]
+        out: String,
+        /// `tptp` (FOF, what provers read) or `clif` (ISO/IEC 24707 Common
+        /// Logic, restricted to the first-order-equivalent fragment).
+        #[arg(long, default_value = "tptp")]
+        format: String,
+        /// With --format clif: `iso` (default, `cl:text`, what ISO/IEC 21838-2
+        /// publishes BFO in) or `colore` (`cl-text`, what COLORE and the
+        /// Macleod toolchain read; Macleod cannot read the ISO spelling).
+        #[arg(long, default_value = "iso")]
+        clif_dialect: String,
+        /// With --format clif: `standalone` (default) puts each label in its
+        /// own `(cl:comment '...')` phrase and the sentence bare, or `wrapped`
+        /// for `(cl:comment '...' SENTENCE)`, the shape BFO uses. Wrapped is
+        /// correct CLIF that both existing CLIF parsers read as EMPTY.
+        #[arg(long, default_value = "standalone")]
+        clif_comments: String,
+        /// A TSV of triples to ask as conjectures, one problem per line.
+        /// `derivations.tsv` from `reason --certificate` is the intended
+        /// input; pass --goals-skip-columns 1 for it, because its first
+        /// column is the rule name.
+        #[arg(long)]
+        goals: Option<String>,
+        #[arg(long, default_value_t = 0)]
+        goals_skip_columns: usize,
+    },
     /// Full pipeline: ingest → SHACL → reason
     Extend {
         data_path: String,
@@ -644,6 +679,25 @@ impl Commands {
                     a.push(absolutize(r));
                 }
                 cmd("reason", a)
+            }
+            Commands::Fol { out, format, clif_dialect, clif_comments, goals, goals_skip_columns } => {
+                let mut a = vec![
+                    "--out".into(),
+                    absolutize(out),
+                    "--format".into(),
+                    format.clone(),
+                    "--clif-dialect".into(),
+                    clif_dialect.clone(),
+                    "--clif-comments".into(),
+                    clif_comments.clone(),
+                ];
+                if let Some(g) = goals {
+                    a.push("--goals".into());
+                    a.push(absolutize(g));
+                    a.push("--goals-skip-columns".into());
+                    a.push(goals_skip_columns.to_string());
+                }
+                cmd("fol", a)
             }
             Commands::Shacl { shapes } => cmd("shacl", vec![absolutize(shapes)]),
             Commands::Status => cmd("status", vec![]),
@@ -2357,6 +2411,25 @@ async fn async_main() -> anyhow::Result<()> {
             };
             output_result_checked(&result, cli.pretty);
         }
+        Commands::Fol { out, format, clif_dialect, clif_comments, goals, goals_skip_columns } => {
+            let (_db, graph) = setup(&cli.data_dir)?;
+            let result = match open_ontologies::tptp::Syntax::parse(
+                &format,
+                Some(&clif_dialect),
+                Some(&clif_comments),
+            ) {
+                Ok(syntax) => open_ontologies::tptp::export(
+                    &graph,
+                    std::path::Path::new(&out),
+                    syntax,
+                    goals.as_deref().map(std::path::Path::new),
+                    goals_skip_columns,
+                )
+                .unwrap_or_else(|e| serde_json::json!({"error": e.to_string()}).to_string()),
+                Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
+            };
+            output_result_checked(&result, cli.pretty);
+        }
         Commands::Extend {
             data_path,
             format: _format,
@@ -2871,6 +2944,7 @@ mod proxy_serialization_tests {
             Commands::Query { query: "SELECT ?s WHERE { ?s ?p ?o }".into() },
             Commands::Lint { input: "x.ttl".into() },
             Commands::Reason { profile: "rdfs".into(), certificate: None, rules: None },
+            Commands::Fol { out: "/tmp/fol".into(), format: "tptp".into(), clif_dialect: "iso".into(), clif_comments: "standalone".into(), goals: None, goals_skip_columns: 0 },
             Commands::Shacl { shapes: "s.ttl".into() },
             Commands::Status,
             Commands::Pull { url: "http://example.org".into(), sparql: false, query: None },
