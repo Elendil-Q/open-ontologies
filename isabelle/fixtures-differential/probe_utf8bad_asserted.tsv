@@ -1,0 +1,2 @@
+<http://ex.org/café>	<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>	<http://ex.org/中文>
+<http://ex.org/中文>	<http://www.w3.org/2000/01/rdf-schema#subClassOf>	<http://ex.org/🎯>

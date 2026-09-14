@@ -62,3 +62,9 @@ OUTREACH.md
 # local-only: it does not travel with the repo, it is gone on a fresh clone, and
 # it is invisible to a collaborator or to an agent working in one.
 benchmark/handshake_gate/
+
+# The native Isabelle checker, linked from the committed generated ML by
+# isabelle/build_native.sh. A build artefact, not a source: it is a machine-specific
+# binary linked against the Poly/ML runtime in whichever Isabelle installation was
+# found, so committing it would ship a file that runs on one machine.
+isabelle/build/
