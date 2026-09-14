@@ -45,11 +45,19 @@
 //!   development decodes an N-Triples escape, so it cannot tell a literal backslash
 //!   from an escape sequence.
 //!
-//! The Rust engine's own number, under its own harness at the same suite commit, is
-//! PASS 36 / FAIL 24 / UNDETERMINED 60 of 120. That is the comparison to hold this
-//! against, and it is not an apples-to-apples one: the two answer different SETS of
-//! tests. What is comparable is that the SPARQL-backed engine answers 60 of the 120
-//! and is wrong on 24 of them, and this one answers 91 and is wrong on none.
+//! The Rust engine's own number is printed alongside at run time, read from its
+//! committed baseline rather than repeated here, because a number typed into
+//! prose goes stale silently and this one did within a day. The comparison is
+//! not apples to apples either way: the two answer different SETS of tests.
+//! What is comparable is how many of the 120 each ANSWERS and how many of those
+//! it gets wrong.
+//!
+//! And FAIL at 0 claims less than it looks. It is 0 on the tests this evaluator
+//! answers, under a lens that ignores sh:resultPath, sh:value, sh:resultSeverity,
+//! sh:resultMessage, result multiplicity and blank-node identity. It is 0 on
+//! this suite, which is not the same as 0 against the Recommendation: the suite
+//! is the only gate on the compiler, so a constraint the suite never exercises
+//! is not checked by anything here.
 //!
 //! # The comparison, which is the same one the other harness uses
 //!
@@ -1007,6 +1015,19 @@ fn the_vendored_suite_is_whole() {
 }
 
 /// The headline: what the verified evaluator scores, and where the rest went.
+/// The other harness's counts, from the baseline it commits. Returns None rather
+/// than a guess if the file is absent or its shape changes.
+fn rust_engine_baseline() -> Option<(u64, u64, u64)> {
+    let raw = std::fs::read_to_string(repo().join("tests").join("w3c_shacl_baseline.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let counts = v.get("counts").unwrap_or(&v);
+    Some((
+        counts.get("pass")?.as_u64()?,
+        counts.get("fail")?.as_u64()?,
+        counts.get("undetermined")?.as_u64()?,
+    ))
+}
+
 #[test]
 fn the_verified_conformance_report() {
     if skip() {
@@ -1055,13 +1076,26 @@ fn the_verified_conformance_report() {
          refusal is NOT credited as a reported failure.",
         r.failure_expected, r.failure_undetermined
     );
-    eprintln!(
-        "\n  for comparison, the SPARQL-backed Rust engine under its own harness at the same\n  \
-         suite commit: PASS 36 / FAIL 24 / UNDETERMINED 60. It ANSWERS {} of the 120 and gets\n  \
-         24 of those wrong; this one answers {} and gets none wrong.",
-        36 + 24,
-        c.pass + c.fail
-    );
+    // Read from the other harness's committed baseline rather than typed here.
+    // These constants were typed once and went stale within a day: they said the
+    // Rust engine was at 36/24/60 when it was at 35/17/68, inside a report whose
+    // entire value is that its numbers are measured. A number standing next to
+    // the screen that shows it has to be derived from the same source, or it
+    // becomes a claim nothing checks.
+    match rust_engine_baseline() {
+        Some((rp, rf, ru)) => eprintln!(
+            "\n  for comparison, the SPARQL-backed Rust engine under its own harness at the same\n  \
+             suite commit, read from tests/w3c_shacl_baseline.json: PASS {rp} / FAIL {rf} /\n  \
+             UNDETERMINED {ru}. It ANSWERS {} of the 120 and is wrong on {rf}; this one answers\n  \
+             {} and is wrong on none of those it answers.",
+            rp + rf,
+            c.pass + c.fail
+        ),
+        None => eprintln!(
+            "\n  the Rust engine's baseline could not be read, so no comparison is printed.\n  \
+             A missing number is better than a stale one."
+        ),
+    }
 
     // Where the undetermined tests went, clustered, with every test named under
     // its cluster so the next piece of work can be picked by evidence rather than

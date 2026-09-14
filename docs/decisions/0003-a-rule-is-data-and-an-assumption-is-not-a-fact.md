@@ -1,10 +1,9 @@
 # 0003 · A rule is data, and an assumption is not a fact
 
 - **Status**: implemented · `lean/OOCert/Horn.lean` with `horn_certificate_sound` machine-checked ·
-  `lean/OOCert/HornBuiltin.lean` discharges 19 of the engine's rules against the semantics, giving
+  `lean/OOCert/HornBuiltin.lean` discharges the engine's Horn rules against the semantics (27 table rows covering 25 W3C rules, since `scm-eqc1` and `scm-eqp1` each license two conclusions), giving
   `entails_of_builtin_horn` · checker `oo-horn`, gated by `tests/lean_horn_certificate_test.rs` and
-  a CI leg · **the Rust reasoner does not yet emit Horn certificates**, and
-  `lean/OOCert/Mixed.lean` is deferred (see Not done)
+  a CI leg · `reason --rules` emits Horn certificates, and `lean/OOCert/Mixed.lean` has landed
 - **Written**: 2026-09-14
 - **Related**: decision 0002 (an inference carries a certificate); the adversarial-SHACL assurance
   laundering work, which named the failure this decision is built to avoid
@@ -26,7 +25,7 @@ Extending the checker rule by rule would mean a Lean edit per customer.
    over rules, because there is no per-rule structure left in the checker. Axioms are
    `propext`, `Classical.choice`, `Quot.sound`, identical to the existing theorem. The trust surface
    does not grow.
-3. **The built-ins are a rule table like any other.** 19 of the engine's rules are Horn rules and are
+3. **The built-ins are a rule table like any other.** Most of the engine's rules are Horn rules and are
    written out as data in `HornBuiltin.lean`, each with a one-line lemma deriving it from the
    semantic conditions. `cls-int1` and `cls-uni` are not Horn rules and stay as arms: their premise
    count is the length of an RDF list, which is data rather than fixed by the rule. That is not a gap
@@ -52,11 +51,16 @@ whether the rule is true, whether the rule set is consistent, or whether the ass
 accurate. Under a user table the guarantee is conditional on assumptions the user wrote, and the
 report says so in the verdict rather than in a footnote.
 
-## Not done
+## Since written
 
-- The Rust reasoner cannot yet evaluate a supplied rule table or emit a Horn certificate, so today
-  the layer checks certificates rather than producing them. That is the next piece.
-- `Mixed.lean`, which lets one certificate carry both built-in arms and Horn steps, needs
-  `Soundness.lean` generalised from `Entails G` to `EntailsIn P`. The change is mechanical across
-  about twenty cases and was deferred rather than rushed. Until it lands, a user-rule certificate
-  cannot also cite `cls-int1` or `cls-uni`.
+Both items listed here as not done have landed. `reason --rules` evaluates a supplied table and
+emits a certificate, and `Mixed.lean` lets one certificate carry both built-in arms and Horn steps,
+which needed `Soundness.lean` generalised from `Entails G` to `EntailsIn P` across about twenty
+cases. The engine's rule count has since grown; the checker covers 29 of the OWL 2 RL profile's 78
+rules, 30 counting `cax-dw` in the refutation layer, and four of them stay as hand-written arms
+because their premise count is the length of an RDF list.
+
+## Still not done
+
+- Nothing in `src/` writes the refutation format, so inconsistency can be checked and not yet
+  produced by this engine.
