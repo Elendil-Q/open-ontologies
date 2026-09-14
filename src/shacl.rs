@@ -155,6 +155,16 @@ impl ShaclValidator {
         // skipped, even one a later change starts to evaluate, because a
         // whitelist that tracks what is implemented drifts the first time
         // someone adds a constraint and forgets the list. `sh:deactivated` is
+        // The property-constraint family is exempt ONLY on a shape that carries
+        // `sh:path`, because only then is it evaluated, by the property
+        // machinery treating the shape as its own property shape. Exempting it
+        // unconditionally was a regression measured at once: twenty tests moved
+        // out of "undetermined" and into "wrong answer", because the validator
+        // stopped saying it had not evaluated a node-level `sh:datatype` and
+        // started reporting a clean run instead. The conformance ratchet caught
+        // it. A false clean is worse than an honest null, which is the whole
+        // reason the third answer exists.
+        //
         // deliberately absent: SHACL says a deactivated shape must not be
         // evaluated and this validator evaluates it anyway, so the predicate
         // is not implemented and must reach skipped like any other.
@@ -227,7 +237,15 @@ impl ShaclValidator {
                     sh:targetObjectsOf, sh:property, sh:sparql, sh:or,
                     sh:message, sh:severity, sh:name, sh:description,
                     sh:order, sh:group
-                ) && !(?pred IN (sh:closed, sh:deactivated)
+                )
+                && !(EXISTS { ?shape sh:path ?_selfPathNC } && ?pred IN (
+                    sh:path, sh:minCount, sh:maxCount, sh:datatype, sh:class,
+                    sh:pattern, sh:hasValue, sh:in, sh:nodeKind, sh:not,
+                    sh:minLength, sh:maxLength, sh:lessThan, sh:lessThanOrEquals,
+                    sh:minInclusive, sh:maxInclusive, sh:minExclusive, sh:maxExclusive,
+                    sh:qualifiedValueShape, sh:qualifiedMinCount, sh:qualifiedMaxCount,
+                    sh:node
+                )) && !(?pred IN (sh:closed, sh:deactivated)
                     && isLiteral(?o) && datatype(?o) = xsd:boolean && ?o = false
                 ))
             }
@@ -294,7 +312,7 @@ impl ShaclValidator {
                     r#"
                     PREFIX sh: <http://www.w3.org/ns/shacl#>
                     SELECT ?shape ?prop ?path ?invPath ?minCount ?maxCount ?datatype ?class ?pattern ?hasValue ?nodeKind ?minInclusive ?maxInclusive ?minExclusive ?maxExclusive ?minLength ?maxLength ?lessThan ?lessThanOrEquals ?node ?message ?severity WHERE {{
-                        {} sh:property ?prop .
+{}
                         ?prop sh:path ?path .
                         OPTIONAL {{ ?path sh:inversePath ?invPath }}
                         OPTIONAL {{ ?prop sh:class ?class }}
@@ -317,7 +335,7 @@ impl ShaclValidator {
                         OPTIONAL {{ ?prop sh:severity ?severity }}
                     }}
                     "#,
-                    "?shape"
+                    PROPERTY_SHAPES_OF
                 ),
                 "shape",
                 &shape_node,
@@ -328,6 +346,14 @@ impl ShaclValidator {
             // `sh:not` was invisible: it was never collected, never evaluated, and
             // never recorded, so a shape whose only constraint was `sh:not` returned
             // `conforms: true` over data that violated it.
+            //
+            // The target predicates and the shape-level constructs are listed
+            // alongside the property constraints because a shape carrying
+            // `sh:path` is now its own property shape, so this complement sees
+            // every predicate on it and not only the ones under `sh:property`.
+            // Without them a root property shape reported its own `sh:targetNode`
+            // as a constraint nobody implemented, which suppressed a verdict
+            // the validator had in fact reached.
             //
             // Restricted to the SHACL namespace, exactly as the node-shape
             // complement above already is. A predicate from any other namespace
@@ -345,7 +371,7 @@ impl ShaclValidator {
                     r#"
                     PREFIX sh: <http://www.w3.org/ns/shacl#>
                     SELECT DISTINCT ?shape ?pred WHERE {{
-                        {} sh:property ?prop .
+{}
                         ?prop ?pred ?o .
                         FILTER(STRSTARTS(STR(?pred), "http://www.w3.org/ns/shacl#") && ?pred NOT IN (
                             sh:path, sh:minCount, sh:maxCount, sh:datatype,
@@ -358,11 +384,13 @@ impl ShaclValidator {
                             sh:qualifiedValueShape, sh:qualifiedMinCount,
                             sh:qualifiedMaxCount,
                             sh:node,
-                            sh:name, sh:description, sh:order, sh:group
+                            sh:name, sh:description, sh:order, sh:group,
+                            sh:targetClass, sh:targetNode, sh:targetSubjectsOf,
+                            sh:targetObjectsOf, sh:property, sh:sparql, sh:deactivated
                         ))
                     }}
                     "#,
-                    "?shape"
+                    PROPERTY_SHAPES_OF
                 ),
                 "shape",
                 &shape_node,
@@ -401,7 +429,7 @@ impl ShaclValidator {
                     PREFIX sh: <http://www.w3.org/ns/shacl#>
                     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
                     SELECT ?shape ?prop ?path ?datatype ?class ?hasValue ?other WHERE {{
-                        {} sh:property ?prop .
+{}
                         ?prop sh:path ?path .
                         ?prop sh:or/rdf:rest*/rdf:first ?member .
                         OPTIONAL {{ ?member sh:datatype ?datatype }}
@@ -413,7 +441,7 @@ impl ShaclValidator {
                         }}
                     }}
                     "#,
-                    "?shape"
+                    PROPERTY_SHAPES_OF
                 ),
                 "shape",
                 &shape_node,
@@ -481,7 +509,7 @@ impl ShaclValidator {
                     PREFIX sh: <http://www.w3.org/ns/shacl#>
                     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
                     SELECT ?shape ?prop ?path ?datatype ?class ?hasValue ?pattern ?other WHERE {{
-                        {} sh:property ?prop .
+{}
                         ?prop sh:path ?path .
                         ?prop sh:not ?inner .
                         OPTIONAL {{ ?inner sh:datatype ?datatype }}
@@ -496,7 +524,7 @@ impl ShaclValidator {
                         }}
                     }}
                     "#,
-                    "?shape"
+                    PROPERTY_SHAPES_OF
                 ),
                 "shape",
                 &shape_node,
@@ -739,7 +767,7 @@ impl ShaclValidator {
                     PREFIX sh: <http://www.w3.org/ns/shacl#>
                     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
                     SELECT ?shape ?prop ?path ?class ?datatype ?hasValue ?other ?qmin ?qmax ?message ?severity WHERE {{
-                        {} sh:property ?prop .
+{}
                         ?prop sh:path ?path ; sh:qualifiedValueShape ?q .
                         OPTIONAL {{ ?q sh:class ?class }}
                         OPTIONAL {{ ?q sh:datatype ?datatype }}
@@ -754,7 +782,7 @@ impl ShaclValidator {
                         OPTIONAL {{ ?prop sh:severity ?severity }}
                     }}
                     "#,
-                    "?shape"
+                    PROPERTY_SHAPES_OF
                 ),
                 "shape",
                 &shape_node,
@@ -856,12 +884,12 @@ impl ShaclValidator {
                     PREFIX sh: <http://www.w3.org/ns/shacl#>
                     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
                     SELECT ?shape ?prop ?path ?member WHERE {{
-                        {} sh:property ?prop .
+{}
                         ?prop sh:path ?path .
                         ?prop sh:in/rdf:rest*/rdf:first ?member .
                     }}
                     "#,
-                    "?shape"
+                    PROPERTY_SHAPES_OF
                 ),
                 "shape",
                 &shape_node,
@@ -1880,13 +1908,13 @@ impl ShaclValidator {
                     r#"
                     PREFIX sh: <http://www.w3.org/ns/shacl#>
                     SELECT ?shape ?prop ?path ?class ?datatype WHERE {{
-                        {} sh:property ?prop .
+{}
                         ?prop sh:path ?path .
                         OPTIONAL {{ ?prop sh:class ?class }}
                         OPTIONAL {{ ?prop sh:datatype ?datatype }}
                     }}
                     "#,
-                    "?shape"
+                    PROPERTY_SHAPES_OF
                 ),
                 "shape",
                 &shape_node,
@@ -1979,6 +2007,24 @@ impl ShaclValidator {
 
 /// Run a SPARQL SELECT against a temporary shapes `Store` and return results
 /// as a vec of maps (variable name -> string value).
+/// Matches the property shapes of `?shape`: the ones hanging under
+/// `sh:property`, and the shape ITSELF when it carries `sh:path`.
+///
+/// A shape can be its own property shape. `ex:R a sh:PropertyShape ;
+/// sh:targetNode ex:a ; sh:path ex:name ; sh:minCount 1` is a complete, legal
+/// shapes graph, and it is what the W3C suite's `core/path` tests are built
+/// from. Every discovery query here looked only under `sh:property`, so such a
+/// shape was selected as a target, contributed its focus node to the count, and
+/// then had every one of its constraints dropped: `conforms: true`, no
+/// violations, nothing in `skipped_constraints`, nothing in `unmatched_shapes`.
+/// A false clean, and the module's own documentation had flagged it as the one
+/// open case of exactly the failure this file exists to prevent. Twelve tests in
+/// the W3C suite turn on it.
+const PROPERTY_SHAPES_OF: &str = r#"
+                        { ?shape sh:property ?prop . }
+                        UNION
+                        { ?shape sh:path ?_selfPath . BIND(?shape AS ?prop) }"#;
+
 /// Run a query against the shapes graph with `var` pre-bound to `term`.
 ///
 /// The shape being examined used to be spliced into the query text. For an
