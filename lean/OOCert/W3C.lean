@@ -113,7 +113,16 @@ above does not already buy.
 ## Sources, re-fetched from the raw HTML rather than from a rendering
 
 All quotes below are from <https://www.w3.org/TR/owl2-rdf-based-semantics/>,
-fetched 14 September 2026, read out of the raw HTML with the markup intact. A
+first fetched 14 September 2026 and re-fetched independently on 15 September
+2026, read out of the raw HTML with the markup intact. Every cell cited in this
+file was checked against that second fetch, one by one: Tables 5.2 (`rdfs:Class`
+`= IC`, `owl:Restriction` `⊆ IC`, and the `rdf:Property` `= IP` and `owl:Thing`
+`= IR` rows this structure deliberately omits), 5.3 (the `someValuesFrom`,
+`allValuesFrom` and `onProperty` typing rows), 5.6 (the `if`/`then` header and
+the three set equalities), 5.8, 5.9, 5.12 and 5.13, plus the sequence-expression
+definition and, from RDF 1.1 Semantics <https://www.w3.org/TR/rdf11-mt/>,
+section 5's truth clause and `IEXT` domain and section 9's transitivity
+conditions. A
 markdown conversion of these tables loses the `rowspan` attributes and renders
 Table 5.8's `iff` as `if`, which would make the twelve-arm result unprovable
 and the mistake invisible. The single load-bearing fact is Table 5.8's
