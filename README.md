@@ -7,9 +7,9 @@
 <h1 align="center">Open Ontologies</h1>
 
 <p align="center">
-  <strong>An ontology engine whose answers carry their evidence</strong><br>
-  Reason, validate and align over RDF and OWL, then have a small verified checker in Lean 4
-  confirm the result. Written in Rust. Ships as a single binary.
+  <strong>An engineering and verification platform for trustworthy ontologies and knowledge graphs</strong><br>
+  Build, change and operate them with Terraform-style lifecycle management, and reason over them
+  with proof-carrying inference. Written in Rust. Ships as a single binary.
 </p>
 
 <p align="center">
@@ -89,6 +89,55 @@ one triple an answer depends on, and one at 60% can preserve every claim that ma
 is a proxy that rises as the slice grows, so a retriever tuned on it learns to fetch more rather
 than the right thing. Entailment preservation is the property, it is decidable here, and it
 carries a certificate per claim. See [decision 0007](docs/decisions/0007-a-slice-preserves-a-conclusion-or-it-does-not.md).
+
+## What is NOT proved
+
+Every line above is worth less if this section is missing, so it is here rather than in a file
+nobody opens. These are the load-bearing limits, and none of them is hypothetical.
+
+**The Rust engine is almost entirely unverified.** The theorems are conditional: they say that IF
+the asserted graph is what the certificate claims and IF the derivation steps are the ones taken,
+THEN the conclusions hold. Everything to the left of that is a serialiser, a parser and an
+interner, and if they misrepresent the run, a valid proof certifies the wrong thing. That boundary
+is named property by property in [docs/trusted-computing-base.md](docs/trusted-computing-base.md),
+property-tested, and partly bounded-model-checked. It is not verified. This work verified the
+joint, not the machine.
+
+**The Lean assumes eight of the rule-semantic conditions rather than deriving them.** For those
+arms the theorem says the rule is sound because a field of a condition record says so, which is
+close to no machine-checked content at all. The independent Isabelle derives them from the
+specification tables, which is how we know the assumption was avoidable. Being fixed; not fixed yet.
+
+**Two kernels agreeing is weaker than it sounds.** The Lean and Isabelle model classes have not
+been related tightly enough for "both said entailed" to mean what a reader would naturally take it
+to mean. They are theorems over model classes nobody has ordered in either direction. Separately,
+Lean's model class is LARGER than the specification's, so entailment transfers outward and
+NON-entailment does not: the countermodels prove less than they appear to.
+
+**A non-vacuity witness can be vacuous where it matters.** Isabelle's satisfies many of its
+conditions only because the relevant extensions are empty, including every condition its own
+authors call the sharpest trap. A witness that is vacuous exactly where the conditions are
+strongest establishes very little, and it is the failure mode that most resembles success.
+
+**Negative answers are mostly unchecked opinion.** A refutation cannot be replayed in core Lean, so
+an "unsatisfiable" from any prover is testimony, not a certificate. One clash rule has a semantic
+condition and is certified; the other sixteen are detected and deliberately carry no certificate.
+A model is a finite object and can be checked, which is why satisfiability can be certified and
+unsatisfiability cannot.
+
+**The proofs are ahead of the published release.** The verified layer described here is on `main`
+and is newer than the last tagged release. If you installed from a release binary, you do not have
+it.
+
+**Governance.** `main` requires the CI, Lean, SHACL-conformance and Python checks to pass, and
+refuses force pushes and deletion. Those rules do not currently apply to repository admins, so
+they are a safety net and not a control. Commits are not signed yet.
+
+**The scope is wider than the idea.** The one genuinely new thing here is proof-carrying reasoning:
+an engine that hands you evidence a separate verified checker accepts. The tool count, the Studio,
+the embeddings, the crosswalks and the plugins are a product built around it, and they are not what
+makes this different. If you are evaluating the claim, read
+[docs/decisions/](docs/decisions/) and [lean/](lean/), and ignore the rest.
 
 The second kernel is in [isabelle/](isabelle/), written from the W3C specifications with the Lean
 deliberately unread, and it is run over the same bytes on every differential run.
