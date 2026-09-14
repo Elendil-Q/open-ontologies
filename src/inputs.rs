@@ -1002,6 +1002,60 @@ pub struct GraphProjectionLossyCheckInput {
     pub projected_ttl: String,
 }
 
+/// Input for `graph_projection_entailment_check`. The goal-directed form: the
+/// caller supplies the claims its answer rests on, because at query time it
+/// knows what it is about to assert.
+#[derive(Deserialize, JsonSchema)]
+pub struct GraphProjectionEntailmentCheckInput {
+    /// The slice as Turtle. Mutually exclusive with `projection_graph`.
+    #[serde(default)]
+    pub projected_ttl: Option<String>,
+    /// A named graph of the loaded store holding the slice. Preferred: blank
+    /// node identity survives, so subsethood is verified over every triple
+    /// rather than approximated over the ground ones.
+    #[serde(default)]
+    pub projection_graph: Option<String>,
+    /// Turtle in which every triple is a claim the answer rests on. Blank nodes
+    /// and non-triple claims are refused BY NAME, never silently dropped.
+    pub goals_ttl: String,
+    /// One profile for both runs. Default `owl-rl`.
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// Seeds for the demoted coverage proxy. Never derived from `goals_ttl`.
+    #[serde(default)]
+    pub seed_iris: Vec<String>,
+    /// Where the two certificates and the per-goal slices land. Defaults to a
+    /// temporary directory.
+    #[serde(default)]
+    pub certificate_dir: Option<String>,
+    /// Turn an absent Lean checker into an error instead of an honest unchecked
+    /// verdict.
+    #[serde(default)]
+    pub require_checker: Option<bool>,
+}
+
+/// Input for `onto_closure_diff` — entailment preservation under projection,
+/// with no goals supplied.
+#[derive(Deserialize, JsonSchema)]
+pub struct OntoClosureDiffInput {
+    /// The projected slice, as Turtle.
+    pub projected_ttl: String,
+    /// Directory for both certificates and the report.
+    pub out_dir: String,
+    /// `rdfs`, `owl-rl` or `owl-rl-ext`. `owl-dl` is refused.
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// Default true. With it false, every triple touching a blank node is
+    /// reported as NOT COMPARED rather than guessed at.
+    #[serde(default)]
+    pub skolemise_source: Option<bool>,
+    #[serde(default)]
+    pub max_rows: Option<usize>,
+    /// Seeds for the demoted coverage proxy.
+    #[serde(default)]
+    pub seed_iris: Vec<String>,
+}
+
 // ─── Full BC+ semantics (#43 follow-on) ─────────────────────────────────────
 
 /// Input for `onto_action_apply_concurrent` — fire a tick of concurrent

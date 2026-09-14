@@ -37,6 +37,11 @@ fn total_claims(n: usize) -> Vec<(&'static str, &'static str, String)> {
         ("README.md", "the lead paragraph", format!("**{n} tools**")),
         ("README.md", "the default-build sentence", format!("A default build advertises all {n} tools.")),
         ("docs/architecture.md", "the architecture diagram", format!("ToolGroups[\"{n} Tools\"]")),
+        // Found by a merge conflict, not by this test: the MCP server tells every client
+        // its own tool count in its instructions string, and that copy was stale at 110
+        // while three others had been corrected. A gate that covers three of four places
+        // is a gate that makes the fourth harder to notice.
+        ("src/server.rs", "the MCP server's instructions string", format!("MCP server with {n} tools")),
     ]
 }
 
@@ -70,7 +75,7 @@ fn the_readme_states_the_tool_count_it_actually_exposes() {
 #[test]
 fn no_stale_tool_count_survives_anywhere() {
     let n = exposed_tool_count();
-    let readme = ["README.md", "docs/architecture.md"]
+    let readme = ["README.md", "docs/architecture.md", "src/server.rs"]
         .iter()
         .filter_map(|f| std::fs::read_to_string(repo().join(f)).ok())
         .collect::<Vec<_>>()

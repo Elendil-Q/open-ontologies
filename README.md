@@ -56,6 +56,13 @@ cd lean && lake exe oo-cert ../cert/asserted.tsv ../cert/derivations.tsv
 | Is a solver's model real | The model, replayed | `Fol.satisfiable_of_check` |
 | Is this inconsistent | A refutation | `OOCert.refutation_sound` |
 | Does this data fit the shapes | A validation report | `Shacl.validate_spec` |
+| Does a retrieval slice still support the answer | Per-claim preservation | `OOCert.certificate_sound` |
+
+That last row is the one to read twice. A retrieval slice at 99% coverage can have dropped the
+one triple an answer depends on, and one at 60% can preserve every claim that matters. Coverage
+is a proxy that rises as the slice grows, so a retriever tuned on it learns to fetch more rather
+than the right thing. Entailment preservation is the property, it is decidable here, and it
+carries a certificate per claim. See [decision 0007](docs/decisions/0007-a-slice-preserves-a-conclusion-or-it-does-not.md).
 
 The discipline matters more than the machinery, and it runs through all of it.
 
@@ -115,8 +122,8 @@ Restart, and the `onto_*` tools are available. Cursor, Windsurf, Zed and VS Code
 
 ## What is in the box
 
-**112 tools** to build, validate, query, diff, lint, version, reason over, align, plan, certify
-and govern RDF and OWL, over an in-memory Oxigraph store. A default build advertises all 112 tools.
+**114 tools** to build, validate, query, diff, lint, version, reason over, align, plan, certify
+and govern RDF and OWL, over an in-memory Oxigraph store. A default build advertises all 114 tools.
 Eight need an optional Cargo feature and return an error without it: four need `embeddings`, two
 need `plugins`, two need `postgres` or `duckdb`. The published binaries and the GHCR image are
 built with the default feature set, so they do not carry those eight.

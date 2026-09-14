@@ -135,9 +135,14 @@ kept in `tests/lean_certificate_test.rs` as a forged certificate the checker mus
 The `lean` job builds `lean/` (which is the proof check), then runs
 `tests/lean_certificate_test.rs` with `OO_REQUIRE_FIXTURES=1`. Every RDF file the repository
 tracks, enumerated from `git ls-files`, is loaded, reasoned under `owl-rl-ext` with a certificate,
-and the certificate checked: 122 files and 37,133 derivations at the time of writing. Files over
-4 MB and files that do not parse are listed with the reason, never dropped silently. The same test
-appends three forgeries and requires each to be rejected.
+and the certificate checked. Files over 4 MB and files that do not parse are listed with the reason,
+never dropped silently. The same test appends three forgeries and requires each to be rejected.
+
+The corpus was 122 files and 37,133 derivations when that was written. Counted on 14 September 2026
+under the test's own `SKIP_DIRS` filter it is **290 tracked RDF files, 21,256,445 bytes (20.3 MiB)**, one of which
+(`case-studies/skills-england-occupational-maps/ontology/occupational-map.ttl`, 5.70 MB) is over the
+4 MB cap and is therefore already excluded and named. The derivation count is not restated here,
+because the only honest source for it is the run's own output.
 
 The corpus used to be five hand-named directories, three of which hold no RDF, so 46% of the
 repository's RDF was never walked and was excluded without being named. Widening it is what
@@ -507,6 +512,41 @@ Not proved, and named next to the verdict rather than in a footnote:
 Nothing in `src/` writes either file yet, so today this layer checks certificates rather than
 producing them. See
 [decision 0006](decisions/0006-a-model-is-a-certificate-and-a-refutation-is-not.md).
+## Does a retrieved slice still support the answer?
+
+A certificate says the engine's inferences over ONE graph are entailed by it. A GraphRAG pipeline
+asks a different question: an answer was grounded in a retrieved slice, so does that slice still
+entail the claims the answer rests on?
+
+`preserve` and `graph_projection_entailment_check` ask it per claim, and every preserved-and-derived
+claim gets a SUB-CERTIFICATE extracted from the projection's own `derivations.tsv` and checked by
+`oo-cert` against the projection's own `asserted.tsv`. No new Lean was written:
+`OOCert.certificate_sound` covers it unchanged, and the sub-certificate's line order is valid
+because `run_full` computes a round's conclusions from the closure as it stood at the start of the
+round, so every premise was asserted or concluded strictly earlier.
+
+The verdict table follows the one above.
+
+| verdict | theorem | means |
+|---|---|---|
+| `preserved_checked` | `OOCert.certificate_sound` | the projection entails the claim, machine-checked |
+| `preserved_under_supplied_rules_checked` | `OOCert.horn_certificate_sound` | true in every model of the projection that **also satisfies** your rules. Carries the table's digest. Never shortened |
+| `preserved_asserted` | none | the claim is literally in the slice. A lookup, not a theorem |
+| `preserved_unchecked` | none | the ENGINE derived it and no checker looked |
+| `lost_under_profile_unchecked` | none | not derivable from the slice under this profile, bounded by a rule table covering 29 of the profile's 78 rules |
+| `ungrounded_in_source` | none | NEITHER graph derives it, so the generator invented it and a better retriever will not help |
+
+Every run also checks monotonicity: OWL RL is monotone and a projection is a subset, so anything the
+projection entails and the source does not is a soundness bug in this engine, reported at
+`STOP_THE_LINE` rather than as a retrieval result. It is disarmed, loudly and with its own reason,
+when the projection is not a subset, when blank nodes could not be matched, or when either run
+stopped at the iteration cap instead of a fixpoint.
+
+Run over the shipped corpus, 275 ontologies swept with the gate armed on all 275 and every source
+certificate accepted by `oo-cert`, it found nothing.
+
+See [docs/projection-entailment.md](projection-entailment.md) and
+[decision 0007](decisions/0007-a-slice-preserves-a-conclusion-or-it-does-not.md).
 
 ## Known limitations
 

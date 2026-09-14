@@ -128,6 +128,100 @@ All notable changes to Open Ontologies are documented here.
   rather than on the command name.
 
 ### Added
+- **Entailment preservation under graph projection, because coverage is the
+  wrong measure and looks like assurance.** `src/projection_entailment.rs`
+  (CLI `preserve`, MCP `graph_projection_entailment_check`) takes the claims an
+  answer rests on and reports, for each one, whether the retrieved slice entails
+  it exactly when the source does, with a sub-certificate the Lean checker
+  accepts for every claim it preserves. `src/closure_diff.rs` (CLI
+  `closure-diff`, MCP `onto_closure_diff`) is the goal-free form, for auditing a
+  retrieval strategy rather than one answer, and reuses the same certificate
+  index, checker runner, subset precondition, skolemiser and differential, so
+  there is one place in the crate where each verdict word is produced. No new
+  Lean was written: `OOCert.certificate_sound` covers the sub-certificates
+  unchanged, and `OOCert.horn_certificate_sound` covers a run over a supplied
+  Horn table, which earns
+  `preserved_under_supplied_rules_checked` and never the plain word.
+  Four outcomes are kept apart, because a lossy retriever and a hallucinating
+  generator have opposite fixes: `preserved_*`, `lost_under_profile_unchecked`,
+  `ungrounded_in_source` (NEITHER graph derives the claim) and
+  `projection_only`. Measured on `benchmark/reference/pizza-reference.owl`, a
+  file this repository ships: the whole ontology minus one `rdfs:subClassOf`
+  triple scores `aggregate_coverage_ratio: 1.0` with `ok: true` while the
+  conclusion the answer rests on is gone, and a three-triple slice scores
+  0.00128 and preserves every claim with a checked certificate. Both are tests.
+  See [decision 0007](docs/decisions/0007-a-slice-preserves-a-conclusion-or-it-does-not.md)
+  and [docs/projection-entailment.md](docs/projection-entailment.md).
+- **A monotonicity differential that runs on every call and is a defect
+  detector for the engine, not for the retrieval.** OWL RL is monotone and a
+  projection is a subset, so anything the projection entails and the source does
+  not is a soundness bug in this engine. It is reported at `STOP_THE_LINE` with
+  exit 2, and it is DISARMED, loudly and with its own reason, whenever its
+  antecedent fails: the projection is not a subset (computed every run, never
+  inferred from provenance), blank nodes could not be matched, or either run
+  stopped at the iteration cap instead of a fixpoint. A green
+  `violations: []` under a disarmed gate means "we did not look", so the two can
+  never render the same. Run for real over the shipped corpus
+  (`tests/projection_monotonicity_corpus_test.rs`): 275 ontologies swept, the
+  gate ARMED on all 275, every source certificate accepted by `oo-cert`, and
+  **no violations found**.
+- `tests/gate_demonstration_test.rs`, which feeds every gate in this work the
+  input built to trip it, PRINTS what the tool said, and asserts the same
+  thing. A gate that cannot fail is decoration, and a gate whose failure nobody
+  has read is close to it. Run it with `--nocapture`; a CI leg does.
+- `Reasoner::run_full` reports `fixpoint_reached`, matching `run_horn`. A run
+  that stopped at `reasoner_max_iterations` has a closure that is a LOWER BOUND,
+  and until now a truncated closure was indistinguishable from a complete one,
+  which is what would have made a correct engine look unsound to any consumer
+  comparing two closures.
+- `GraphStore::graph_store`, `graph_triples`, `named_graph_iris`,
+  `materialised_inference_count`, `all_quads`, `parse_triples_ordered` and
+  `canonicalise_triples`. The first copies a named graph into a fresh store's
+  default graph BY MODEL TERM, which is the only route by which a slice can be a
+  subset of its source in the strong sense, blank nodes included.
+
+### Fixed
+- **`onto_segment_retrieve` emitted slices that do not parse, which broke the
+  pairing it advertises.** Every term was wrapped in angle brackets
+  unconditionally, so a blank-node `owl:Restriction` superclass came out as
+  `<_:b0>`, which is not a legal IRI. Since issue #93 `load_turtle` collects all
+  or nothing, so one restriction superclass made the ENTIRE slice unreadable and
+  `graph_projection_lossy_check` then reported `projection_parses: false` with
+  `aggregate_coverage_ratio: 0.0` and no diagnosis. Measured on
+  `benchmark/ontoaxiom/data/ontoaxiom/ontologies/pizza.ttl` and
+  `benchmark/reference/pizza-reference.owl`, which is to say on essentially
+  every OWL ontology here. Blank nodes are now written bare, and the
+  angle-bracket trim no longer eats the closing bracket of a typed literal's
+  datatype IRI.
+- **`check_projection_loss` reported `ok: true` on a projection holding MORE
+  than the source.** `coverage_ratio` clamps with `.min()`, so a seed whose
+  slice carries triples the source does not read exactly 1.0 with empty dropped
+  lists: a hallucinating retriever, or a slice of a different graph, scored a
+  clean bill of health on the one input that should stop a pipeline. The clamp
+  stays, because an unclamped "ratio" above 1.0 is not a ratio; the surplus is
+  now named in `seeds_with_surplus` and `ok` requires it to be empty.
+- `docs/lean-certificates.md` said the certified corpus was 122 files. Counted
+  on 14 September 2026 under the test's own filter it is 290 tracked RDF files,
+  21,256,445 bytes.
+- The advertised tool count was stale before this change and is now measured.
+  `src/server.rs` carried 110 distinct `#[tool(name = ...)]` macros while the
+  README, the docs and the server's own instructions said 109: `onto_fol_export`
+  landed without the count moving. With the two added here it is 112, counted
+  from the source rather than incremented. The narrative comment in
+  `src/graph.rs` about the removed store mutex no longer names a number, since
+  what it is about is the lock and not the tool count.
+
+### Changed
+- **`coverage_ratio` is demoted, not deleted.** `ProjectionLossReport` gains
+  `is_a_warrant: false` and a `warning` field carrying the sentence in the
+  payload rather than only in the docs, so a renderer that walks the data still
+  emits it, and the `graph_projection_lossy_check` tool description now carries
+  it too, because a tool description is the text an agent reads when choosing
+  and that is where the trap was living unlabelled. The number is neither
+  necessary nor sufficient for entailment preservation and it moves the wrong
+  way, rising as the projection grows, so a retriever tuned on it learns to
+  fetch more rather than the right thing.
+
 - **First-order export, over the translation a machine-checked adequacy theorem
   is about.** `fol --out DIR --format tptp|clif` (also `onto_fol_export` and
   batch `fol`) writes the loaded ontology as TPTP FOF or as ISO/IEC 24707

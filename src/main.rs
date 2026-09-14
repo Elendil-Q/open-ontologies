@@ -573,6 +573,79 @@ enum Commands {
         #[arg(long)]
         checker: Option<String>,
     },
+
+    /// Ask whether a retrieved slice still supports the claims an answer rests on
+    ///
+    /// Coverage is a proxy. This asks the property: for each goal, does the
+    /// projection entail it exactly when the source does, with a machine-checked
+    /// certificate for each one it preserves. Exits 1 if any goal was lost,
+    /// ungrounded or refused, 2 on a stop-the-line disagreement.
+    Preserve {
+        /// The slice as Turtle. Blank nodes are relabelled on re-parse, so
+        /// subsethood is then decided over ground triples only and the
+        /// monotonicity differential is disarmed.
+        #[arg(long, conflicts_with = "projection_graph")]
+        projection: Option<String>,
+        /// A named graph of the LOADED store holding the slice. Blank node
+        /// identity survives, so `P ⊆ G` can hold by construction and the
+        /// differential can be armed.
+        #[arg(long)]
+        projection_graph: Option<String>,
+        /// Turtle in which every triple is a goal, or a TSV with
+        /// --goals-skip-columns. `derivations.tsv` from `reason --certificate`
+        /// is a valid input with --goals-skip-columns 1.
+        #[arg(long)]
+        goals: String,
+        #[arg(long, default_value_t = 0)]
+        goals_skip_columns: usize,
+        /// One profile for BOTH runs. Two profiles compare two rule sets and
+        /// the differential then fires on nothing at all.
+        #[arg(long, default_value = "owl-rl")]
+        profile: String,
+        /// A SUPPLIED Horn table instead of a built-in profile. Its presence
+        /// changes the verdict WORD for every preserved goal.
+        #[arg(long)]
+        rules: Option<String>,
+        /// Where the two certificates and the per-goal slices land.
+        #[arg(long)]
+        out: String,
+        /// Seeds for the demoted coverage proxy. Independent of --goals.
+        #[arg(long)]
+        seed: Vec<String>,
+        #[arg(long)]
+        checker: Option<String>,
+        /// Turn an absent checker into a failure. The CI leg sets it.
+        #[arg(long, default_value_t = false)]
+        require_checker: bool,
+    },
+    /// Which CONCLUSIONS a projection preserves, with no goals supplied
+    ///
+    /// The offline form, for auditing a retrieval STRATEGY rather than one
+    /// answer: reason both graphs to a fixpoint under the same table and report
+    /// `closure(G) \ closure(P)`. Exits 1 when something in the projection's own
+    /// vocabulary was lost, 2 on a monotonicity violation.
+    ClosureDiff {
+        /// The slice as Turtle.
+        #[arg(long)]
+        projection: String,
+        /// Where both certificates and the report land.
+        #[arg(long)]
+        out: String,
+        #[arg(long, default_value = "owl-rl-ext")]
+        profile: String,
+        /// Replace every source blank node with a Skolem IRI before diffing.
+        /// Without it, every triple touching a blank node lands in
+        /// `not_compared` and the monotonicity gate is suppressed for it.
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        skolemise_source: bool,
+        #[arg(long)]
+        checker: Option<String>,
+        #[arg(long, default_value_t = 200)]
+        max_rows: usize,
+        /// Seeds for the demoted coverage proxy.
+        #[arg(long)]
+        seed: Vec<String>,
+    },
     /// Full pipeline: ingest → SHACL → reason
     Extend {
         data_path: String,
@@ -852,6 +925,85 @@ impl Commands {
                 }
                 cmd("fol-model", a)
             }
+
+            Commands::Preserve {
+                projection,
+                projection_graph,
+                goals,
+                goals_skip_columns,
+                profile,
+                rules,
+                out,
+                seed,
+                checker,
+                require_checker,
+            } => {
+                let mut a = vec![
+                    "--goals".into(),
+                    absolutize(goals),
+                    "--goals-skip-columns".into(),
+                    goals_skip_columns.to_string(),
+                    "--profile".into(),
+                    profile.clone(),
+                    "--out".into(),
+                    absolutize(out),
+                ];
+                if let Some(p) = projection {
+                    a.push("--projection".into());
+                    a.push(absolutize(p));
+                }
+                if let Some(g) = projection_graph {
+                    a.push("--projection-graph".into());
+                    a.push(g.clone());
+                }
+                if let Some(r) = rules {
+                    a.push("--rules".into());
+                    a.push(absolutize(r));
+                }
+                for sd in seed {
+                    a.push("--seed".into());
+                    a.push(sd.clone());
+                }
+                if let Some(c) = checker {
+                    a.push("--checker".into());
+                    a.push(absolutize(c));
+                }
+                if *require_checker {
+                    a.push("--require-checker".into());
+                }
+                cmd("preserve", a)
+            }
+            Commands::ClosureDiff {
+                projection,
+                out,
+                profile,
+                skolemise_source,
+                checker,
+                max_rows,
+                seed,
+            } => {
+                let mut a = vec![
+                    "--projection".into(),
+                    absolutize(projection),
+                    "--out".into(),
+                    absolutize(out),
+                    "--profile".into(),
+                    profile.clone(),
+                    "--skolemise-source".into(),
+                    skolemise_source.to_string(),
+                    "--max-rows".into(),
+                    max_rows.to_string(),
+                ];
+                for sd in seed {
+                    a.push("--seed".into());
+                    a.push(sd.clone());
+                }
+                if let Some(c) = checker {
+                    a.push("--checker".into());
+                    a.push(absolutize(c));
+                }
+                cmd("closure-diff", a)
+            }
             Commands::Shacl { shapes } => cmd("shacl", vec![absolutize(shapes)]),
             Commands::Status => cmd("status", vec![]),
             Commands::Pull { url, sparql, query } => {
@@ -1102,6 +1254,27 @@ fn output_result_checked(result: &str, pretty: bool) {
     output_result(result, pretty);
     if failed {
         std::process::exit(1);
+    }
+}
+
+/// Print a report and exit with the code IT names.
+///
+/// `output_result_checked` maps "there is an `error` field" to exit 1, which is
+/// the right rule for a command whose only two outcomes are worked and did not.
+/// A preservation report has three: clean, something was lost, and a
+/// stop-the-line disagreement that means a defect in the engine or in this
+/// code. Folding the third into the second would make the one outcome nobody
+/// may ship look like an ordinary finding.
+fn output_result_with_exit(result: &str, pretty: bool) {
+    let parsed = serde_json::from_str::<serde_json::Value>(result).ok();
+    let code = match &parsed {
+        Some(v) if v.get("error").is_some() => 1,
+        Some(v) => v.get("exit_code").and_then(|c| c.as_i64()).unwrap_or(0) as i32,
+        None => 1,
+    };
+    output_result(result, pretty);
+    if code != 0 {
+        std::process::exit(code);
     }
 }
 
@@ -2642,6 +2815,32 @@ async fn async_main() -> anyhow::Result<()> {
             // lost anything exits non-zero and a script cannot walk past it.
             output_result_checked(&result, cli.pretty);
         }
+
+        Commands::Preserve { .. } | Commands::ClosureDiff { .. } => {
+            // Both need a loaded source and are reached through `batch` in the
+            // normal case, exactly as `reason --certificate` is: the store is
+            // in-memory per process. Running them locally still works against
+            // whatever the configured store holds, and says so when it is
+            // empty rather than reporting a perfect run over nothing.
+            let (db, graph) = setup(&cli.data_dir)?;
+            let Some(batch) = cli.command.to_batch_command() else {
+                anyhow::bail!("internal: this command is proxy-able and must serialise");
+            };
+            let name = batch["command"].as_str().unwrap_or_default().to_string();
+            let args: Vec<String> = batch["args"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            let runner = open_ontologies::batch::BatchRunner::new(db, graph, false);
+            let payload =
+                serde_json::json!([{ "command": name, "args": args }]).to_string();
+            let (results, _) = runner.run_collect(&payload, false).await;
+            let result = results
+                .first()
+                .map(|r| r["result"].clone())
+                .unwrap_or_else(|| serde_json::json!({"error": "no result"}));
+            output_result_with_exit(&result.to_string(), cli.pretty);
+        }
         Commands::Extend {
             data_path,
             format: _format,
@@ -3174,6 +3373,27 @@ mod proxy_serialization_tests {
             Commands::Drift { file_a: "a.ttl".into(), file_b: "b.ttl".into() },
             Commands::Lock { iris: vec!["http://example.org/A".into()], reason: None },
             Commands::Marketplace { action: "list".into(), id: None, domain: None },
+            Commands::Preserve {
+                projection: Some("p.ttl".into()),
+                projection_graph: None,
+                goals: "g.ttl".into(),
+                goals_skip_columns: 0,
+                profile: "owl-rl".into(),
+                rules: None,
+                out: "/tmp/preserve".into(),
+                seed: vec![],
+                checker: None,
+                require_checker: false,
+            },
+            Commands::ClosureDiff {
+                projection: "p.ttl".into(),
+                out: "/tmp/cd".into(),
+                profile: "owl-rl-ext".into(),
+                skolemise_source: true,
+                checker: None,
+                max_rows: 200,
+                seed: vec![],
+            },
         ]
     }
 

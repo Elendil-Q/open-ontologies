@@ -707,6 +707,13 @@ impl Reasoner {
         let mut triple_set: HashSet<Fact> = facts.iter().copied().collect();
         let initial_size = triple_set.len();
         let mut iterations = 0;
+        // Which of the two break conditions ended the loop. A run that stopped
+        // at the cap has a closure that is a LOWER BOUND, and every consumer
+        // that compares two closures has to be able to see that: a truncated
+        // closure(G) missing a conclusion closure(P) reached looks exactly like
+        // an unsoundness in the engine. `run_horn` already reports the same
+        // field, so this is consistency rather than novelty.
+        let mut fixpoint_reached = false;
 
         // Certificate bookkeeping. A conclusion is recorded the first time it
         // is derived and never again, so the certificate has exactly one line
@@ -1451,7 +1458,11 @@ impl Reasoner {
                 triple_set.insert(t);
             }
 
-            if triple_set.len() == before || iterations >= crate::runtime::reasoner_max_iterations() {
+            if triple_set.len() == before {
+                fixpoint_reached = true;
+                break;
+            }
+            if iterations >= crate::runtime::reasoner_max_iterations() {
                 break;
             }
         }
@@ -1496,6 +1507,7 @@ impl Reasoner {
             "profile_used": profile_used,
             "inferred_count": inferred_count,
             "iterations": iterations,
+            "fixpoint_reached": fixpoint_reached,
             "initial_triples": initial_size,
             "final_triples": triple_set.len(),
             "sample_inferences": sample

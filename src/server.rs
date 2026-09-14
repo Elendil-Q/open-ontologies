@@ -1570,10 +1570,68 @@ impl OpenOntologiesServer {
         }
     }
 
-    #[tool(name = "graph_projection_lossy_check", description = "Audit a projected Turtle slice against the loaded ontology's full neighbourhood of the seed IRIs. Reports dropped predicates, dropped object IRIs, per-seed coverage ratio, and aggregate coverage. Pair with onto_segment_retrieve when the slice is being passed to a downstream LLM — knowing what was left behind lets the caller decide whether the slice is sufficient. Per IJCAI 2025 'How to Mitigate Information Loss in KGs for GraphRAG'.")]
+    #[tool(name = "graph_projection_lossy_check", description = "Audit a projected Turtle slice against the loaded ontology's full neighbourhood of the seed IRIs. Reports dropped predicates, dropped object IRIs, per-seed coverage ratio, and aggregate coverage. COVERAGE RATIO IS A PROXY AND IS NOT ASSURANCE: it is neither necessary nor sufficient for entailment preservation, a slice at 0.99 can have dropped the one triple an answer rests on, a slice at 0.60 can preserve every claim, and it RISES as the projection grows, so a retriever tuned on it learns to fetch more rather than the right thing. Measured on this repository's own pizza-reference.owl, the whole ontology minus one subClassOf triple scores 1.0 with ok:true while a conclusion the source derives is gone. For the property itself use graph_projection_entailment_check (goal-directed, machine-checked certificate per preserved claim) or onto_closure_diff (goal-free, whole retrieval strategy). Per IJCAI 2025 'How to Mitigate Information Loss in KGs for GraphRAG'.")]
     async fn graph_projection_lossy_check(&self, Parameters(input): Parameters<GraphProjectionLossyCheckInput>) -> String {
         match crate::projection_check::check_projection_loss(&self.graph, &input.source_iris, &input.projected_ttl) {
             Ok(report) => serde_json::to_string(&report)
+                .unwrap_or_else(|e| Self::err_json(format!("serialization: {}", e))),
+            Err(e) => Self::err_json(e),
+        }
+    }
+
+    #[tool(name = "graph_projection_entailment_check", description = "Does a retrieved slice still support the claims an answer rests on? Supply the claims as Turtle (goals_ttl); for each one this reports whether the projection entails it exactly when the source does, under one pinned rule profile, with a machine-checked Lean certificate (OOCert.certificate_sound) for each claim the projection preserves. Four outcomes, never collapsed: preserved (checked / asserted / unchecked), lost_under_profile_unchecked (the retrieval finding), ungrounded_in_source (NEITHER graph derives it, so the generator invented it and a better retriever will not help), and projection_only (the projection is not a subset, or the engine is unsound). Every run also verifies monotonicity: nothing may be entailed by the projection and not by the source, and a violation is STOP_THE_LINE rather than a retrieval result. Blank-node and non-triple claims are refused by name and counted. Coverage ratio is included, demoted, and labelled as a proxy that is not a warrant.")]
+    async fn graph_projection_entailment_check(
+        &self,
+        Parameters(input): Parameters<GraphProjectionEntailmentCheckInput>,
+    ) -> String {
+        use crate::projection_entailment as pe;
+        if input.projected_ttl.is_some() == input.projection_graph.is_some() {
+            return Self::err_json(
+                "pass exactly one of projected_ttl and projection_graph. A named graph of the \
+                 loaded store keeps blank node identity, so P ⊆ G can be verified over every \
+                 triple rather than over the ground ones only",
+            );
+        }
+        let (goals, refused) = match pe::parse_goals_turtle(&input.goals_ttl) {
+            Ok(v) => v,
+            Err(e) => return Self::err_json(e),
+        };
+        let work = input.certificate_dir.map(std::path::PathBuf::from).unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("oo-preserve-{}", std::process::id()))
+        });
+        let opts = pe::Opts {
+            profile: input.profile.unwrap_or_else(|| "owl-rl".to_string()),
+            rules: None,
+            work_dir: work,
+            checker: None,
+            require_checker: input.require_checker.unwrap_or(false),
+            seed_iris: input.seed_iris,
+        };
+        let ttl = input.projected_ttl.unwrap_or_default();
+        let projection = match &input.projection_graph {
+            Some(g) => pe::Projection::NamedGraph(g),
+            None => pe::Projection::Turtle(&ttl),
+        };
+        match pe::check_entailment_preservation(&self.graph, projection, &goals, &refused, &opts) {
+            Ok(r) => serde_json::to_string(&r)
+                .unwrap_or_else(|e| Self::err_json(format!("serialization: {}", e))),
+            Err(e) => Self::err_json(e),
+        }
+    }
+
+    #[tool(name = "onto_closure_diff", description = "Which CONCLUSIONS a projection preserves, with no goals supplied. Reasons the source and the slice to a fixpoint under the same rule table and reports closure(source) minus closure(projection), partitioned by whether every term of the lost conclusion occurs in the projection: lost_in_projection_vocabulary is the headline, because a conclusion over terms the slice never mentions cannot ground an answer the slice supports. Each lost row names the rule and the blocking premises the retriever dropped. Three warrant words, never collapsed: checked (a Lean-accepted certificate, OOCert.certificate_sound), asserted_in_source (a lookup, nothing was proved), engine_opinion (no checker looked, or it said no). Also runs the monotonicity gate and reports when the gate did NOT run and why, so an empty violation list can never mean 'we did not look'. Skolemises the source by default so blank-node-bearing triples can be compared at all. The offline form; graph_projection_entailment_check is the per-answer one.")]
+    async fn onto_closure_diff(&self, Parameters(input): Parameters<OntoClosureDiffInput>) -> String {
+        use crate::closure_diff as cd;
+        let opts = cd::DiffOptions {
+            profile: input.profile.unwrap_or_else(|| "owl-rl-ext".to_string()),
+            out: std::path::PathBuf::from(&input.out_dir),
+            checker: None,
+            skolemise_source: input.skolemise_source.unwrap_or(true),
+            max_rows: input.max_rows.unwrap_or(200),
+            seed_iris: input.seed_iris,
+        };
+        match cd::closure_diff(&self.graph, &input.projected_ttl, &opts) {
+            Ok(r) => serde_json::to_string(&r)
                 .unwrap_or_else(|e| Self::err_json(format!("serialization: {}", e))),
             Err(e) => Self::err_json(e),
         }
@@ -2947,6 +3005,6 @@ impl OpenOntologiesServer {
 impl ServerHandler for OpenOntologiesServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().enable_prompts().build())
-            .with_instructions("Open Ontologies: AI-native ontology engine, an RDF/OWL/SPARQL MCP server with 110 tools and 6 workflow prompts for ontology engineering, validation, comparison, alignment, data ingestion, and exploration. All 110 tools are advertised in a default build; 8 of them require an optional Cargo feature (embeddings, plugins, postgres or duckdb) and return an error without it.")
+            .with_instructions("Open Ontologies: AI-native ontology engine, an RDF/OWL/SPARQL MCP server with 114 tools and 6 workflow prompts for ontology engineering, validation, comparison, alignment, data ingestion, and exploration. All 112 tools are advertised in a default build; 8 of them require an optional Cargo feature (embeddings, plugins, postgres or duckdb) and return an error without it.")
     }
 }

@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::io::Cursor;
 use std::path::Path;
 
@@ -61,7 +62,7 @@ impl SparqlAuth {
 ///
 /// The store is held directly rather than behind a `Mutex`. Oxigraph's `Store`
 /// is already `Send + Sync` and synchronises internally, so the mutex added
-/// nothing but serialisation: every SPARQL read across all 109 tools queued
+/// nothing but serialisation: every SPARQL read across all the tools queued
 /// behind one lock even though the reads do not conflict. It also meant
 /// fourteen `lock().unwrap()` sites, each of which turned a panic anywhere in
 /// the process into a poisoned lock and a second panic in every later request.
@@ -722,6 +723,161 @@ impl GraphStore {
         Ok(triples)
     }
 
+    /// Copy one named graph of this store into a fresh store's DEFAULT graph,
+    /// by model term.
+    ///
+    /// This is the only route by which a projection can be a subset of the
+    /// source in the strong sense, blank nodes included. Serialising a slice to
+    /// Turtle and re-parsing it mints fresh blank node labels, and every
+    /// blank-node-bearing triple then looks like an addition rather than a
+    /// copy, which turns a faithful slice into a monotonicity alarm.
+    ///
+    /// [`canonicalize_blank_nodes`](Self::canonicalize_blank_nodes) is NOT the
+    /// alternative and reaching for it is the trap this method exists to close:
+    /// RDFC-1.0 labels are a function of the WHOLE graph, so the same blank
+    /// node canonicalises differently in a slice than in the source precisely
+    /// because the slice has fewer triples around it.
+    pub fn graph_store(&self, graph_iri: &str) -> anyhow::Result<GraphStore> {
+        let name = NamedNode::new(graph_iri)
+            .map_err(|e| anyhow::anyhow!("{graph_iri} is not an IRI: {e}"))?;
+        let out = GraphStore::new();
+        for quad in self
+            .store
+            .quads_for_pattern(None, None, None, Some(GraphNameRef::NamedNode(name.as_ref())))
+        {
+            let q = quad?;
+            out.store.insert(&Quad::new(
+                q.subject.clone(),
+                q.predicate.clone(),
+                q.object.clone(),
+                GraphName::DefaultGraph,
+            ))?;
+        }
+        Ok(out)
+    }
+
+    /// Triples of one named graph, in the same spelling [`all_triples`] yields.
+    ///
+    /// [`all_triples`]: Self::all_triples
+    pub fn graph_triples(&self, graph_iri: &str) -> anyhow::Result<Vec<(String, String, String)>> {
+        let name = NamedNode::new(graph_iri)
+            .map_err(|e| anyhow::anyhow!("{graph_iri} is not an IRI: {e}"))?;
+        let mut triples = Vec::new();
+        for quad in self
+            .store
+            .quads_for_pattern(None, None, None, Some(GraphNameRef::NamedNode(name.as_ref())))
+        {
+            let q = quad?;
+            triples.push((
+                q.subject.to_string(),
+                q.predicate.to_string(),
+                q.object.to_string(),
+            ));
+        }
+        Ok(triples)
+    }
+
+    /// The names of the named graphs this store holds, sorted.
+    pub fn named_graph_iris(&self) -> anyhow::Result<Vec<String>> {
+        let mut names: BTreeSet<String> = BTreeSet::new();
+        for quad in self.store.iter() {
+            let q = quad?;
+            if let GraphName::NamedNode(n) = &q.graph_name {
+                names.insert(n.as_str().to_string());
+            }
+        }
+        Ok(names.into_iter().collect())
+    }
+
+    /// How many triples sit in [`crate::reason::INFERRED_GRAPH`].
+    ///
+    /// Non-zero means an earlier `reason` run materialised into this store, so
+    /// "what this graph asserts" is no longer "what a person wrote". Any tool
+    /// that reads the store as a set of assertions has to be able to say that
+    /// rather than quietly treat the engine's own output as an axiom.
+    pub fn materialised_inference_count(&self) -> anyhow::Result<usize> {
+        Ok(self.graph_triples(crate::reason::INFERRED_GRAPH)?.len())
+    }
+
+    /// Every quad as `(subject, predicate, object, graph)` strings, the graph
+    /// being `""` for the default graph.
+    pub fn all_quads(&self) -> anyhow::Result<Vec<(String, String, String, String)>> {
+        let mut out = Vec::new();
+        for quad in self.store.iter() {
+            let q = quad?;
+            out.push((
+                q.subject.to_string(),
+                q.predicate.to_string(),
+                q.object.to_string(),
+                match &q.graph_name {
+                    GraphName::DefaultGraph => String::new(),
+                    GraphName::NamedNode(n) => n.to_string(),
+                    GraphName::BlankNode(b) => b.to_string(),
+                },
+            ))
+        }
+        Ok(out)
+    }
+
+    /// Round-trip triples through a STORE, in order, keeping duplicates.
+    ///
+    /// Parsing alone is not enough, and this is measured rather than assumed:
+    /// oxigraph's parser preserves a literal's lexical form, and it is the
+    /// STORE that normalises it. `"01"^^xsd:integer` comes back from
+    /// [`parse_triples_ordered`](Self::parse_triples_ordered) exactly as
+    /// written and out of [`all_triples`](Self::all_triples) as
+    /// `"1"^^xsd:integer`. A caller that compares its own spelling of a term
+    /// against what a certificate holds therefore has to push the term through
+    /// a store first, or it matches nothing and the miss looks like data loss.
+    ///
+    /// Each triple gets its own named graph, because a store is a SET: two
+    /// identical inputs would otherwise collapse to one and the caller's
+    /// pairing between what it wrote and what came back would shift silently.
+    ///
+    /// A triple no RDF serialiser can write, such as one with a literal
+    /// subject, comes back as `None` in its own position rather than shifting
+    /// the others.
+    pub fn canonicalise_triples(
+        triples: &[(String, String, String)],
+    ) -> anyhow::Result<Vec<Option<(String, String, String)>>> {
+        let store = GraphStore::new();
+        let batch: String = triples
+            .iter()
+            .enumerate()
+            .map(|(i, (s, p, o))| format!("{s} {p} {o} <urn:oo:canon:{i}> .\n"))
+            .collect();
+        if store.load_nquads(&batch).is_err() {
+            // One bad line poisons the batch, so fall back to per-line and let
+            // only the bad line fail.
+            let retry = GraphStore::new();
+            for (i, (s, p, o)) in triples.iter().enumerate() {
+                let _ = retry.load_nquads(&format!("{s} {p} {o} <urn:oo:canon:{i}> .\n"));
+            }
+            return Self::collect_canonical(&retry, triples.len());
+        }
+        Self::collect_canonical(&store, triples.len())
+    }
+
+    fn collect_canonical(
+        store: &GraphStore,
+        n: usize,
+    ) -> anyhow::Result<Vec<Option<(String, String, String)>>> {
+        let mut out = vec![None; n];
+        for (s, p, o, g) in store.all_quads()? {
+            let Some(idx) = g
+                .strip_prefix("<urn:oo:canon:")
+                .and_then(|x| x.strip_suffix('>'))
+                .and_then(|x| x.parse::<usize>().ok())
+            else {
+                continue;
+            };
+            if idx < out.len() {
+                out[idx] = Some((s, p, o));
+            }
+        }
+        Ok(out)
+    }
+
     fn detect_format(path: &str) -> RdfFormat {
         if path.ends_with(".ttl") || path.ends_with(".turtle") {
             RdfFormat::Turtle
@@ -791,6 +947,37 @@ impl GraphStore {
         }
 
         ext_format
+    }
+
+    /// Parse RDF text and return the triples in DOCUMENT ORDER, in the same
+    /// spelling [`all_triples`](Self::all_triples) yields, without inserting
+    /// anything into a store.
+    ///
+    /// The store is a set, so loading a goal document and reading it back
+    /// loses both the order and the duplicates, and a caller that needs to
+    /// pair each parsed triple with the line the caller wrote cannot do it
+    /// that way. This runs the SAME parser the store runs, which is the only
+    /// thing that makes a caller's spelling of a term comparable with the
+    /// interner's, and keeps the pairing.
+    pub fn parse_triples_ordered(
+        text: &str,
+        format: &str,
+    ) -> anyhow::Result<Vec<(String, String, String)>> {
+        let rdf_format = Self::parse_format(format)?;
+        let reader = Cursor::new(text.as_bytes());
+        let quads: Vec<Quad> = RdfParser::from_format(rdf_format)
+            .for_reader(reader)
+            .collect::<Result<_, _>>()?;
+        Ok(quads
+            .into_iter()
+            .map(|q| {
+                (
+                    q.subject.to_string(),
+                    q.predicate.to_string(),
+                    q.object.to_string(),
+                )
+            })
+            .collect())
     }
 
     fn parse_format(name: &str) -> anyhow::Result<RdfFormat> {

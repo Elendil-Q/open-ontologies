@@ -30,7 +30,9 @@ pub mod pack;
 pub mod support;
 pub mod temporal;
 pub mod policy;
+pub mod closure_diff;
 pub mod projection_check;
+pub mod projection_entailment;
 pub mod shape_combinatorics;
 // (re-exports keep the alphabetical ordering of the surrounding modules manageable)
 #[cfg(feature = "embeddings")]
