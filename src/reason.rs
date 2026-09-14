@@ -774,3 +774,663 @@ impl Reasoner {
         Ok(result.to_string())
     }
 }
+
+// ── User-supplied Horn rules ────────────────────────────────────────────────
+//
+// Everything above this line applies a rule set this file hardcodes. The
+// checker in `lean/OOCert/Horn.lean` accepts a certificate over ANY rule table,
+// proved once by `OOCert.horn_certificate_sound`, and until now nothing could
+// produce one: the generic layer had a consumer and no producer, and a user
+// with a rule table had nothing to hand it.
+//
+// What follows reads a rule table in the `rules.tsv` format
+// `OOCert.HornParse.parseRules` accepts, evaluates it to a fixpoint over the
+// loaded graph, and writes a certificate in the `horn.tsv` format
+// `OOCert.HornParse.parseHornSteps` accepts.
+//
+// # This path states no verdict, and that is deliberate
+//
+// A certificate over the built-in table earns `entailed`: true in every model
+// of the asserted graph, because `OOCert.Builtin.asHorn_sound` discharges those
+// rules against the semantics. A certificate over a table a user wrote earns
+// `entailed_under_supplied_rules`: true in every model of the graph THAT ALSO
+// SATISFIES THOSE RULES. The rules are assumed and never checked, so a rule
+// reading "every supplier is compliant" produces steps that check green for
+// ever.
+//
+// `oo-horn` decides which of the two a run earned, by comparing the table it
+// was given against the built-in one. This engine does not repeat that
+// judgement in its own output and does not print either verdict word, because a
+// second place where the two could be confused is exactly the hazard decision
+// 0003 exists to prevent. What the engine reports is the table it used, a
+// hash of it, and the command that pronounces.
+
+/// One position of a triple pattern: a fixed term in its N-Triples spelling, or
+/// a variable. Mirrors `OOCert.Pat`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Pat {
+    Const(String),
+    Var(String),
+}
+
+impl Pat {
+    /// The `rules.tsv` spelling: `?x` for a variable, the term itself for a
+    /// constant. Inverse of the parse below, and byte-identical to
+    /// `OOCert.HornParse.patStr`.
+    fn render(&self) -> String {
+        match self {
+            Pat::Const(c) => c.clone(),
+            Pat::Var(v) => format!("?{v}"),
+        }
+    }
+}
+
+/// A triple pattern. Any of the three positions may be a variable, predicate
+/// position included: `Interp` has one ternary extension, so a property is a
+/// domain element like any other and the language stays first-order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AtomPat {
+    pub s: Pat,
+    pub p: Pat,
+    pub o: Pat,
+}
+
+/// `forall vars. body -> head`, the quantifier left implicit. Mirrors
+/// `OOCert.RulePattern`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RulePattern {
+    pub name: String,
+    pub body: Vec<AtomPat>,
+    pub head: AtomPat,
+}
+
+impl RulePattern {
+    fn atoms(&self) -> impl Iterator<Item = &AtomPat> {
+        self.body.iter().chain(std::iter::once(&self.head))
+    }
+}
+
+fn pat_vars<'a>(a: &'a AtomPat, out: &mut Vec<&'a str>) {
+    for p in [&a.s, &a.p, &a.o] {
+        if let Pat::Var(v) = p
+            && !out.contains(&v.as_str())
+        {
+            out.push(v.as_str());
+        }
+    }
+}
+
+/// Parse one field of a rule table.
+///
+/// A field beginning with `?` is a variable, anything else a term, which is the
+/// encoding `HornParse` documents: N-Triples terms begin with `<`, `_:` or `"`,
+/// so nothing is ambiguous. This is stricter than `HornParse` on exactly one
+/// point, and the strictness is the "reject rather than guess" direction: a
+/// constant that is not in N-Triples spelling can never equal a term the store
+/// holds, so a rule carrying one silently never fires. That is a typo, not a
+/// rule, and it is refused rather than run.
+fn parse_pat(field: &str, line: usize, which: &str) -> anyhow::Result<Pat> {
+    if let Some(name) = field.strip_prefix('?') {
+        if name.is_empty() {
+            anyhow::bail!("rules line {line}: {which} is '?' with no variable name");
+        }
+        return Ok(Pat::Var(name.to_string()));
+    }
+    if field.starts_with('<') || field.starts_with("_:") || field.starts_with('"') {
+        return Ok(Pat::Const(field.to_string()));
+    }
+    if field.is_empty() {
+        anyhow::bail!("rules line {line}: {which} is empty");
+    }
+    anyhow::bail!(
+        "rules line {line}: {which} is '{field}', which is neither a variable (?x) nor an \
+         N-Triples term (<iri>, _:blank, or a quoted literal). The store spells every term in \
+         N-Triples, so a constant in any other spelling would match nothing and the rule would \
+         silently never fire"
+    )
+}
+
+/// Read a rule table in the `rules.tsv` format `OOCert.HornParse.parseRules`
+/// accepts: `name TAB bodyLength TAB (s TAB p TAB o)* TAB hs TAB hp TAB ho`.
+///
+/// Malformed input is an error naming the line and what was wrong, never a
+/// guess. Two rejections go beyond what the Lean parser refuses, both because
+/// this side has to PRODUCE bindings rather than check them:
+///
+/// * A head variable that does not occur in the body. The checker is right to
+///   accept a certificate over such a rule, because `SatRule` quantifies over
+///   every substitution, but the engine would have to invent a term to bind it
+///   to. Refusing is the only honest option.
+/// * A carriage return. `HornParse` splits on `\n` alone, so a CRLF file would
+///   put a `\r` inside the last term of every line. Stripping it is a guess
+///   about what the user meant; the error says to convert the file.
+pub fn parse_rules(content: &str) -> anyhow::Result<Vec<RulePattern>> {
+    let mut out: Vec<RulePattern> = Vec::new();
+    for (i, line) in content.split('\n').enumerate() {
+        let n = i + 1;
+        if line.is_empty() {
+            continue;
+        }
+        if line.contains('\r') {
+            anyhow::bail!(
+                "rules line {n}: the line contains a carriage return. The format is tab \
+                 separated with LF endings, and a CR would become part of a term; convert the \
+                 file rather than have it stripped silently"
+            );
+        }
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() < 2 {
+            anyhow::bail!(
+                "rules line {n}: expected a name, a body length and then the patterns, got \
+                 {} tab-separated field(s)",
+                fields.len()
+            );
+        }
+        let name = fields[0];
+        if name.is_empty() {
+            anyhow::bail!("rules line {n}: the rule name is empty");
+        }
+        let len_field = fields[1];
+        if len_field.is_empty() || !len_field.bytes().all(|b| b.is_ascii_digit()) {
+            anyhow::bail!("rules line {n}: body length '{len_field}' is not a number");
+        }
+        let m: usize = len_field
+            .parse()
+            .map_err(|_| anyhow::anyhow!("rules line {n}: body length '{len_field}' is too large"))?;
+        let rest = &fields[2..];
+        let want = m
+            .checked_mul(3)
+            .and_then(|x| x.checked_add(3))
+            .ok_or_else(|| anyhow::anyhow!("rules line {n}: body length '{len_field}' is too large"))?;
+        if rest.len() != want {
+            anyhow::bail!(
+                "rules line {n}: a body of {m} atom(s) plus a head needs {want} pattern fields, \
+                 got {}",
+                rest.len()
+            );
+        }
+        let mut pats: Vec<Pat> = Vec::with_capacity(want);
+        for (k, f) in rest.iter().enumerate() {
+            let which = if k < 3 * m {
+                format!("body atom {} position {}", k / 3 + 1, k % 3 + 1)
+            } else {
+                format!("head position {}", k - 3 * m + 1)
+            };
+            pats.push(parse_pat(f, n, &which)?);
+        }
+        let head = AtomPat {
+            o: pats.pop().expect("head object"),
+            p: pats.pop().expect("head predicate"),
+            s: pats.pop().expect("head subject"),
+        };
+        let mut body: Vec<AtomPat> = Vec::with_capacity(m);
+        let mut it = pats.into_iter();
+        for _ in 0..m {
+            let s = it.next().expect("body subject");
+            let p = it.next().expect("body predicate");
+            let o = it.next().expect("body object");
+            body.push(AtomPat { s, p, o });
+        }
+        let rule = RulePattern { name: name.to_string(), body, head };
+
+        let mut body_vars: Vec<&str> = Vec::new();
+        for a in &rule.body {
+            pat_vars(a, &mut body_vars);
+        }
+        let mut head_vars: Vec<&str> = Vec::new();
+        pat_vars(&rule.head, &mut head_vars);
+        for v in head_vars {
+            if !body_vars.contains(&v) {
+                anyhow::bail!(
+                    "rules line {n}: rule '{}' has head variable ?{v}, which does not occur in \
+                     the body. The engine has nothing to bind it to, so the table is refused \
+                     rather than run with a term invented for it",
+                    rule.name
+                );
+            }
+        }
+        out.push(rule);
+    }
+    Ok(out)
+}
+
+/// Render a rule table back to `rules.tsv`. Byte-identical to
+/// `OOCert.HornParse.ruleStr` per line, so `oo-horn rules` and this agree and a
+/// table read here and written back out digests to the same value it came in
+/// with.
+pub fn rules_tsv(rules: &[RulePattern]) -> String {
+    let mut out = String::new();
+    for r in rules {
+        out.push_str(&r.name);
+        out.push('\t');
+        out.push_str(&r.body.len().to_string());
+        for a in r.atoms() {
+            for p in [&a.s, &a.p, &a.o] {
+                out.push('\t');
+                out.push_str(&p.render());
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// A rule pattern position over interned ids, with variables resolved to a slot
+/// in the rule's environment.
+enum CPat {
+    Const(u32),
+    Var(usize),
+}
+
+struct CAtom {
+    s: CPat,
+    p: CPat,
+    o: CPat,
+}
+
+struct CRule {
+    vars: Vec<String>,
+    body: Vec<CAtom>,
+    head: CAtom,
+}
+
+/// One line of a Horn certificate: the rule index, the binding the engine used,
+/// the premises it matched in the rule's body order, and what it concluded.
+struct HornStepOut {
+    rule: usize,
+    binds: Vec<(String, u32)>,
+    premises: Vec<Fact>,
+    conclusion: Fact,
+}
+
+fn resolve_pat(p: &CPat, env: &[Option<u32>]) -> Option<u32> {
+    match p {
+        CPat::Const(id) => Some(*id),
+        CPat::Var(i) => env[*i],
+    }
+}
+
+/// Match one position against one term, binding a fresh variable and recording
+/// the slot so the caller can undo it on backtracking.
+fn unify_pat(p: &CPat, val: u32, env: &mut [Option<u32>], bound: &mut [usize; 3], nb: &mut usize) -> bool {
+    match p {
+        CPat::Const(id) => *id == val,
+        CPat::Var(i) => match env[*i] {
+            Some(existing) => existing == val,
+            None => {
+                env[*i] = Some(val);
+                bound[*nb] = *i;
+                *nb += 1;
+                true
+            }
+        },
+    }
+}
+
+/// Enumerate every way to match the body against the known facts, calling
+/// `on_match` once per complete binding.
+///
+/// Plain backtracking, one atom at a time, left to right. An atom whose
+/// predicate is already fixed (a constant, or a variable bound by an earlier
+/// atom) is matched against the facts with that predicate; otherwise every fact
+/// is a candidate. That is the whole optimisation, and it is not semi-naive
+/// evaluation: each iteration re-derives what the last one did, and the
+/// duplicate is dropped when its conclusion is found to be known. Correctness
+/// first, as the task said. The cost is a constant factor per iteration on a
+/// scan the loop does anyway, and `derived_triples` is unaffected.
+fn match_body(
+    atoms: &[CAtom],
+    i: usize,
+    env: &mut Vec<Option<u32>>,
+    all: &[Fact],
+    by_pred: &HashMap<u32, Vec<Fact>>,
+    on_match: &mut dyn FnMut(&[Option<u32>]),
+) {
+    if i == atoms.len() {
+        on_match(env);
+        return;
+    }
+    let a = &atoms[i];
+    let candidates: &[Fact] = match resolve_pat(&a.p, env) {
+        Some(pid) => by_pred.get(&pid).map(Vec::as_slice).unwrap_or(&[]),
+        None => all,
+    };
+    for &(s, p, o) in candidates {
+        let mut bound = [0usize; 3];
+        let mut nb = 0usize;
+        let ok = unify_pat(&a.s, s, env, &mut bound, &mut nb)
+            && unify_pat(&a.p, p, env, &mut bound, &mut nb)
+            && unify_pat(&a.o, o, env, &mut bound, &mut nb);
+        if ok {
+            match_body(atoms, i + 1, env, all, by_pred, on_match);
+        }
+        for slot in bound.iter().take(nb) {
+            env[*slot] = None;
+        }
+    }
+}
+
+fn inst_atom(a: &CAtom, env: &[Option<u32>]) -> Fact {
+    const WHY: &str = "every variable of a matched rule is bound: the body is matched in full and \
+                       parse_rules refuses a head variable that does not occur in the body";
+    (
+        resolve_pat(&a.s, env).expect(WHY),
+        resolve_pat(&a.p, env).expect(WHY),
+        resolve_pat(&a.o, env).expect(WHY),
+    )
+}
+
+impl Reasoner {
+    /// Evaluate a SUPPLIED Horn rule table over the loaded graph and write a
+    /// certificate `lean`'s `oo-horn` can check.
+    ///
+    /// Three files land in `certificate_dir`:
+    ///
+    /// * `rules.tsv`, the table as the engine parsed it. The checker is given
+    ///   this rather than the user's file, so what it checks and what the run
+    ///   used are the same table.
+    /// * `asserted.tsv`, every triple the run started from.
+    /// * `horn.tsv`, one line per derived triple:
+    ///   `ruleIndex TAB bindCount TAB (var TAB term)* TAB cs TAB cp TAB co TAB (ps TAB pp TAB po)*`.
+    ///   The binding is written out in full and the premises are the body
+    ///   instantiated, in the body's order, because that is what
+    ///   `OOCert.checkHornStep` demands: a binding that does not instantiate
+    ///   the body, or premises in the wrong order, is rejected.
+    ///
+    /// Steps are written in derivation order, and a step's premises are always
+    /// facts that were known before the round that derived it, so every premise
+    /// is asserted or concluded by an EARLIER line. That is the ordering
+    /// `OOCert.checkHornAll` requires, and no step can cite itself.
+    ///
+    /// Nothing is materialised into the store. A conclusion under a supplied
+    /// table holds only in models that satisfy that table, and writing it in
+    /// beside the assertions would lose exactly the distinction decision 0003
+    /// is about.
+    pub fn run_horn(
+        graph: &Arc<GraphStore>,
+        rules_path: &std::path::Path,
+        certificate_dir: &std::path::Path,
+    ) -> anyhow::Result<String> {
+        let rules_text = std::fs::read_to_string(rules_path)
+            .map_err(|e| anyhow::anyhow!("cannot read rule table {}: {e}", rules_path.display()))?;
+        let rules = parse_rules(&rules_text)
+            .map_err(|e| anyhow::anyhow!("{} is not a rule table: {e}", rules_path.display()))?;
+        if rules.is_empty() {
+            anyhow::bail!(
+                "{} holds no rules. An empty table derives nothing, so there is no certificate \
+                 to write",
+                rules_path.display()
+            );
+        }
+
+        let raw_triples = graph.all_triples()?;
+        let mut interner = Interner::new();
+        let mut facts: Vec<Fact> = Vec::with_capacity(raw_triples.len());
+        for (s, p, o) in &raw_triples {
+            facts.push((interner.intern(s), interner.intern(p), interner.intern(o)));
+        }
+
+        // Compile the table over the interner. A constant the graph never
+        // mentions still gets an id; it simply matches nothing, which is what
+        // it should do.
+        let mut crules: Vec<CRule> = Vec::with_capacity(rules.len());
+        for r in &rules {
+            let mut vars: Vec<String> = Vec::new();
+            for a in r.atoms() {
+                for p in [&a.s, &a.p, &a.o] {
+                    if let Pat::Var(v) = p
+                        && !vars.iter().any(|x| x == v)
+                    {
+                        vars.push(v.clone());
+                    }
+                }
+            }
+            let mut compile = |p: &Pat| match p {
+                Pat::Const(c) => CPat::Const(interner.intern(c)),
+                Pat::Var(v) => CPat::Var(vars.iter().position(|x| x == v).expect("var listed")),
+            };
+            let body: Vec<CAtom> = r
+                .body
+                .iter()
+                .map(|a| CAtom { s: compile(&a.s), p: compile(&a.p), o: compile(&a.o) })
+                .collect();
+            let head = CAtom { s: compile(&r.head.s), p: compile(&r.head.p), o: compile(&r.head.o) };
+            crules.push(CRule { vars, body, head });
+        }
+
+        // A rule whose head puts a literal in subject position, or anything but
+        // an IRI in predicate position, produces something no RDF serialiser
+        // can write. The built-in loop guards the first case for four of its
+        // rules; here both are refused, the count is reported, and the
+        // conclusion is not used as a premise for anything else. Deriving less
+        // is the sound direction, but it means the emitted set is the fixpoint
+        // of the table over WRITABLE triples, which is what
+        // `skipped_unserialisable` in the response is there to say.
+        let serialisable = |interner: &Interner, (s, p, _o): Fact| -> bool {
+            !interner.resolve(s).starts_with('"') && interner.resolve(p).starts_with('<')
+        };
+
+        let mut known: HashSet<Fact> = facts.iter().copied().collect();
+        let asserted_count = known.len();
+        let mut steps: Vec<HornStepOut> = Vec::new();
+        // Distinct conclusions refused for being unwritable. A set rather than
+        // a counter because a refused conclusion is never added to `known`, so
+        // every later round matches the same body again and re-derives it: a
+        // counter would report attempts and grow with the iteration count,
+        // which is not what a reader takes "skipped 2" to mean.
+        let mut refused: HashSet<Fact> = HashSet::new();
+        let mut skipped_samples: Vec<String> = Vec::new();
+        let mut iterations = 0usize;
+        let mut fixpoint = false;
+        let max_iterations = crate::runtime::reasoner_max_iterations();
+
+        while iterations < max_iterations {
+            iterations += 1;
+
+            // Sorted so the candidate order, and therefore the order of the
+            // lines in `horn.tsv`, does not depend on hash iteration order.
+            let mut all: Vec<Fact> = known.iter().copied().collect();
+            all.sort_unstable();
+            let mut by_pred: HashMap<u32, Vec<Fact>> = HashMap::new();
+            for &f in &all {
+                by_pred.entry(f.1).or_default().push(f);
+            }
+
+            let mut round: Vec<HornStepOut> = Vec::new();
+            let mut pending: HashSet<Fact> = HashSet::new();
+            for (ri, rule) in crules.iter().enumerate() {
+                let mut env: Vec<Option<u32>> = vec![None; rule.vars.len()];
+                let known_ref = &known;
+                let interner_ref = &interner;
+                let round_ref = &mut round;
+                let pending_ref = &mut pending;
+                let refused_ref = &mut refused;
+                let samples_ref = &mut skipped_samples;
+                match_body(&rule.body, 0, &mut env, &all, &by_pred, &mut |env| {
+                    let conclusion = inst_atom(&rule.head, env);
+                    if known_ref.contains(&conclusion) || pending_ref.contains(&conclusion) {
+                        return;
+                    }
+                    if !serialisable(interner_ref, conclusion) {
+                        if refused_ref.insert(conclusion) && samples_ref.len() < 3 {
+                            samples_ref.push(format!(
+                                "{} {} {}",
+                                interner_ref.resolve(conclusion.0),
+                                interner_ref.resolve(conclusion.1),
+                                interner_ref.resolve(conclusion.2)
+                            ));
+                        }
+                        return;
+                    }
+                    pending_ref.insert(conclusion);
+                    round_ref.push(HornStepOut {
+                        rule: ri,
+                        binds: rule
+                            .vars
+                            .iter()
+                            .enumerate()
+                            .map(|(i, v)| (v.clone(), env[i].expect("matched body binds every body variable")))
+                            .collect(),
+                        premises: rule.body.iter().map(|a| inst_atom(a, env)).collect(),
+                        conclusion,
+                    });
+                });
+            }
+
+            if round.is_empty() {
+                fixpoint = true;
+                break;
+            }
+            for st in round {
+                known.insert(st.conclusion);
+                steps.push(st);
+            }
+        }
+
+        // Write the three files.
+        std::fs::create_dir_all(certificate_dir)?;
+        let canonical_rules = rules_tsv(&rules);
+        // The checker verifies the steps against the FILE, and the run
+        // evaluated the table in memory. If the rendering lost or changed
+        // anything the two would be different rule sets, and a step would be
+        // checked against a rule nobody ran. Reading the file back and
+        // comparing costs nothing and closes that gap; a mismatch is a bug in
+        // this file, so it stops the run rather than writing a certificate
+        // whose meaning is not the run's.
+        match parse_rules(&canonical_rules) {
+            Ok(reparsed) if reparsed == rules => {}
+            Ok(_) => anyhow::bail!(
+                "internal: the rule table this engine writes does not read back as the table it \
+                 evaluated, so the certificate would be checked against different rules. Refusing \
+                 to write it"
+            ),
+            Err(e) => anyhow::bail!(
+                "internal: the rule table this engine writes does not parse ({e}), so the checker \
+                 could not read it. Refusing to write it"
+            ),
+        }
+        std::fs::write(certificate_dir.join("rules.tsv"), &canonical_rules)?;
+
+        let mut asserted = String::with_capacity(facts.len() * 96);
+        for &(s, p, o) in &facts {
+            asserted.push_str(interner.resolve(s));
+            asserted.push('\t');
+            asserted.push_str(interner.resolve(p));
+            asserted.push('\t');
+            asserted.push_str(interner.resolve(o));
+            asserted.push('\n');
+        }
+        std::fs::write(certificate_dir.join("asserted.tsv"), asserted)?;
+
+        let mut horn = String::with_capacity(steps.len() * 256);
+        let mut by_rule: Vec<usize> = vec![0; rules.len()];
+        for st in &steps {
+            by_rule[st.rule] += 1;
+            horn.push_str(&st.rule.to_string());
+            horn.push('\t');
+            horn.push_str(&st.binds.len().to_string());
+            for (v, term) in &st.binds {
+                horn.push('\t');
+                horn.push_str(v);
+                horn.push('\t');
+                horn.push_str(interner.resolve(*term));
+            }
+            for &(s, p, o) in std::iter::once(&st.conclusion).chain(st.premises.iter()) {
+                horn.push('\t');
+                horn.push_str(interner.resolve(s));
+                horn.push('\t');
+                horn.push_str(interner.resolve(p));
+                horn.push('\t');
+                horn.push_str(interner.resolve(o));
+            }
+            horn.push('\n');
+        }
+        std::fs::write(certificate_dir.join("horn.tsv"), horn)?;
+
+        let digest = {
+            use sha2::{Digest, Sha256};
+            format!("{:x}", Sha256::digest(canonical_rules.as_bytes()))
+        };
+        let per_rule: Vec<serde_json::Value> = rules
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                serde_json::json!({"index": i, "name": r.name, "derivations": by_rule[i]})
+            })
+            .collect();
+        let sample: Vec<String> = steps
+            .iter()
+            .take(10)
+            .map(|st| {
+                format!(
+                    "{} {} {}",
+                    interner.resolve(st.conclusion.0),
+                    interner.resolve(st.conclusion.1),
+                    interner.resolve(st.conclusion.2)
+                )
+            })
+            .collect();
+        let dir = certificate_dir.display().to_string();
+
+        let mut result = serde_json::json!({
+            "mode": "horn",
+            "rules_file": rules_path.display().to_string(),
+            "rules": rules.len(),
+            "asserted_triples": facts.len(),
+            "distinct_asserted_triples": asserted_count,
+            "derived_triples": steps.len(),
+            "iterations": iterations,
+            "fixpoint_reached": fixpoint,
+            "skipped_unserialisable": refused.len(),
+            "materialized": false,
+            "why_not_materialized":
+                "a conclusion drawn under a supplied rule table holds only in models that satisfy \
+                 that table, so it is not written into the store beside the assertions. The \
+                 certificate is the output of this run",
+            "conditional_on":
+                format!("the rules in {}, which this run ASSUMED and never checked. A certificate \
+                         is only as good as the table it cites: a rule saying every supplier is \
+                         compliant produces steps that check green for ever",
+                        rules_path.display()),
+            "sample_derivations": sample,
+            "certificate": {
+                "dir": dir,
+                "format": "oo-horn/1",
+                "rules": rules.len(),
+                "rules_tsv_sha256": digest,
+                "asserted": facts.len(),
+                "derivations": steps.len(),
+                "by_rule": per_rule,
+                "check_with": format!(
+                    "cd lean && lake exe oo-horn check {d}/rules.tsv {d}/asserted.tsv {d}/horn.tsv",
+                    d = certificate_dir.display()
+                ),
+                "pronounced_by":
+                    "lean/, through `oo-horn check`, which decides what this run earned by \
+                     comparing the table against the built-in one. This engine emits the \
+                     certificate and states no verdict of its own",
+            }
+        });
+        if !fixpoint {
+            // An iteration cap reached with work still to do is not a fixpoint,
+            // and a count from such a run is a lower bound. Say it in the
+            // result rather than let the caller read `derived_triples` as the
+            // closure.
+            result["incomplete"] = serde_json::json!(format!(
+                "the run stopped at the {max_iterations}-iteration cap with rules still firing. \
+                 Every step in the certificate is still a step the checker can verify, but \
+                 derived_triples is a LOWER BOUND on the closure of this table, not the closure"
+            ));
+        }
+        if !refused.is_empty() {
+            result["skipped_examples"] = serde_json::json!(skipped_samples);
+            result["skipped_reason"] = serde_json::json!(
+                "the rule head instantiated to a triple no RDF serialiser can write (a literal in \
+                 subject position, or a non-IRI in predicate position). Such conclusions are \
+                 neither certified nor used as premises, so this run derives LESS than the table \
+                 licenses"
+            );
+        }
+        Ok(result.to_string())
+    }
+}

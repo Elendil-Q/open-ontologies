@@ -16,3 +16,15 @@ root = "Main"
 [[lean_exe]]
 name = "oo-horn"
 root = "HMain"
+
+# SHACL Core, mechanised. Separate from `OOCert` on purpose: the derivation
+# checker never looks inside a term and this one has to, so the two keep their
+# own term modules and neither can break the other's build.
+[[lean_lib]]
+name = "Shacl"
+roots = ["Shacl.All"]
+globs = ["Shacl.+"]
+
+[[lean_exe]]
+name = "oo-shacl"
+root = "ShaclMain"

@@ -1876,9 +1876,40 @@ impl OpenOntologiesServer {
         body.to_string()
     }
 
-    #[tool(name = "onto_reason", description = "Run inference over the loaded ontology. Profiles: 'rdfs' (subclass, domain/range), 'owl-rl' (+ transitive/symmetric/inverse, sameAs, equivalentClass), 'owl-rl-ext' (+ someValuesFrom, allValuesFrom, hasValue, intersectionOf, unionOf), 'owl-dl' (SHIQ tableaux: satisfiability, classification, qualified number restrictions with node merging, inverse/symmetric roles, functional properties, parallel agent-based classification, explanation traces, ABox reasoning. Nominals are not implemented: owl:oneOf is not read and owl:hasValue is approximated as an atomic concept, so an ontology that uses either returns undetermined classes rather than a classification. Datatype ranges are skipped). Materializes inferred triples. Set `inference_graph` to keep them in a separate graph, where nothing downstream can read an inference as an assertion and a Turtle/RDF-XML save cannot publish one.")]
+    #[tool(name = "onto_reason", description = "Run inference over the loaded ontology. Profiles: 'rdfs' (subclass, domain/range), 'owl-rl' (+ transitive/symmetric/inverse, sameAs, equivalentClass), 'owl-rl-ext' (+ someValuesFrom, allValuesFrom, hasValue, intersectionOf, unionOf), 'owl-dl' (SHIQ tableaux: satisfiability, classification, qualified number restrictions with node merging, inverse/symmetric roles, functional properties, parallel agent-based classification, explanation traces, ABox reasoning. Nominals are not implemented: owl:oneOf is not read and owl:hasValue is approximated as an atomic concept, so an ontology that uses either returns undetermined classes rather than a classification. Datatype ranges are skipped). Materializes inferred triples. Set `inference_graph` to keep them in a separate graph, where nothing downstream can read an inference as an assertion and a Turtle/RDF-XML save cannot publish one. Pass `rules_file` to evaluate a SUPPLIED Horn rule table instead of a built-in profile: it needs `certificate_dir`, materialises nothing, and writes a certificate the proved-sound Lean checker verifies with `lake exe oo-horn check`. The verdict comes from that checker and not from here, because rules you supply are assumed and never checked: a conclusion then holds in every model of the asserted graph that ALSO satisfies your rules.")]
     async fn onto_reason(&self, Parameters(input): Parameters<OntoReasonInput>) -> String {
         use crate::reason::Reasoner;
+        // A supplied Horn rule table takes a different path: it is evaluated
+        // instead of a built-in profile, it materialises nothing, and the
+        // response carries no verdict, because a rule the caller wrote is an
+        // assumption and `oo-horn check` is what pronounces on a certificate
+        // over it. Anything the caller asked for that this path cannot honour
+        // is refused rather than ignored in silence.
+        if let Some(rules_file) = input.rules_file.as_deref() {
+            let Some(dir) = input.certificate_dir.as_deref() else {
+                return serde_json::json!({
+                    "error": "rules_file needs certificate_dir. A run over a supplied rule table \
+                              states no verdict of its own: the certificate is the output, and \
+                              `lake exe oo-horn check` is what pronounces on it"
+                })
+                .to_string();
+            };
+            if input.materialize == Some(true) || input.inference_graph == Some(true) {
+                return serde_json::json!({
+                    "error": "rules_file does not materialise. A conclusion drawn under a rule \
+                              table nobody has checked holds only in models that satisfy that \
+                              table, so it is not written into the store; drop materialize / \
+                              inference_graph to run it"
+                })
+                .to_string();
+            }
+            return Reasoner::run_horn(
+                &self.graph,
+                std::path::Path::new(rules_file),
+                std::path::Path::new(dir),
+            )
+            .unwrap_or_else(Self::err_json);
+        }
         let profile = input.profile.as_deref().unwrap_or("rdfs");
         let materialize = input.materialize.unwrap_or(true);
         let target = if input.inference_graph.unwrap_or(false) {

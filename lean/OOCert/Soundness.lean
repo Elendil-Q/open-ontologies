@@ -20,13 +20,29 @@ What the theorem does not say, so that nobody reads more into it:
   the caller's contract: the engine's run is trusted only when the checker
   says yes.
 
+## Why the two lemmas are parametric
+
+`checkStep_sound` and `checkAll_sound` do not mention `Entails G`. They are
+stated over `EntailsIn P` for an arbitrary class of interpretations `P`, with
+one extra hypothesis saying that every interpretation in that class models `G`.
+`certificate_sound` recovers the original statement by taking `P` to be
+"is a model of `G`", which makes that hypothesis the identity, and nothing else
+about it changed: the statement and the axiom footprint are what they were.
+
+The parameter is what lets `Mixed.lean` put a built-in step and a step citing a
+user-supplied Horn rule in one certificate. Such a certificate is relative to
+those rules, so its entailment relation quantifies over models of `G` that also
+satisfy them, and that is a smaller class. Every per-rule case below reads its
+condition off `Model I G`, which such an interpretation still is, so all twenty
+cases are reused with no change to what any of them proves.
+
 The `#guard_msgs` at the end pins the axioms the theorem depends on. If a
 `sorry` ever enters this file, or a `native_decide`, the build fails there.
 -/
 namespace OOCert
 
 section
-variable {G : List Triple}
+variable {G : List Triple} {P : Interp → Prop}
 
 theorem allTyped_sound {x : Term} {k : Triple → Bool} :
     ∀ {ms : List Term} {ps : List Triple}, allTyped x k ms ps = true →
@@ -97,14 +113,15 @@ theorem takeChain_sound {inG : Triple → Bool} (hG : ∀ t, inG t = true → t 
         · simp at h
 
 theorem checkStep_sound {inG derived : Triple → Bool} {st : Step}
+    (hP : ∀ I, P I → Model I G)
     (hG : ∀ t, inG t = true → t ∈ G)
-    (hD : ∀ t, derived t = true → Entails G t)
-    (h : checkStep inG derived st = true) : Entails G st.conclusion := by
-  have hk : ∀ t, (inG t || derived t) = true → Entails G t := by
+    (hD : ∀ t, derived t = true → EntailsIn P t)
+    (h : checkStep inG derived st = true) : EntailsIn P st.conclusion := by
+  have hk : ∀ t, (inG t || derived t) = true → EntailsIn P t := by
     intro t ht
     simp only [Bool.or_eq_true] at ht
     rcases ht with h1 | h1
-    · exact Entails.of_mem (hG t h1)
+    · exact fun I hPI => (hP I hPI).facts _ (hG t h1)
     · exact hD t h1
   obtain ⟨rule, premises, conclusion⟩ := st
   unfold checkStep at h
@@ -114,68 +131,79 @@ theorem checkStep_sound {inG derived : Triple → Bool} {st : Step}
     rcases premises with _ | ⟨⟨s, p, o⟩, _ | ⟨⟨p', d, c⟩, _ | _⟩⟩ <;>
       simp only [decide_eq_true_eq, Bool.false_eq_true] at h
     obtain ⟨rfl, rfl, h1, h2, rfl⟩ := h
-    intro I M
-    exact M.conds.dom _ _ (hk _ h2 I M) _ _ (hk _ h1 I M)
+    intro I hPI
+    have M : Model I G := hP I hPI
+    exact M.conds.dom _ _ (hk _ h2 I hPI) _ _ (hk _ h1 I hPI)
   case rdfs3 =>
     rcases premises with _ | ⟨⟨s, p, o⟩, _ | ⟨⟨p', r, c⟩, _ | _⟩⟩ <;>
       simp only [decide_eq_true_eq, Bool.false_eq_true] at h
     obtain ⟨rfl, rfl, h1, h2, rfl⟩ := h
-    intro I M
-    exact M.conds.rng _ _ (hk _ h2 I M) _ _ (hk _ h1 I M)
+    intro I hPI
+    have M : Model I G := hP I hPI
+    exact M.conds.rng _ _ (hk _ h2 I hPI) _ _ (hk _ h1 I hPI)
   case rdfs5 =>
     rcases premises with _ | ⟨⟨a, sp1, b⟩, _ | ⟨⟨b', sp2, c⟩, _ | _⟩⟩ <;>
       simp only [decide_eq_true_eq, Bool.false_eq_true] at h
     obtain ⟨rfl, rfl, rfl, h1, h2, rfl⟩ := h
-    intro I M
-    exact M.conds.sp_trans _ _ _ (hk _ h1 I M) (hk _ h2 I M)
+    intro I hPI
+    have M : Model I G := hP I hPI
+    exact M.conds.sp_trans _ _ _ (hk _ h1 I hPI) (hk _ h2 I hPI)
   case rdfs7 =>
     rcases premises with _ | ⟨⟨s, p, o⟩, _ | ⟨⟨p', sp, q⟩, _ | _⟩⟩ <;>
       simp only [decide_eq_true_eq, Bool.false_eq_true] at h
     obtain ⟨rfl, rfl, h1, h2, rfl⟩ := h
-    intro I M
-    exact M.conds.sp_sub _ _ (hk _ h2 I M) _ _ (hk _ h1 I M)
+    intro I hPI
+    have M : Model I G := hP I hPI
+    exact M.conds.sp_sub _ _ (hk _ h2 I hPI) _ _ (hk _ h1 I hPI)
   case rdfs9 =>
     rcases premises with _ | ⟨⟨x, t, a⟩, _ | ⟨⟨a', sc, b⟩, _ | _⟩⟩ <;>
       simp only [decide_eq_true_eq, Bool.false_eq_true] at h
     obtain ⟨rfl, rfl, rfl, h1, h2, rfl⟩ := h
-    intro I M
-    exact M.conds.sc_sub _ _ (hk _ h2 I M) _ (hk _ h1 I M)
+    intro I hPI
+    have M : Model I G := hP I hPI
+    exact M.conds.sc_sub _ _ (hk _ h2 I hPI) _ (hk _ h1 I hPI)
   case rdfs11 =>
     rcases premises with _ | ⟨⟨a, sc1, b⟩, _ | ⟨⟨b', sc2, c⟩, _ | _⟩⟩ <;>
       simp only [decide_eq_true_eq, Bool.false_eq_true] at h
     obtain ⟨rfl, rfl, rfl, h1, h2, rfl⟩ := h
-    intro I M
-    exact M.conds.sc_trans _ _ _ (hk _ h1 I M) (hk _ h2 I M)
+    intro I hPI
+    have M : Model I G := hP I hPI
+    exact M.conds.sc_trans _ _ _ (hk _ h1 I hPI) (hk _ h2 I hPI)
   case prpTrp =>
     rcases premises with _ | ⟨⟨p, t, tp⟩, _ | ⟨⟨x, p1, y⟩, _ | ⟨⟨y', p2, z⟩, _ | _⟩⟩⟩ <;>
       simp only [decide_eq_true_eq, Bool.false_eq_true] at h
     obtain ⟨rfl, rfl, rfl, rfl, rfl, h1, h2, h3, rfl⟩ := h
-    intro I M
-    exact M.conds.trp _ (hk _ h1 I M) _ _ _ (hk _ h2 I M) (hk _ h3 I M)
+    intro I hPI
+    have M : Model I G := hP I hPI
+    exact M.conds.trp _ (hk _ h1 I hPI) _ _ _ (hk _ h2 I hPI) (hk _ h3 I hPI)
   case prpSymp =>
     rcases premises with _ | ⟨⟨p, t, sy⟩, _ | ⟨⟨x, p1, y⟩, _ | _⟩⟩ <;>
       simp only [decide_eq_true_eq, Bool.false_eq_true] at h
     obtain ⟨rfl, rfl, rfl, h1, h2, rfl⟩ := h
-    intro I M
-    exact M.conds.symp _ (hk _ h1 I M) _ _ (hk _ h2 I M)
+    intro I hPI
+    have M : Model I G := hP I hPI
+    exact M.conds.symp _ (hk _ h1 I hPI) _ _ (hk _ h2 I hPI)
   case prpInv1 =>
     rcases premises with _ | ⟨⟨p, io, q⟩, _ | ⟨⟨x, p1, y⟩, _ | _⟩⟩ <;>
       simp only [decide_eq_true_eq, Bool.false_eq_true] at h
     obtain ⟨rfl, rfl, h1, h2, rfl⟩ := h
-    intro I M
-    exact (M.conds.inv _ _ (hk _ h1 I M) _ _).mp (hk _ h2 I M)
+    intro I hPI
+    have M : Model I G := hP I hPI
+    exact (M.conds.inv _ _ (hk _ h1 I hPI) _ _).mp (hk _ h2 I hPI)
   case prpInv2 =>
     rcases premises with _ | ⟨⟨p, io, q⟩, _ | ⟨⟨x, q1, y⟩, _ | _⟩⟩ <;>
       simp only [decide_eq_true_eq, Bool.false_eq_true] at h
     obtain ⟨rfl, rfl, h1, h2, rfl⟩ := h
-    intro I M
-    exact (M.conds.inv _ _ (hk _ h1 I M) _ _).mpr (hk _ h2 I M)
+    intro I hPI
+    have M : Model I G := hP I hPI
+    exact (M.conds.inv _ _ (hk _ h1 I hPI) _ _).mpr (hk _ h2 I hPI)
   case eqSym =>
     rcases premises with _ | ⟨⟨a, sa, b⟩, _ | _⟩ <;>
       simp only [decide_eq_true_eq, Bool.false_eq_true] at h
     obtain ⟨rfl, h1, rfl⟩ := h
-    intro I M
-    have s : I.iext (I.ι V.sameAs) (I.ι a) (I.ι b) := hk _ h1 I M
+    intro I hPI
+    have M : Model I G := hP I hPI
+    have s : I.iext (I.ι V.sameAs) (I.ι a) (I.ι b) := hk _ h1 I hPI
     have e := M.conds.same _ _ s
     show I.iext (I.ι V.sameAs) (I.ι b) (I.ι a)
     rw [← e]
@@ -185,46 +213,52 @@ theorem checkStep_sound {inG derived : Triple → Bool} {st : Step}
     rcases premises with _ | ⟨⟨a, e, b⟩, _ | _⟩ <;>
       simp only [decide_eq_true_eq, Bool.false_eq_true] at h
     obtain ⟨rfl, h1, hc⟩ := h
-    intro I M
+    intro I hPI
+    have M : Model I G := hP I hPI
     rcases hc with rfl | rfl
-    · exact (M.conds.eqc _ _ (hk _ h1 I M)).1
-    · exact (M.conds.eqc _ _ (hk _ h1 I M)).2
+    · exact (M.conds.eqc _ _ (hk _ h1 I hPI)).1
+    · exact (M.conds.eqc _ _ (hk _ h1 I hPI)).2
   case scmEqp1 =>
     rcases premises with _ | ⟨⟨a, e, b⟩, _ | _⟩ <;>
       simp only [decide_eq_true_eq, Bool.false_eq_true] at h
     obtain ⟨rfl, h1, hc⟩ := h
-    intro I M
+    intro I hPI
+    have M : Model I G := hP I hPI
     rcases hc with rfl | rfl
-    · exact (M.conds.eqp _ _ (hk _ h1 I M)).1
-    · exact (M.conds.eqp _ _ (hk _ h1 I M)).2
+    · exact (M.conds.eqp _ _ (hk _ h1 I hPI)).1
+    · exact (M.conds.eqp _ _ (hk _ h1 I hPI)).2
   case clsSvf1 =>
     rcases premises with
       _ | ⟨⟨r, op, p⟩, _ | ⟨⟨r', sv, c⟩, _ | ⟨⟨x, p1, y⟩, _ | ⟨⟨y', t, c'⟩, _ | _⟩⟩⟩⟩ <;>
       simp only [decide_eq_true_eq, Bool.false_eq_true] at h
     obtain ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, h1, h2, h3, h4, rfl⟩ := h
-    intro I M
-    exact M.conds.svf _ _ _ (hk _ h1 I M) (hk _ h2 I M) _ _ (hk _ h3 I M) (hk _ h4 I M)
+    intro I hPI
+    have M : Model I G := hP I hPI
+    exact M.conds.svf _ _ _ (hk _ h1 I hPI) (hk _ h2 I hPI) _ _ (hk _ h3 I hPI) (hk _ h4 I hPI)
   case clsAvf =>
     rcases premises with
       _ | ⟨⟨r, op, p⟩, _ | ⟨⟨r', av, c⟩, _ | ⟨⟨x, t, r''⟩, _ | ⟨⟨x', p1, y⟩, _ | _⟩⟩⟩⟩ <;>
       simp only [decide_eq_true_eq, Bool.false_eq_true] at h
     obtain ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, h1, h2, h3, h4, rfl⟩ := h
-    intro I M
-    exact M.conds.avf _ _ _ (hk _ h1 I M) (hk _ h2 I M) _ _ (hk _ h3 I M) (hk _ h4 I M)
+    intro I hPI
+    have M : Model I G := hP I hPI
+    exact M.conds.avf _ _ _ (hk _ h1 I hPI) (hk _ h2 I hPI) _ _ (hk _ h3 I hPI) (hk _ h4 I hPI)
   case clsHv1 =>
     rcases premises with
       _ | ⟨⟨r, op, p⟩, _ | ⟨⟨r', hv, v⟩, _ | ⟨⟨x, t, r''⟩, _ | _⟩⟩⟩ <;>
       simp only [decide_eq_true_eq, Bool.false_eq_true] at h
     obtain ⟨rfl, rfl, rfl, rfl, rfl, h1, h2, h3, rfl⟩ := h
-    intro I M
-    exact (M.conds.hv _ _ _ (hk _ h1 I M) (hk _ h2 I M) _).mp (hk _ h3 I M)
+    intro I hPI
+    have M : Model I G := hP I hPI
+    exact (M.conds.hv _ _ _ (hk _ h1 I hPI) (hk _ h2 I hPI) _).mp (hk _ h3 I hPI)
   case clsHv2 =>
     rcases premises with
       _ | ⟨⟨r, op, p⟩, _ | ⟨⟨r', hv, v⟩, _ | ⟨⟨x, p1, v'⟩, _ | _⟩⟩⟩ <;>
       simp only [decide_eq_true_eq, Bool.false_eq_true] at h
     obtain ⟨rfl, rfl, rfl, rfl, rfl, h1, h2, h3, rfl⟩ := h
-    intro I M
-    exact (M.conds.hv _ _ _ (hk _ h1 I M) (hk _ h2 I M) _).mpr (hk _ h3 I M)
+    intro I hPI
+    have M : Model I G := hP I hPI
+    exact (M.conds.hv _ _ _ (hk _ h1 I hPI) (hk _ h2 I hPI) _).mpr (hk _ h3 I hPI)
   case clsInt1 =>
     rcases premises with _ | ⟨⟨c, io, l⟩, ps⟩
     · simp at h
@@ -242,9 +276,10 @@ theorem checkStep_sound {inG derived : Triple → Bool} {st : Step}
         obtain ⟨hall, hp, ho⟩ := hm
         have hC : Chain G l ms :=
           takeChain_sound hG ps.length ps (Nat.le_refl _) l ms q hchain
-        intro I M
+        intro I hPI
+        have M : Model I G := hP I hPI
         have hx : ∀ m ∈ ms, I.cext (I.ι m) (I.ι conclusion.s) :=
-          fun m hm => hk _ (allTyped_sound hall m hm) I M
+          fun m hm => hk _ (allTyped_sound hall m hm) I hPI
         have hc := M.int c l ms (hG _ hin) hC (I.ι conclusion.s) hx
         show I.iext (I.ι conclusion.p) (I.ι conclusion.s) (I.ι conclusion.o)
         rw [hp, ho]
@@ -267,14 +302,16 @@ theorem checkStep_sound {inG derived : Triple → Bool} {st : Step}
         obtain ⟨rfl, hmem, hkx, rfl⟩ := hm
         have hC : Chain G l ms :=
           takeChain_sound hG ps.length ps (Nat.le_refl _) l ms _ hchain
-        intro I M
-        exact M.uni c l ms (hG _ hin) hC (I.ι x) m hmem (hk _ hkx I M)
+        intro I hPI
+        have M : Model I G := hP I hPI
+        exact M.uni c l ms (hG _ hin) hC (I.ι x) m hmem (hk _ hkx I hPI)
 
-theorem checkAll_sound {inG : Triple → Bool} (hG : ∀ t, inG t = true → t ∈ G) :
+theorem checkAll_sound {inG : Triple → Bool} (hP : ∀ I, P I → Model I G)
+    (hG : ∀ t, inG t = true → t ∈ G) :
     ∀ (steps : List Step) (derived : Std.HashSet Triple),
-      (∀ t, derived.contains t = true → Entails G t) →
+      (∀ t, derived.contains t = true → EntailsIn P t) →
       checkAll inG steps derived = true →
-      ∀ st ∈ steps, Entails G st.conclusion := by
+      ∀ st ∈ steps, EntailsIn P st.conclusion := by
   intro steps
   induction steps with
   | nil =>
@@ -284,8 +321,8 @@ theorem checkAll_sound {inG : Triple → Bool} (hG : ∀ t, inG t = true → t �
     intro derived hD h st' hst'
     simp only [checkAll, Bool.and_eq_true] at h
     obtain ⟨h1, h2⟩ := h
-    have hst : Entails G st.conclusion := checkStep_sound hG hD h1
-    have hD' : ∀ t, (derived.insert st.conclusion).contains t = true → Entails G t := by
+    have hst : EntailsIn P st.conclusion := checkStep_sound hP hG hD h1
+    have hD' : ∀ t, (derived.insert st.conclusion).contains t = true → EntailsIn P t := by
       intro t ht
       rw [Std.HashSet.contains_insert] at ht
       simp only [Bool.or_eq_true, beq_iff_eq] at ht
@@ -302,8 +339,9 @@ end
 theorem certificate_sound (G : List Triple) (steps : List Step)
     (h : checkCert G steps = true) : ∀ st ∈ steps, Entails G st.conclusion := by
   unfold checkCert at h
-  refine checkAll_sound (G := G) (inG := fun t => (Std.HashSet.ofList G).contains t)
-    ?_ steps ∅ ?_ h
+  refine checkAll_sound (G := G) (P := fun I => Model I G)
+    (inG := fun t => (Std.HashSet.ofList G).contains t)
+    (fun _ hM => hM) ?_ steps ∅ ?_ h
   · intro t ht
     rw [Std.HashSet.contains_ofList] at ht
     simpa using ht

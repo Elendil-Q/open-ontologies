@@ -1,0 +1,5 @@
+# The same triple twice. sh:maxCount counts value nodes, not statements, so this
+# must still conform. A validator that counts SPARQL solutions gets it wrong.
+<http://ex.org/alice> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://ex.org/Person> .
+<http://ex.org/alice> <http://ex.org/name> "Alice" .
+<http://ex.org/alice> <http://ex.org/name> "Alice" .
