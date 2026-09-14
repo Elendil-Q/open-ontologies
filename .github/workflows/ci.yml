@@ -374,7 +374,15 @@ jobs:
           sudo apt-get update && sudo apt-get install -y z3
           git clone -q https://github.com/laitep/ladr.git /tmp/ladr
           git -C /tmp/ladr checkout -q 8317cb2dea069cd57723f76bdee7d6bd818103a7
-          make -C /tmp/ladr all XFLAGS="-std=gnu89" > /tmp/ladr-build.log 2>&1 || { tail -30 /tmp/ladr-build.log; exit 1; }
+          # Build ONLY the library and mace4. LADR's top-level `all` also builds
+          # prover9, whose link rule puts -lm before the objects that need it;
+          # GNU ld resolves libraries left to right, so that link fails on
+          # Linux while macOS's linker, which ignores order, let it pass
+          # locally. mace4.src is built before provers.src in that `all`, and
+          # the first run on main showed mace4 had already linked when prover9
+          # failed. Nothing here uses prover9, so nothing here builds it.
+          make -C /tmp/ladr/ladr lib XFLAGS="-std=gnu89" > /tmp/ladr-build.log 2>&1 || { tail -30 /tmp/ladr-build.log; exit 1; }
+          make -C /tmp/ladr/mace4.src all XFLAGS="-std=gnu89" >> /tmp/ladr-build.log 2>&1 || { tail -30 /tmp/ladr-build.log; exit 1; }
           sudo install -m 755 /tmp/ladr/bin/mace4 /usr/local/bin/mace4
           command -v z3 mace4
       - name: Check the first-order model certificates end to end
