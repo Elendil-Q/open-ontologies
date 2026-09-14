@@ -33,8 +33,22 @@ W3C Software and Document License, the terms the whole `w3c/data-shapes`
 repository carries (`LICENSE.md` at its root, reproduced here). It permits
 copying and redistribution, with or without modification, for any purpose,
 provided the copyright notice, the licence link and a statement of changes
-travel with the copy. This file is that statement of changes: there are none
-to the test data.
+travel with the copy. This file is that statement of changes, and there is exactly one.
+
+**Line endings.** Some files upstream carry CRLF. On checkout they are
+normalised to LF, pinned by the repository's `.gitattributes`. Nothing else is
+altered: no triple, no literal, no test expectation, and no manifest entry. The
+change is verifiable with `git diff --ignore-cr-at-eol`, which shows nothing for
+this directory.
+
+The reason is not tidiness. The certificate formats in this repository are
+tab-separated with LF endings and their parsers REFUSE a carriage return rather
+than strip one, because a CR inside a field becomes part of an RDF term. Git
+checks text files out with CRLF on Windows, so without the pin the Windows CI
+leg failed on files that are correct in the repository. Loosening the parser was
+the alternative and would have been the wrong trade: a parser that quietly
+repairs its input produces certificates about something other than the file it
+was handed.
 
 ## Why vendored rather than fetched at test time
 
