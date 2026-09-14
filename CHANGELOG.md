@@ -240,6 +240,93 @@ All notable changes to Open Ontologies are documented here.
   pins every reachable rule, and pins that `prp-symp` and `prp-trp` are NOT
   reachable, because their property must already be the predicate of a stored
   triple and is therefore an IRI.
+- **`owl:FunctionalProperty` and `owl:InverseFunctionalProperty` were
+  completely inert, and the module documentation claimed both.** Functionality
+  is encoded as the GCI `≤1 R.⊤` and inverse-functionality as `≤1 R⁻.⊤`. Two
+  things then cancelled each other out: `add_label` returns early for
+  `Concept::Top` and never stores it, and the ≤-rule counted matching
+  successors with `labels.contains(&filler)`, which with `filler == ⊤` is false
+  on every node that will ever exist. So the bound counted zero successors, could
+  not be violated, and no merge ever fired. A functional property with two
+  distinct fillers in disjoint classes came back `consistent: true` with
+  `undecided: false`. The ≥- and ∃-rules used the same test and so also counted
+  zero, manufacturing successors they already had. All three now go through one
+  `node_satisfies`, which is where `⊤` is handled; `has_clash` had special-cased
+  `⊤` for cardinality LABELS on one node all along, and only the
+  successor-counting sites were missed. The ≤-rule also no longer marks a bound
+  processed before it branches, which limited it to ONE merge per node: with
+  three fillers under `≤1` a single merge leaves two and the branch was returned
+  as a model of a constraint it visibly breaks. Termination is argued at the
+  change and rests on the recursion depth, which increases by one on every merge
+  and is hard-capped. Measured over a 20-ontology corpus this repair costs
+  nothing: times within noise, node counts flat or lower (the ∃/≥ half stops
+  building redundant successors), and not one verdict moved.
+- **The role hierarchy was not closed under inverses, so a constraint on the
+  inverse of a super-role never reached a sub-role's edge.** `r ⊑ s` entails
+  `r⁻ ⊑ s⁻` — if `(x,y) ∈ r` then `(x,y) ∈ s`, so `(y,x) ∈ r⁻` implies
+  `(y,x) ∈ s⁻` — and that was simply never computed. Each role's `rdfs:domain`
+  and `rdfs:range` are folded over its transitive super-roles once and consulted
+  per edge, so a domain stated on `s` already reached an `r` edge; a domain
+  stated on `s⁻` did not, because `r⁻` was not known to be below `s⁻`. The
+  closure is one pass, not a fixpoint: `inverse_roles` is an involution, so
+  re-applying the rule to a pair it adds yields the pair it came from.
+  Transitivity is still left to the existing downstream closure, which now runs
+  over the enlarged relation. Because it is applied at parse time, the model
+  certificate's `SubRole` axioms describe the same hierarchy the reasoner used.
+- **An IRI that is never typed contributed no role assertions at all, which is
+  a false clean now that asserted edges carry their domain and range.**
+  Individuals were discovered by walking subjects that have an `rdf:type` and
+  keeping the ones whose type is recognisable as a class, so a subject that is
+  never typed — or is typed only by a vocabulary this reasoner does not treat as
+  a class, a `skos:Concept` say — contributed neither its edges nor itself. An
+  individual with two role assertions whose domains are disjoint classes is
+  inconsistent on those two triples alone and the check never saw them. The
+  object side of the same hole was already closed; this is the subject side, and
+  the filter is narrow: IRIs only, never something already declared a class or a
+  property, and only when the subject actually asserts a declared object
+  property. `build_abox_tableau` now builds a node for BOTH endpoints of a role
+  assertion, and "this ontology has no ABox" now means no role assertions
+  either, in `check_abox` and in `certify_abox_consistent` alike, because those
+  two guards must agree or the certificate layer declines to certify an ABox the
+  reasoner decided.
+- **`individuals_checked` undercounted by exactly the individuals the reasoner
+  knew least about.** It was taken before the nodes for role-assertion endpoints
+  were added. A node that carries labels, carries the GCIs and can clash has
+  been checked whatever its `rdf:type` says, and reporting `0` also suppressed
+  the entire `abox` block from the output. It is now one per node in the ABox
+  tableau.
+- **Every phase of a reasoning run shared one wall-clock deadline fixed when
+  the reasoner was built.** The satisfiability sweep, the subsumption sweep and
+  the ABox check all read one `Instant` computed in `DlReasoner::from_graph`, so
+  whichever ran first spent the clock and the ABox check — which runs last, and
+  is the one a user reads about their own data — reported `undecided` on an ABox
+  it decides in microseconds. Honest rather than false, which is why it
+  survived, but a loaded machine silently degraded an answer that was there. The
+  reasoner now holds the budget as a DURATION and each phase opens its own. The
+  number is unchanged and no cap was raised. A run that does not finish now also
+  says WHICH phase ran out, in `budget_exhausted_in`, because the three draw on
+  different settings and "incomplete" alone tells a reader nothing they can act
+  on. Cost, measured: on the five corpus ontologies that exhaust the budget the
+  wall clock goes from ~10s to 30-40s, since four tableau phases now each get the
+  configured per-test budget instead of four sharing one already-expired instant.
+  No verdict changed on any of the twenty.
+
+### Known defects
+- **`classify_timeout_ms` has never bounded a real run.** It defaults to 180s,
+  but until the phase-budget fix above, the single shared per-test deadline
+  expired 10s into the run and made every later tableau bail on entry, so the
+  180s budget never governed anything. It still does not: phase budgets are
+  scoped per phase, which keeps the cost of the fix at 3-4x rather than the 18x
+  measured when each tableau was given its own. The setting is therefore still
+  not the bound it claims to be, and reconciling the two budgets is open.
+- **`owl:AsymmetricProperty` is not modelled.** It is now DECLARED, in
+  `unmodelled_constructs`, alongside `owl:ReflexiveProperty` and
+  `owl:IrreflexiveProperty`. Asymmetry constrains a PAIR of edges rather than a
+  node's concept membership, so SHIQ without nominals has no label that states
+  it; modelling it needs an edge-level clash rule and its own termination
+  argument. Before this it was in neither place — not implemented, and not
+  declared — so an ontology using it got a clean verdict with no sign that a
+  constraint had been dropped.
 - **The CLIF export produced files that parse cleanly and yield NOTHING.**
   Every sentence was emitted as `(cl:comment '...' SENTENCE)`, the shape
   ISO/IEC 21838-2's BFO files use. Measured against both CLIF parsers that
