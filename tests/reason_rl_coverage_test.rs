@@ -473,14 +473,44 @@ fn the_new_rules_earn_their_place_on_the_shipped_corpus() {
     const SKIP_DIRS: [&str; 8] = [
         "node_modules", "target", ".lake", ".git", ".venv", "venv", "site-packages", "__pycache__",
     ];
+    // `tests/fixtures/horn-coverage/` holds one graph per rule the shipped corpus
+    // never fires, each written to make exactly that rule fire, so the Rust/Python
+    // differential can compare the two engines on rules no real ontology reaches. They
+    // are EXCLUDED here, and the exclusion is the whole point of the directory: this
+    // test asks whether the ten new rules earn their place on the corpus this
+    // repository SHIPS, and a rule that earns its place on a file written to make it
+    // fire has earned nothing. Without this line the silent list at the bottom would
+    // empty itself out of its own test data. `tools/horn_differential.py` excludes the
+    // same directory for the same reason and reports it as a separate figure.
+    const COVERAGE_FIXTURES: &str = "tests/fixtures/horn-coverage/";
+    let coverage_dir = repo().join("tests").join("fixtures").join("horn-coverage");
+    assert!(
+        coverage_dir.is_dir(),
+        "{} is missing. If the directory moved, the exclusion below is a no-op and this \
+         test is now measuring data written to make its own assertions pass",
+        coverage_dir.display()
+    );
+
     let out = Command::new("git")
         .args(["ls-files", "-z", "*.ttl", "*.owl", "*.rdf", "*.nt"])
         .current_dir(repo())
         .output()
         .expect("run git ls-files");
-    let mut files: Vec<PathBuf> = String::from_utf8_lossy(&out.stdout)
+    let tracked: Vec<String> = String::from_utf8_lossy(&out.stdout)
         .split('\0')
         .filter(|p| !p.is_empty())
+        .map(|p| p.to_string())
+        .collect();
+    let excluded = tracked.iter().filter(|p| p.starts_with(COVERAGE_FIXTURES)).count();
+    assert!(
+        excluded > 0,
+        "no tracked file under {COVERAGE_FIXTURES} was excluded. Either the fixtures are \
+         untracked, in which case `git ls-files` never saw them and this guard is fine to \
+         relax, or the prefix has drifted and they are being counted as corpus"
+    );
+    let mut files: Vec<PathBuf> = tracked
+        .iter()
+        .filter(|p| !p.starts_with(COVERAGE_FIXTURES))
         .filter(|p| !SKIP_DIRS.iter().any(|d| p.split('/').any(|seg| seg == *d)))
         .map(|p| repo().join(p))
         .collect();
@@ -567,6 +597,25 @@ fn the_new_rules_earn_their_place_on_the_shipped_corpus() {
     // biggest contributor below, not because a file here needs them, and the
     // honest way to say so is an assertion that fails the day it stops being
     // true.
+    //
+    // `tests/fixtures/horn-coverage/scm-svf2.ttl` and `scm-avf2.ttl` DO fire two of
+    // these three, and are excluded from the sweep above precisely so that they cannot
+    // shorten this list. A graph written to make a rule fire is evidence that the rule
+    // is implemented, which is what that directory is for; it is not evidence that any
+    // ontology needs the rule, which is what this list is about.
+    //
+    // `scm-avf1` has NO fixture, and the reason is a discrepancy rather than an
+    // oversight. This sweep runs the `owl-rl-ext` PROFILE and measures zero.
+    // `tools/horn_differential.py` runs the 27-row SUPPLIED TABLE in
+    // `tests/fixtures/horn/builtin_rules.tsv` and credits `scm-avf1` once, on
+    // `benchmark/reference/pizza-reference.owl`, so it was never on that tool's list of
+    // rules the corpus cannot reach and no coverage fixture was written for it. The two
+    // rule sets are not the same rule set and the same file separates them elsewhere
+    // too: on pizza, measured 15 September 2026, the profile derives 357 `rdfs11` and
+    // 101 `scm-svf1` where the table derives 387 and 102, and the profile additionally
+    // fires `cls-int2` and `cls-oo`, which the table does not contain. Neither number is
+    // known to be wrong. What is wrong is quoting either as "the corpus", and this
+    // comment is here so the zero below is not read as a claim about the other one.
     for silent in ["scm-svf2", "scm-avf1", "scm-avf2"] {
         assert_eq!(
             totals.get(silent).copied().unwrap_or(0),

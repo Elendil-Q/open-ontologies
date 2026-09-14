@@ -1,0 +1,46 @@
+# COVERAGE FIXTURE. Deliberate test data, not an ontology about anything.
+#
+# RULE: scm-avf2
+# W3C OWL 2 Web Ontology Language Profiles (Second Edition), section 4.3,
+# Table 9: The Semantics of Schema Vocabulary.
+# https://www.w3.org/TR/owl2-profiles/#Reasoning_in_OWL_2_RL_and_RDF_Graphs_using_Rules
+#
+#   T(?c1, owl:allValuesFrom, ?y)
+#   T(?c1, owl:onProperty, ?p1)
+#   T(?c2, owl:allValuesFrom, ?y)
+#   T(?c2, owl:onProperty, ?p2)
+#   T(?p1, rdfs:subPropertyOf, ?p2)
+#     ->  T(?c2, rdfs:subClassOf, ?c1)
+#
+# WHY IT EXISTS. Same shape as scm-svf2.ttl with allValuesFrom in place of
+# someValuesFrom, and nothing in this repository has it, so
+# tools/horn_differential.py compared the Rust and Python engines on scm-avf2
+# zero times and its clean sweep said nothing about it.
+#
+# NOTE THE DIRECTION. The consequent is T(?c2, rdfs:subClassOf, ?c1), which is
+# the REVERSE of scm-svf2's. Universal quantification is antitone in the
+# property: widening the property narrows the class. A transcription that
+# copied the someValuesFrom row and changed the vocabulary would get the
+# direction wrong, and with no corpus document firing the rule nothing would
+# have noticed. This fixture is what would notice, because it pins which of
+# :R1 and :R2 is the subclass.
+#
+# EXPECTED: exactly one derivation, credited to scm-avf2:
+#   :R2 rdfs:subClassOf :R1
+#
+# scm-avf1 does not also fire: it would need :C rdfs:subClassOf :C, which this
+# file does not assert, and the built-in table has no reflexivity rule.
+
+@prefix : <http://ex.org/cover/scm-avf2#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+:R1 a owl:Restriction ;
+    owl:onProperty :p1 ;
+    owl:allValuesFrom :C .
+
+:R2 a owl:Restriction ;
+    owl:onProperty :p2 ;
+    owl:allValuesFrom :C .
+
+:p1 rdfs:subPropertyOf :p2 .

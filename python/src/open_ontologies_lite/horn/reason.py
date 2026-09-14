@@ -4,15 +4,32 @@
 
 The house rule is that a fast UNTRUSTED engine proposes and a small VERIFIED
 checker disposes. The Rust reasoner is untrusted; the certificate carries the
-warrant. A second, completely independent reasoner written in Python is
-therefore not a new risk: it is untrusted in exactly the same way, its
-conclusions carry exactly the same certificates, and the same Lean theorem
-checks them. Nothing about the guarantee weakens, because the guarantee never
-depended on the engine.
+warrant. A second reasoner written in Python is therefore not a new risk: it is
+untrusted in exactly the same way, its conclusions carry exactly the same
+certificates, and the same Lean theorem checks them. Nothing about the guarantee
+weakens, because the guarantee never depended on the engine.
 
-What it buys is a THIRD implementation. Rust engine, Python engine and Lean
-checker over one corpus give a differential that can find a defect none of them
-would find alone.
+# How independent this engine is from the Rust one, which is less than you think
+
+Not independent. It runs the SAME semi-naive forward-chaining algorithm over the
+SAME rule table, it was written with `src/reason.rs` open, and the comments below
+cite that file by line number. So what `tools/horn_differential.py` measures when
+the two agree is strong evidence about one thing and weak evidence about another,
+and the two must not be swapped:
+
+* STRONG against a TRANSCRIPTION slip. An index off by one, a guard dropped, a
+  join in the wrong order, a rule arm reading the subject where it meant the
+  object. Two people copying one design do not make the same slip twice, and a
+  slip on either side shows up as a different derived set.
+* CLOSE TO NOTHING against a SHARED MISREADING. If the design itself misreads a
+  W3C rule, both engines implement the misreading, agree perfectly, and go on
+  agreeing for ever. No number of corpus documents changes that.
+
+The independent leg of that differential is the LEAN CHECKER: written from the
+W3C rules, soundness machine-checked, and the only component of the three whose
+acceptance means anything on its own. The clean sweep must never be quoted as
+"two independent reasoners agree", and the tool prints that sentence next to its
+agreement count on every run so it cannot be quoted without it.
 
 # What this module does not decide
 
@@ -228,7 +245,7 @@ def _facts(store, graphs) -> tuple[list[Fact], list[str]]:
 
     The default is the DEFAULT GRAPH ALONE, which is where `OntologyEngine.load()`
     puts everything, so this package's own users lose nothing by it. The Rust
-    engine flattens every named graph here (`src/reason.rs:1449`,
+    engine flattens every named graph here (`src/reason.rs:2170`,
     `graph.all_triples()`), which is the defect above: a store holding a prior
     materialisation turns derived triples into assertions.
     """

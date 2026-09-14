@@ -1,0 +1,26 @@
+# COVERAGE FIXTURE. Deliberate test data, not an ontology about anything.
+#
+# RULE: prp-inv2
+# W3C OWL 2 Web Ontology Language Profiles (Second Edition), section 4.3,
+# Table 5: The Semantics of Axioms about Properties.
+# https://www.w3.org/TR/owl2-profiles/#Reasoning_in_OWL_2_RL_and_RDF_Graphs_using_Rules
+#
+#   T(?p1, owl:inverseOf, ?p2)
+#   T(?x, ?p2, ?y)
+#     ->  T(?y, ?p1, ?x)
+#
+# WHY IT EXISTS. The repository's own RDF never fires prp-inv2, so
+# tools/horn_differential.py compared the Rust and Python engines on it zero
+# times and its clean sweep said nothing about it.
+#
+# EXPECTED: exactly one derivation, credited to prp-inv2:
+#   :y :p :x
+#
+# The mirror rule prp-inv1 then fires on that conclusion and re-derives
+# ":x :q :y", which is already asserted, so it adds no step and takes no credit.
+
+@prefix : <http://ex.org/cover/prp-inv2#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+
+:p owl:inverseOf :q .
+:x :q :y .

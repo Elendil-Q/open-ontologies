@@ -40,6 +40,157 @@ All notable changes to Open Ontologies are documented here.
   than letting it be assumed away.
 
 ### Added
+- **The cross-kernel corpus was one step deep, and now goes to nineteen.**
+  `tests/cross_kernel_differential_test.rs` ran the Lean and the Isabelle
+  checker over 1,718 certificates, and exactly ONE of the 61 base certificates
+  contained a step citing an earlier step's conclusion. Strict prefix
+  visibility — a step may cite only what came strictly before it and never
+  itself — is the property the whole induction rests on, and it was
+  differentially exercised by a single two-step fixture. Measured before:
+  60 base certificates at depth 0, one at depth 1, maximum fan-out 1, 123 rows
+  in the whole corpus touching the discipline at all.
+
+  `deep_cases` now generates chains and fans from a subclass ladder — 2, 4, 8
+  and 20 steps, plus a 6-step chain fanning to 8 and a flat fan of 12 — and six
+  mutations that a flat certificate cannot express join the corpus:
+  `move_step_before_its_premise`, `swap_a_step_with_its_producer`,
+  `truncate_chain_in_the_middle`, `two_steps_cite_each_other`,
+  `a_deep_step_cites_itself` and `a_step_cites_a_later_conclusion`. Measured
+  after: 2,075 certificates, base depths 0:61 1:5 3:1 6:1 7:1 19:1, maximum
+  fan-out 12, and 484 rows exercising the discipline (258 resting on it to be
+  accepted, 226 that it must reject). Depth is the longest chain of citations,
+  so an n-step chain reports n-1. The two kernels return the same answer on
+  2,021 of the 2,075 and part company on 54: every one of those is the D1
+  duplicate-key divergence that was already pinned, none is new in kind, and
+  NONE is unexplained. Depth found no fresh disagreement, which is a result
+  about the two formalisations rather than a null one, because the property
+  their inductions are built on had until now barely been shown data that could
+  violate it. `the_corpus_exercises_prefix_visibility_at_depth` prints the
+  distribution and holds a floor under it, and does not need either proof
+  assistant, because the shape of the corpus is a fact about the files.
+
+  Two adversarial certificates no generator produces are committed under
+  `tests/fixtures/horn/deep/`. Both instantiate `rdfs9` PERFECTLY — every
+  variable bound, no repeated key, body matching premises, head matching
+  conclusion — so the only thing wrong with either is the order.
+  `self_support_cert.tsv` is a step whose sole unasserted premise is its own
+  conclusion. `mutual_cert.tsv` is two steps each citing the other, deriving a
+  type assertion for an individual the graph never types; it ships with a
+  control that adds ONE triple and turns the same certificate into an accepted
+  derivation with the absolute verdict. A checker resolving premises against
+  "every conclusion in the file" rather than "every conclusion before this one"
+  accepts both, and having accepted them derives anything at all.
+
+  Growing the corpus makes the published counts stale, and three documents quote
+  them. `README.md` and `docs/reasoning-systems-inventory.md` are corrected here
+  from "47 of 1,718" to "54 of 2,075", both figures re-measured rather than
+  inferred: the pre-change file was checked out and run to reproduce 1,718 and
+  47 before the new one was run. `isabelle/README.md` carries the same numbers
+  in more detail — "1,718 certificates: 61 base, 1,291 mutated, 366 fuzzed.
+  Both kernels accept 349, reject 857, and refuse 465 as unparseable.
+  Forty-seven rows disagree" — and is LEFT STALE here, because this work was
+  done under an instruction not to touch `isabelle/`. The current figures for
+  that paragraph are 2,075: 70 base, 1,585 mutated, 420 fuzzed; accept 402,
+  reject 1,080, refuse 539; 54 rows disagree, all D1. No test guards any of
+  these numbers, which is why one copy was left behind. Pinning the total is the
+  wrong guard — it moves whenever anyone adds a Turtle file to one of the ten
+  directories `source_graphs` reads, which is the reason
+  `tests/reason_rl_coverage_test.rs` refuses to pin its own corpus total. The
+  right one is the shape `readme_claims_test.rs` already uses for the tool count:
+  assert the copies agree WITH EACH OTHER, so a half-finished correction fails
+  rather than a growing corpus. That is not added here, because it would fail on
+  the copy this work was not allowed to touch.
+- **Seven rules fired nowhere, and now have one fixture each.**
+  `tools/horn_differential.py` reported that 20 of the 27 rules in the built-in
+  table fire somewhere in the repository's own RDF and seven never do:
+  `prp-inv2`, `eq-sym`, `cls-avf`, `cls-hv1`, `cls-hv2`, `scm-svf2` and
+  `scm-avf2`. The differential therefore compared the Rust and Python engines on
+  those seven zero times. `tests/fixtures/horn-coverage/` holds one Turtle file
+  per silent rule, each the smallest graph that makes exactly that rule fire —
+  one derivation, credited to that rule, nothing else — with the W3C rule, its
+  table (OWL 2 Profiles §4.3 Tables 4, 5, 6 and 9) and the expected derivation
+  in a comment at the top of the file. All seven fire, all seven agree across
+  both engines, and `oo-horn` accepts every certificate.
+
+  They are TEST DATA and are kept out of the corpus: `discover()` excludes the
+  directory, `test_the_coverage_fixtures_are_not_part_of_the_corpus` asserts
+  that it does, and the report prints TWO figures that are never added — 20 of
+  27 on real ontologies, 27 of 27 once graphs written for the purpose are
+  included — naming on every run the rules covered only by a fixture. A fixture
+  that fires nothing, or that fires more than its rule, fails the run rather
+  than quietly leaving the rule uncovered.
+
+  No rule turned out to be unreachable. That was the interesting possible
+  outcome, since a rule no graph can fire is a defect in the engine rather than
+  a gap in the corpus, and the tool was built to fail loudly on it; it did not
+  fire. The full run of 15 September 2026 — 291 single documents, 203,825
+  asserted triples, 24 bundles, 322 compared cases, 1,021 seconds — reports
+  `rules_never_fired: []`. Each fixture derives exactly one triple, credited to
+  its own rule, identical on both engines, certificate accepted. One pair is
+  worth naming, because it is the pair a transcription would get wrong and
+  nothing would have noticed: `scm-svf2` concludes
+  `?c1 rdfs:subClassOf ?c2` and `scm-avf2` concludes `?c2 rdfs:subClassOf ?c1`,
+  the reverse, because universal quantification is antitone in the property.
+  The engine derives `:R1 rdfs:subClassOf :R2` from the first fixture and
+  `:R2 rdfs:subClassOf :R1` from the second, which is the standard's direction
+  in both cases and was, until these fixtures existed, checked by nothing.
+
+  Deciding that no eighth fixture was needed surfaced something that was not on
+  the list, and it is recorded rather than fixed. `scm-avf1` needed no fixture
+  because the Horn differential credits it on the corpus, while
+  `tests/reason_rl_coverage_test.rs` asserts that it fires ZERO times across the
+  same corpus, and both assertions pass. They measure different rule sets: the
+  differential drives `reason --rules tests/fixtures/horn/builtin_rules.tsv`,
+  the 27-row supplied table, and that test drives the `owl-rl-ext` PROFILE.
+  Measured on `benchmark/reference/pizza-reference.owl` on 15 September 2026,
+  the two part company on more than one rule — profile 357 `rdfs11`, 101
+  `scm-svf1`, 0 `scm-avf1`; table 387, 102 and 1 — and the profile additionally
+  fires `cls-int2` and `cls-oo`, which the table does not contain. Nothing here
+  says which is right. What it does say is that "fires somewhere in the corpus"
+  is two different claims in this repository depending on which rule set is
+  meant, and neither document that quotes a coverage figure said which. The
+  comment beside that assertion now does.
+
+- **The Rust/Python differential is not design-independent, and now says so on
+  every run.** The agent that built `tools/horn_differential.py` reported that
+  the two engines share an algorithm and that the Python's comments cite the
+  Rust by line, and asked that the clean sweep never be quoted as "two
+  independent reasoners agree" without that sentence attached. A request is not
+  a mechanism, so it is now structural: `INDEPENDENCE_CAVEAT` prints next to the
+  agreement count on every run, success or failure, and rides along in the
+  `--json` output. Agreement between the two engines is strong evidence against
+  a TRANSCRIPTION slip and close to no evidence against a SHARED MISREADING of a
+  W3C rule, which both would implement and agree on for ever; the independent
+  leg is the Lean checker.
+
+  Five sentences that implied more independence than exists were corrected:
+  the tool's own "two independent implementations of the same specification";
+  `python/README.md`'s "Because this engine and the Rust one are independent
+  implementations of one specification"; `horn/reason.py`'s "A second,
+  completely independent reasoner written in Python";
+  `python/tests/test_horn_differential.py`'s title line "Three independent
+  implementations over one corpus" and its "three separate implementations of
+  one specification", which the first sweep missed because it searched the two
+  READMEs and the module and not the older of the two differential test files;
+  and `README.md`'s paragraph on the second engine, which mentioned neither the
+  differential nor its limit. `docs/lean-certificates.md` gains the caveat and
+  the rule-coverage split as two Known limitations. Overstating this is the same
+  defect as overstating a proof. Nothing in the CHANGELOG had to be corrected:
+  the three-way differential had never been written up here, which is why the
+  overstatement lived in docstrings and READMEs instead.
+
+  **The evidence for the caveat had itself gone stale.** The stated reason the
+  two engines are not independent is that the Python cites `src/reason.rs` BY
+  LINE, and all three of those citations pointed about 700 lines short:
+  `src/reason.rs:1449` for `graph.all_triples()`, which is at 651 and 2170, and
+  `src/reason.rs:1513` for `all.sort_unstable()`, which is at 2240. The Rust file
+  had grown underneath the comments. A stale line number is worse than none,
+  because a reader who follows it lands on unrelated code and concludes the claim
+  was invented. The three are corrected to 2170, 2170 and 2240, and
+  `test_the_python_engine_cites_the_rust_by_a_line_that_still_says_what_it_claims`
+  now resolves every such citation in `python/` against the current file and
+  fails when a line stops containing the token it names. A citation written in a
+  shape the test cannot read fails too, rather than going quietly unguarded.
 - **The refutation checker has a producer.** `lean/OOCert/Refute.lean` has
   checked refutations since it landed and nothing in `src/` could write one: a
   checker with no producer, which is the same shape of defect as a gate that

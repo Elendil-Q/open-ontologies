@@ -1,0 +1,42 @@
+# COVERAGE FIXTURE. Deliberate test data, not an ontology about anything.
+#
+# RULE: scm-svf2
+# W3C OWL 2 Web Ontology Language Profiles (Second Edition), section 4.3,
+# Table 9: The Semantics of Schema Vocabulary.
+# https://www.w3.org/TR/owl2-profiles/#Reasoning_in_OWL_2_RL_and_RDF_Graphs_using_Rules
+#
+#   T(?c1, owl:someValuesFrom, ?y)
+#   T(?c1, owl:onProperty, ?p1)
+#   T(?c2, owl:someValuesFrom, ?y)
+#   T(?c2, owl:onProperty, ?p2)
+#   T(?p1, rdfs:subPropertyOf, ?p2)
+#     ->  T(?c1, rdfs:subClassOf, ?c2)
+#
+# WHY IT EXISTS. scm-svf2 needs two someValuesFrom restrictions over the SAME
+# filler whose properties are related by rdfs:subPropertyOf. Nothing in this
+# repository has that shape, so tools/horn_differential.py compared the Rust and
+# Python engines on scm-svf2 zero times and its clean sweep said nothing about
+# it. Its sibling scm-svf1, which needs one shared property and two fillers
+# related by rdfs:subClassOf, does fire in the corpus; the two differ only in
+# WHICH of the two positions carries the ordering, which is exactly the kind of
+# difference a reader assumes is covered because the neighbour is.
+#
+# EXPECTED: exactly one derivation, credited to scm-svf2:
+#   :R1 rdfs:subClassOf :R2
+#
+# scm-svf1 does not also fire: it would need :C rdfs:subClassOf :C, which this
+# file does not assert, and the built-in table has no reflexivity rule.
+
+@prefix : <http://ex.org/cover/scm-svf2#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+:R1 a owl:Restriction ;
+    owl:onProperty :p1 ;
+    owl:someValuesFrom :C .
+
+:R2 a owl:Restriction ;
+    owl:onProperty :p2 ;
+    owl:someValuesFrom :C .
+
+:p1 rdfs:subPropertyOf :p2 .

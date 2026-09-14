@@ -68,14 +68,14 @@ flowchart LR
 description-logic false cleans, each an inconsistent ontology reported consistent with full
 confidence. A rule that could conclude a triple no serialiser can write, reachable from ordinary
 OWL, which left the store non-deterministic: three runs of one input kept 40, 9 and 24 inferences.
-And two independently verified kernels disagreeing on 47 of 1,718 certificates, all in the safe
-direction, tracing to a gap in the certificate format that neither proof could see: the format did
-not say what a repeated binding key meant, or what an incomplete binding meant, so one kernel
-refused those shapes and the other answered from whatever its lookup function happened to do. That
-gap is closed by
-[decision 0008](docs/decisions/0008-a-binding-is-data-and-evidence-admits-one-reading.md), which
-refuses both shapes, and the differential now reports zero divergent rows. Every one of those had
-passed every test that existed before.
+And two independently verified kernels disagreeing on the same certificates, always in the safe
+direction, tracing to a gap in the format that neither proof could see: it did not say what a
+repeated binding key meant, so one kernel refused the shape and the other answered from whatever
+its lookup happened to do. A key bound twice to different values is satisfied by no substitution
+at all, so there were never two readings, only two ways of discarding half the certificate. Closed
+by [decision 0008](docs/decisions/0008-a-binding-is-data-and-evidence-admits-one-reading.md), and
+the differential now reports zero divergent rows over a corpus four times deeper in the property
+its induction rests on. Every one of those had passed every test that existed before.
 
 ## What is actually proved
 
@@ -214,6 +214,14 @@ built with the default feature set, so they do not carry those eight.
 The Python package `open-ontologies-lite` now reasons as well, in pure Python with no Rust
 toolchain, and its certificates are checked by the same Lean binaries. It is a second engine, and
 being untrusted costs nothing: the warrant was never in the engine.
+
+`tools/horn_differential.py` runs both engines and the Lean checker over every RDF document the
+repository tracks. **The two engines are not independent**: they run the same algorithm over the
+same rule table and the Python's comments cite the Rust by file and line, so their agreement is
+strong evidence against a transcription slip and close to none against a shared misreading of a
+W3C rule. The independent leg is the Lean checker. The tool prints that caveat next to its
+agreement count on every run, and
+[docs/lean-certificates.md](docs/lean-certificates.md#known-limitations) states it as a limitation.
 
 Alongside them, a marketplace of 33 standard ontologies, clinical crosswalks, semantic embeddings,
 a lineage audit trail, and a desktop Studio with a virtualized ontology tree, an AI chat panel and

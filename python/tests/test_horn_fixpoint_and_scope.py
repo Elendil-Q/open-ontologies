@@ -19,7 +19,7 @@ graph through two interpreters with different `PYTHONHASHSEED` and demands
 identical bytes.
 
 SCOPE. This is the one that matters most. The Rust `run_horn` flattens every named
-graph into `asserted.tsv` (`src/reason.rs:1449`, `graph.all_triples()`), so a store
+graph into `asserted.tsv` (`src/reason.rs:2170`, `graph.all_triples()`), so a store
 that holds a previous materialisation in the inferred graph turns derived triples
 into ASSERTIONS. The checker cannot detect it: the soundness theorem is
 conditional on the assertions, and it is TOLD what they are. The result is a green

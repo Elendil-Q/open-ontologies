@@ -99,6 +99,20 @@ refuses both shapes, the Lean moved and no Isabelle theory was touched, and the 
 reports zero divergent rows: 349 accepted by both, 904 rejected by both, 465 unparseable on both.
 The 47 moved into rejected-by-both and nowhere else.
 
+Those 1,718 certificates were one step deep. Sixty of the 61 base certificates contained no step
+citing an earlier step's conclusion, so on those the checkers' ordering logic had nothing to
+decide, and strict prefix visibility — a step may cite only what came strictly before it and never
+itself, which is the property both inductions rest on — was differentially exercised by a single
+two-step fixture.
+On 15 September 2026 the corpus gained generated chains and fans, six mutations a flat
+certificate cannot express, and two hand-built adversarial certificates. It is now 2,075 rows
+reaching depth 19 and fan-out 12, of which 484 exercise the ordering discipline rather than 123.
+The disagreement count went from 47 to 54 and did not change in kind: every new row the two
+kernels parted company on was the same D1 duplicate-key shape, and nothing was left unexplained.
+Depth found no new divergence, which is a result about the two formalisations and not a null
+one — the property their inductions are built on was, until then, barely tested against data
+that could violate it.
+
 The adversarial review of that comparison established four things about the Lean layer that the
 Lean's own build could never have shown, and they are the current work rather than a footnote:
 eight of the twenty-seven rules were assumed as primitive semantic conditions rather than
