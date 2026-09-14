@@ -45,27 +45,92 @@ the report and must not be able to change a verdict.
 -/
 namespace Shacl
 
-/-- The two path forms this development covers.
+/-- The path forms this development covers.
 
-`sh:path` in SHACL Core also has sequence, alternative, zero-or-more, one-or-more
-and zero-or-one forms. They are not here. The compiler refuses a shapes graph that
-uses one, so a test that needs them is undetermined rather than wrong. -/
+`sh:zeroOrMorePath` and `sh:oneOrMorePath` are NOT here, and they are the only
+SHACL Core path forms that are not. Every form below is decided by a recursion that
+follows the shape of the PATH and terminates because a path is a finite tree; those
+two are transitive closures over the DATA GRAPH, so deciding them needs an
+iteration whose bound has to be argued rather than read off the syntax. The
+compiler refuses a shapes graph that uses one, so a test that needs them is
+undetermined rather than wrong.
+
+`inv` takes a predicate rather than a path. `sh:inversePath` of a compound path is
+legal SHACL and the compiler refuses it, for a related reason: the value nodes of
+an inverse path cannot be computed forwards from the focus node. -/
 inductive Path where
+  /-- A predicate path. -/
   | pred (p : Term)
+  /-- `sh:inversePath` of a predicate. -/
   | inv (p : Term)
-deriving DecidableEq, Repr
+  /-- A sequence path, written as an RDF list in the shapes graph. Binary here; the
+  compiler folds a longer list to the right. -/
+  | seq (a b : Path)
+  /-- `sh:alternativePath`. Binary here, folded the same way. -/
+  | alt (a b : Path)
+  /-- `sh:zeroOrOnePath` -/
+  | zeroOrOne (a : Path)
+deriving DecidableEq, Repr, Inhabited
 
-/-- Does this triple contribute a value node for focus node `f` along this path? -/
-def Path.sel (pa : Path) (f : Term) (t : Triple) : Bool :=
-  match pa with
-  | .pred p => t.s == f && t.p == p
-  | .inv p => t.p == p && t.o == f
+/-! ## The regular-expression subset `sh:pattern` is decided over
 
-/-- The value node a selected triple contributes. -/
-def Path.val (pa : Path) (t : Triple) : Term :=
-  match pa with
-  | .pred _ => t.o
-  | .inv _ => t.s
+`sh:pattern` is defined by the SPARQL `REGEX` function, which is XPath's regular
+expression language, which is XML Schema's plus a few additions. Core Lean has no
+regular expression engine, and writing a general one with a proof that it decides
+the XPath language is a project of its own.
+
+So this development implements a SUBSET and refuses everything outside it BY NAME,
+in `Shacl/Compile.lean`. The subset is: a literal character, a character class with
+ranges and an optional leading negation, the `*` quantifier, the `^` and `$`
+anchors, and the `i` flag. Anything else, `+`, `?`, `{n}`, `.`, `|`, grouping, a
+backreference, an escape of any kind, is a compile error naming the construct, so a
+shapes graph that uses one is undetermined rather than answered wrongly.
+
+**Every element of the subset matches exactly one character.** That is what makes
+the matcher below a structural recursion over the pattern with no backtracking
+budget and no fuel: `star` is decided by trying each split point of the remaining
+string, and the recursion moves to a shorter list of items each time.
+
+A pattern is matched against the string a term denotes, by SEARCH rather than by
+full match, which is what SPARQL `REGEX` does: an unanchored pattern matches when
+SOME substring matches. -/
+
+/-- How many times one element may repeat. -/
+inductive Quant where
+  | one
+  | star
+deriving DecidableEq, Repr, Inhabited
+
+/-- One element of a pattern: a character class and a quantifier. A literal
+character is the class holding the one range from it to itself. -/
+structure Item where
+  neg : Bool
+  ranges : List (Char × Char)
+  quant : Quant
+deriving DecidableEq, Repr, Inhabited
+
+def inRanges (rs : List (Char × Char)) (c : Char) : Bool :=
+  rs.any (fun r => r.1.toNat ≤ c.toNat && c.toNat ≤ r.2.toNat)
+
+/-- Does this element admit this character?
+
+The `i` flag is applied to the INPUT character: the class is tried against both its
+lower and its upper case. For a class of ASCII letters and ASCII letter ranges that
+is exactly what XPath's `i` flag does. For a class whose range straddles a case
+boundary it is not, and this matcher does not pretend otherwise; the suite's only
+uses of the flag are the literal patterns `Aldi` and `joh`. -/
+def itemAdmits (fold : Bool) (it : Item) (c : Char) : Bool :=
+  let hit :=
+    if fold then inRanges it.ranges c.toLower || inRanges it.ranges c.toUpper
+    else inRanges it.ranges c
+  if it.neg then !hit else hit
+
+structure Regex where
+  fold : Bool
+  anchorStart : Bool
+  anchorEnd : Bool
+  items : List Item
+deriving DecidableEq, Repr, Inhabited
 
 /-- The constraint components covered, plus the two units.
 
@@ -88,6 +153,62 @@ inductive Shape where
   | hasValue (v : Term)
   /-- `sh:in` -/
   | inSet (vs : List Term)
+  /-- `sh:minInclusive`. The parameter's value is carried as a term and compared
+  by VALUE with `cmpTerms`, not by spelling. -/
+  | minInclusive (c : Term)
+  /-- `sh:maxInclusive` -/
+  | maxInclusive (c : Term)
+  /-- `sh:minExclusive` -/
+  | minExclusive (c : Term)
+  /-- `sh:maxExclusive` -/
+  | maxExclusive (c : Term)
+  /-- `sh:minLength` -/
+  | minLength (n : Nat)
+  /-- `sh:maxLength` -/
+  | maxLength (n : Nat)
+  /-- `sh:languageIn` -/
+  | languageIn (tags : List String)
+  /-- `sh:pattern`, with `sh:flags` folded into the `Regex`. -/
+  | pattern (re : Regex)
+  /-- `sh:equals`. The `Option Path` is `none` on a node shape, where the set of
+  value nodes is the focus node on its own, and `some pa` on a property shape. The
+  four property-pair constraints and `sh:uniqueLang` all take that shape, which is
+  why they carry an `Option Path` rather than a `Path`: the suite puts `sh:equals`
+  and `sh:disjoint` on node shapes and a `Path` could not express that. -/
+  | equals (pa : Option Path) (q : Term)
+  /-- `sh:disjoint` -/
+  | disjoint (pa : Option Path) (q : Term)
+  /-- `sh:lessThan` -/
+  | lessThan (pa : Option Path) (q : Term)
+  /-- `sh:lessThanOrEquals` -/
+  | lessThanOrEq (pa : Option Path) (q : Term)
+  /-- `sh:uniqueLang` -/
+  | uniqueLang (pa : Option Path)
+  /-- `sh:qualifiedMinCount`: at least `n` value nodes along `pa` conform to `q`.
+
+  `q` is not only the `sh:qualifiedValueShape`. When
+  `sh:qualifiedValueShapesDisjoint` is true the compiler conjoins the negation of
+  every SIBLING shape into `q`, so the disjointness is expressed with `sh:and` and
+  `sh:not`, whose semantics `Spec.lean` already gives, rather than with a clause of
+  its own. The sibling lookup needs the parent shape and is therefore a compile-time
+  question, which is where it belongs: the evaluator never re-reads the shapes
+  graph. -/
+  | qualifiedMin (pa : Path) (q : Shape) (n : Nat)
+  /-- `sh:qualifiedMaxCount`, with `q` built the same way. -/
+  | qualifiedMax (pa : Path) (q : Shape) (n : Nat)
+  /-- `sh:closed`. The allowed predicates are computed by the compiler from the
+  `sh:path` of every property shape the closed shape references plus
+  `sh:ignoredProperties`, so the evaluator receives a list and never re-reads the
+  shapes graph. -/
+  | closed (allowed : List Term)
+  /-- Evaluate the inner shape and report ONE result carrying this constraint
+  component when it fails, discarding the inner results.
+
+  `nodeC` is the same idea with `sh:NodeConstraintComponent` fixed. This one
+  carries its own component, which is what lets `sh:xone` be COMPILED into the
+  constructors already here, with `sh:or`, `sh:and` and `sh:not` doing the work,
+  and still report `sh:XoneConstraintComponent` as the Recommendation requires. -/
+  | report (comp : Term) (a : Shape)
   /-- The implicit conjunction of one shape's constraints. Transparent: the
   results of both sides are reported. -/
   | both (a b : Shape)
@@ -129,6 +250,23 @@ def notC : Term := "<http://www.w3.org/ns/shacl#NotConstraintComponent>"
 def nodeC : Term := "<http://www.w3.org/ns/shacl#NodeConstraintComponent>"
 def minCount : Term := "<http://www.w3.org/ns/shacl#MinCountConstraintComponent>"
 def maxCount : Term := "<http://www.w3.org/ns/shacl#MaxCountConstraintComponent>"
+def minInclusive : Term := "<http://www.w3.org/ns/shacl#MinInclusiveConstraintComponent>"
+def maxInclusive : Term := "<http://www.w3.org/ns/shacl#MaxInclusiveConstraintComponent>"
+def minExclusive : Term := "<http://www.w3.org/ns/shacl#MinExclusiveConstraintComponent>"
+def maxExclusive : Term := "<http://www.w3.org/ns/shacl#MaxExclusiveConstraintComponent>"
+def minLength : Term := "<http://www.w3.org/ns/shacl#MinLengthConstraintComponent>"
+def maxLength : Term := "<http://www.w3.org/ns/shacl#MaxLengthConstraintComponent>"
+def languageIn : Term := "<http://www.w3.org/ns/shacl#LanguageInConstraintComponent>"
+def pattern : Term := "<http://www.w3.org/ns/shacl#PatternConstraintComponent>"
+def equals : Term := "<http://www.w3.org/ns/shacl#EqualsConstraintComponent>"
+def disjoint : Term := "<http://www.w3.org/ns/shacl#DisjointConstraintComponent>"
+def lessThan : Term := "<http://www.w3.org/ns/shacl#LessThanConstraintComponent>"
+def lessThanOrEq : Term := "<http://www.w3.org/ns/shacl#LessThanOrEqualsConstraintComponent>"
+def uniqueLang : Term := "<http://www.w3.org/ns/shacl#UniqueLangConstraintComponent>"
+def closed : Term := "<http://www.w3.org/ns/shacl#ClosedConstraintComponent>"
+def xone : Term := "<http://www.w3.org/ns/shacl#XoneConstraintComponent>"
+def qualifiedMin : Term := "<http://www.w3.org/ns/shacl#QualifiedMinCountConstraintComponent>"
+def qualifiedMax : Term := "<http://www.w3.org/ns/shacl#QualifiedMaxCountConstraintComponent>"
 
 /-- Not a SHACL IRI. `bot` has no counterpart in the Recommendation because it has
 no counterpart in a shapes graph; it exists as the unit of `orC` and its result is

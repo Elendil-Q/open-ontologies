@@ -45,6 +45,9 @@ def jsonStr (s : String) : String :=
 def showPath : Path → String
   | .pred p => p
   | .inv p => "^" ++ p
+  | .seq a b => "(" ++ showPath a ++ "/" ++ showPath b ++ ")"
+  | .alt a b => "(" ++ showPath a ++ "|" ++ showPath b ++ ")"
+  | .zeroOrOne a => "(" ++ showPath a ++ ")?"
 
 def jsonOpt (o : Option String) : String :=
   match o with

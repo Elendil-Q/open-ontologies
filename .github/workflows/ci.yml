@@ -319,6 +319,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Certify every shipped ontology through the proved checker
         run: OO_REQUIRE_FIXTURES=1 cargo test --test lean_certificate_test -- --nocapture
+      - name: Check the verified SHACL Core evaluator against the W3C suite
+        # This job used to run a bare `lake build` while `Shacl` was not a
+        # default target, so the SHACL proofs did not compile at the commit
+        # that carried them and this gate was green over them. The lakefile now
+        # forces every target into the default set and this step measures the
+        # verified evaluator, so both halves of that failure are closed.
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test shacl_core_verified_test -- --nocapture
+      - name: Check the mixed certificate layer
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test lean_mixed_certificate_test -- --nocapture
       - name: Check the generic Horn-rule layer, and that a user rule cannot earn the absolute verdict
         # The five legs here are not interchangeable. Four of them prove the
         # checker rejects a specific forgery; the fifth proves that a

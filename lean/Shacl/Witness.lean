@@ -19,6 +19,16 @@ derivation checker.
 | `duplicate_triples_are_counted_once` | `sh:maxCount` counts the SET of value nodes |
 | `two_distinct_values_break_maxCount_one` | and it really does count them |
 | `the_evaluator_refuses_rather_than_guessing` | the third answer is reachable, not decoration |
+| `four_point_zero_is_at_most_four` | the value-range constraints compare VALUES, not spellings |
+| `four_point_one_is_not_at_most_four` | and they still reject something |
+| `a_string_is_not_greater_than_a_number` | a SPARQL type error is a violation, not a refusal |
+| `mixed_timezones_are_unordered` | a dateTime with a timezone and one without can be UNORDERED |
+| `a_day_earlier_is_ordered_even_across_the_window` | and that is not a blanket refusal |
+| `a_blank_node_has_no_length` | a blank node fails every length constraint |
+| `an_iri_is_as_long_as_it_is_written` | and an IRI does not |
+| `a_sequence_path_reaches_two_steps` | a sequence path is a join, not a union |
+| `a_sequence_path_does_not_stop_halfway` | and the intermediate node is not a value node |
+| `zero_or_one_admits_the_focus_node` | `sh:zeroOrOnePath` gives a bare focus node one value node |
 
 The two counting theorems are the ones worth reading. SHACL counts distinct value
 nodes, so a triple asserted twice must not make a `sh:maxCount 1` fail. An engine
@@ -181,35 +191,146 @@ theorem two_distinct_values_break_maxCount_one :
 
 /-! ## The third answer is reachable
 
-A refusal that never fires is decoration. This one fires on the first `xsd:date`
-literal it meets, and `tests/shacl_core_verified_test.rs` counts how often that
-happens across the W3C suite. -/
+A refusal that never fires is decoration. This one fires on the first
+`rdf:XMLLiteral` it meets: RDF 1.1 says that datatype's lexical space is the set of
+strings that are well-balanced, self-contained XML content, and deciding that needs
+an XML parser this development does not have and will not pretend to have.
+`tests/shacl_core_verified_test.rs` counts how often a refusal happens across the
+W3C suite. -/
 
-def xsdDate : Term := "<http://www.w3.org/2001/XMLSchema#date>"
-def litDate : Term := "\"2026-09-14\"^^<http://www.w3.org/2001/XMLSchema#date>"
+def xmlLiteral : Term := "<http://www.w3.org/1999/02/22-rdf-syntax-ns#XMLLiteral>"
+def litXml : Term :=
+  "\"<b>hi</b>\"^^<http://www.w3.org/1999/02/22-rdf-syntax-ns#XMLLiteral>"
 
 /-- The literal has the right datatype IRI, so the constraint turns on whether it is
-a well-formed `xsd:date`, and `lexOK` does not know. The evaluator says so by name
-instead of choosing an answer. -/
+well formed, and `lexOK` does not know. The evaluator says so by name instead of
+choosing an answer. -/
 theorem the_evaluator_refuses_rather_than_guessing :
-    eval [] (.datatype xsdDate) exShape litDate
-      = .error (.unknownLexicalSpace xsdDate "2026-09-14") := by rfl
+    eval [] (.datatype xmlLiteral) exShape litXml
+      = .error (.unknownLexicalSpace xmlLiteral "<b>hi</b>") := by rfl
 
 /-- The specification, meanwhile, treats an unjudgeable literal as non-conforming.
 So the two possible behaviours at this point were "report a violation" and "report a
 refusal", and the evaluator takes the weaker one. Neither is a false pass, which is
 the property that matters. -/
 theorem the_refused_literal_does_not_conform :
-    ¬ Conf [] (.datatype xsdDate) litDate := by
+    ¬ Conf [] (.datatype xmlLiteral) litXml := by
   rintro ⟨l, hl, -, hok⟩
-  have : l = ⟨"2026-09-14", xsdDate, none⟩ := by
-    have : asLiteral litDate = some ⟨"2026-09-14", xsdDate, none⟩ := by decide
+  have : l = ⟨"<b>hi</b>", xmlLiteral, none⟩ := by
+    have : asLiteral litXml = some ⟨"<b>hi</b>", xmlLiteral, none⟩ := by decide
     rw [this] at hl
     exact (Option.some.inj hl).symm
   subst this
   exact absurd hok (by decide)
 
-/-! ## Axioms, pinned -/
+/-! ## The parameters added after the first eleven
+
+Each one below exhibits a model and something the semantics does NOT entail, the
+same discipline the two counting theorems follow. A one-sided witness would leave
+open that the new clause is trivially true or trivially false. Every one is settled
+by kernel computation, so a change to the decision procedure breaks it rather than
+passing quietly. -/
+
+def lit4int : Term := "\"4\"^^<http://www.w3.org/2001/XMLSchema#integer>"
+def lit40dec : Term := "\"4.0\"^^<http://www.w3.org/2001/XMLSchema#decimal>"
+def lit41dec : Term := "\"4.1\"^^<http://www.w3.org/2001/XMLSchema#decimal>"
+
+/-- **Comparison is by value, not by spelling.** `"4"^^xsd:integer` and
+`"4.0"^^xsd:decimal` are two different TERMS, and `sh:maxInclusive 4` admits the
+second. A validator comparing spellings would report a violation here. -/
+theorem four_point_zero_is_at_most_four :
+    Conf [] (.maxInclusive lit4int) lit40dec :=
+  CmpIs.of_eq (k := .eq) (by decide) (by decide)
+
+/-- And it is not vacuous: the same constraint rejects a larger value. -/
+theorem four_point_one_is_not_at_most_four :
+    ¬ Conf [] (.maxInclusive lit4int) lit41dec :=
+  CmpIs.not_of_eq (k := .lt) (by decide) (by decide)
+
+/-- **A pair SPARQL cannot compare is a violation, not a refusal.** `sh:minExclusive`
+is defined as a SPARQL expression that must return TRUE, and `4 < "Hello"` is a type
+error, which is not true. -/
+theorem a_string_is_not_greater_than_a_number :
+    ¬ Conf [] (.minExclusive lit4int) "\"Hello\"" :=
+  CmpIs.not_of_eq (k := .incomparable) (by decide) (by decide)
+
+def dtWithZone : Term :=
+  "\"2002-10-10T12:00:00-05:00\"^^<http://www.w3.org/2001/XMLSchema#dateTime>"
+def dtNoZone : Term :=
+  "\"2002-10-10T12:00:00\"^^<http://www.w3.org/2001/XMLSchema#dateTime>"
+def dtDayBefore : Term :=
+  "\"2002-10-09T12:00:00-05:00\"^^<http://www.w3.org/2001/XMLSchema#dateTime>"
+
+/-- **A timezoned dateTime and an untimezoned one within fourteen hours are
+UNORDERED, and that is a verdict rather than a refusal.** The comparison answers,
+and what it answers is that neither is first. -/
+theorem mixed_timezones_are_unordered :
+    cmpTerms dtWithZone dtNoZone = some .unordered := by decide
+
+/-- So `sh:minInclusive` rejects it, which is what
+`core/node/minInclusive-002` requires. -/
+theorem an_unordered_value_does_not_conform :
+    ¬ Conf [] (.minInclusive dtWithZone) dtNoZone :=
+  CmpIs.not_of_eq (k := .unordered) (by decide) (by decide)
+
+/-- Outside the fourteen-hour window the order IS settled, so the rule above is not
+a blanket refusal to compare across timezones. -/
+theorem a_day_earlier_is_ordered_even_across_the_window :
+    cmpTerms dtNoZone dtDayBefore = some .gt := by decide
+
+/-- **A blank node fails both length constraints**, whatever the bound, which is the
+rule `core/node/minLength-001` and `core/node/maxLength-001` both turn on. -/
+theorem a_blank_node_has_no_length :
+    ¬ Conf [] (.minLength 0) "_:b" := StrLen.not_of_blank (by decide)
+
+/-- An IRI, meanwhile, has the length of the IRI itself, so the same constraint at a
+bound of three admits `<a:b>` and a bound of four does not. Two directions, one
+term, so neither answer can be the constant one. -/
+theorem an_iri_is_as_long_as_it_is_written :
+    Conf [] (.maxLength 3) "<a:b>" ∧ ¬ Conf [] (.minLength 4) "<a:b>" :=
+  ⟨StrLen.of_chars (cs := ['a', ':', 'b']) (by decide) (by decide),
+   StrLen.not_of_chars (cs := ['a', ':', 'b']) (by decide) (by decide)⟩
+
+/-! ### A sequence path reaches through an intermediate node -/
+
+def exP1 : Term := "<http://ex.org/p1>"
+def exP2 : Term := "<http://ex.org/p2>"
+def exMid : Term := "<http://ex.org/mid>"
+def exEnd : Term := "<http://ex.org/end>"
+
+def gSeq : Graph := [⟨exAlice, exP1, exMid⟩, ⟨exMid, exP2, exEnd⟩]
+
+/-- The value node of `p1/p2` at Alice is the node two steps away, NOT the node one
+step away. A validator that read a sequence path as "either predicate" would put
+`exMid` here. -/
+theorem a_sequence_path_reaches_two_steps :
+    IsValue gSeq (.seq (.pred exP1) (.pred exP2)) exAlice exEnd := by
+  refine ⟨exMid, ?_, ?_⟩
+  · show (⟨exAlice, exP1, exMid⟩ : Triple) ∈ gSeq
+    simp [gSeq]
+  · show (⟨exMid, exP2, exEnd⟩ : Triple) ∈ gSeq
+    simp [gSeq]
+
+/-- Proved through `mem_valueNodes`, which is the lemma that makes the enumeration
+and the specification the same question. -/
+theorem a_sequence_path_does_not_stop_halfway :
+    ¬ IsValue gSeq (.seq (.pred exP1) (.pred exP2)) exAlice exMid := by
+  rw [← mem_valueNodes]
+  decide
+
+/-- `sh:zeroOrOnePath` admits the focus node itself, so a focus node with no
+outgoing triple at all still has exactly one value node and `sh:minCount 2` fails.
+That is the whole content of `core/path/path-zeroOrOne-001`. -/
+theorem zero_or_one_admits_the_focus_node :
+    valueNodes [] (.zeroOrOne (.pred exP1)) exBob = [exBob] := by decide
+
+/-! ## Axioms, pinned
+
+Every pin below is the footprint `#print axioms` actually reports, not the one the
+rest of this repository standardises on. Two of these theorems come out at
+`[propext]` alone, a strict subset: they are settled by kernel computation and never
+reach `Classical.choice`. Pinning what is true rather than what is expected is the
+point of the exercise, and a proof that grew a dependency would break the pin. -/
 
 /-- info: 'Shacl.alice_conforms' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
@@ -234,5 +355,49 @@ theorem the_refused_literal_does_not_conform :
 /-- info: 'Shacl.the_evaluator_refuses_rather_than_guessing' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
 #print axioms the_evaluator_refuses_rather_than_guessing
+
+/-- info: 'Shacl.four_point_zero_is_at_most_four' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms four_point_zero_is_at_most_four
+
+/-- info: 'Shacl.four_point_one_is_not_at_most_four' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms four_point_one_is_not_at_most_four
+
+/-- info: 'Shacl.a_string_is_not_greater_than_a_number' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms a_string_is_not_greater_than_a_number
+
+/-- info: 'Shacl.mixed_timezones_are_unordered' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms mixed_timezones_are_unordered
+
+/-- info: 'Shacl.an_unordered_value_does_not_conform' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms an_unordered_value_does_not_conform
+
+/-- info: 'Shacl.a_day_earlier_is_ordered_even_across_the_window' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms a_day_earlier_is_ordered_even_across_the_window
+
+/-- info: 'Shacl.a_blank_node_has_no_length' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms a_blank_node_has_no_length
+
+/-- info: 'Shacl.an_iri_is_as_long_as_it_is_written' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms an_iri_is_as_long_as_it_is_written
+
+/-- info: 'Shacl.a_sequence_path_reaches_two_steps' depends on axioms: [propext] -/
+#guard_msgs in
+#print axioms a_sequence_path_reaches_two_steps
+
+/-- info: 'Shacl.a_sequence_path_does_not_stop_halfway' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms a_sequence_path_does_not_stop_halfway
+
+/-- info: 'Shacl.zero_or_one_admits_the_focus_node' depends on axioms: [propext] -/
+#guard_msgs in
+#print axioms zero_or_one_admits_the_focus_node
 
 end Shacl

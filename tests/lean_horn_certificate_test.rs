@@ -203,10 +203,12 @@ fn the_built_in_rules_are_emitted_as_data() {
     let lines: Vec<&str> = text.lines().filter(|l| !l.is_empty()).collect();
     assert_eq!(
         lines.len(),
-        19,
-        "nineteen of the engine's rules are Horn rules; cls-int1 and cls-uni read an RDF list off \
-         the graph, so their premise count is data rather than fixed by the rule, and they stay as \
-         hardcoded arms. If this number changed, say which rule moved and why."
+        27,
+        "twenty-seven of the engine's rules are Horn rules. Four are not and stay as hardcoded \
+         arms: cls-int1, cls-int2, cls-uni and cls-oo all read an RDF list off the graph, so the \
+         LIST is a premise and the premise count is data rather than fixed by the rule. That is \
+         the boundary of the Horn family, not a gap in it. If this number changed, say which rule \
+         moved and why."
     );
     // The table printed here is the one the absolute verdict is pinned to, so it
     // must match the committed fixture byte for byte.

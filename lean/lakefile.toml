@@ -1,7 +1,14 @@
 name = "oocert"
 version = "0.1.0"
-defaultTargets = ["OOCert", "oo-cert", "oo-horn"]
+defaultTargets = ["OOCert", "oo-cert", "oo-horn", "Shacl", "oo-shacl", "oo-refute", "Dl", "oo-dlmodel"]
 
+# Every library and executable here is in defaultTargets on purpose. A target
+# left out of the default set is not built by a bare `lake build`, which is what
+# the CI job runs, so its proofs can fail to compile while the gate reports
+# success. That happened once, on 14 September 2026: the SHACL layer did not
+# compile at the commit that carried it and CI was green over it, because
+# `Shacl` was not a default target. Anything added here must be added there.
+#
 # Core Lean only. No Mathlib, no external packages: the checker's trust surface
 # is the Lean kernel plus what is written in this directory, and it should stay
 # small enough to read in an afternoon.
@@ -28,3 +35,18 @@ globs = ["Shacl.+"]
 [[lean_exe]]
 name = "oo-shacl"
 root = "ShaclMain"
+
+# The refutation checker. `oo-refute/1` is a second certificate format: a
+# derivation prefix plus one step that concludes contradiction rather than a
+# triple. Its own executable because its verdict is a different sentence from
+# `oo-cert`'s, and the two must never be confused for one another.
+[[lean_exe]]
+name = "oo-refute"
+root = "RefuteMain"
+
+[[lean_lib]]
+name = "Dl"
+
+[[lean_exe]]
+name = "oo-dlmodel"
+root = "DlMain"

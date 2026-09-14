@@ -38,12 +38,33 @@ wrong order is rejected, which is a false alarm and never a false pass.
 | cls-hv1    | `r owl:onProperty p`, `r owl:hasValue v`, `x rdf:type r`        | `x p v`          |
 | cls-hv2    | `r owl:onProperty p`, `r owl:hasValue v`, `x p v`               | `x rdf:type r`   |
 | cls-int1   | `c owl:intersectionOf l`, the list chain of `l`, `x rdf:type m` for every member `m` | `x rdf:type c` |
+| cls-int2   | `c owl:intersectionOf l`, the list chain of `l`, `x rdf:type c`  | `x rdf:type m` for one member `m` |
 | cls-uni    | `c owl:unionOf l`, the list chain of `l`, `x rdf:type m` for one member `m` | `x rdf:type c` |
+| cls-oo     | `c owl:oneOf l`, the list chain of `l`                           | `m rdf:type c` for one member `m` |
+| scm-svf1   | `c1 svf y1`, `c1 onProperty p`, `c2 svf y2`, `c2 onProperty p`, `y1 sc y2` | `c1 sc c2`  |
+| scm-svf2   | `c1 svf y`, `c1 onProperty p1`, `c2 svf y`, `c2 onProperty p2`, `p1 sp p2` | `c1 sc c2`  |
+| scm-avf1   | `c1 avf y1`, `c1 onProperty p`, `c2 avf y2`, `c2 onProperty p`, `y1 sc y2` | `c1 sc c2`  |
+| scm-avf2   | `c1 avf y`, `c1 onProperty p1`, `c2 avf y`, `c2 onProperty p2`, `p1 sp p2` | **`c2 sc c1`** |
+| scm-dom1   | `p rdfs:domain c1`, `c1 sc c2`                                   | `p rdfs:domain c2` |
+| scm-dom2   | `p2 rdfs:domain c`, `p1 sp p2`                                   | `p1 rdfs:domain c` |
+| scm-rng1   | `p rdfs:range c1`, `c1 sc c2`                                    | `p rdfs:range c2`  |
+| scm-rng2   | `p2 rdfs:range c`, `p1 sp p2`                                    | `p1 rdfs:range c`  |
+
+`scm-avf2` is bold because its conclusion is the reverse of the other three
+restriction-ordering rules, and a checker that got it the natural way round
+would accept an unsound step. The W3C table reads
+`T(?c2, rdfs:subClassOf, ?c1)`; see the `avf_sp` condition in
+`Semantics.lean` and the refutation in `Witness.lean`.
 
 The list chain is the sequence `l rdf:first m₁`, `l rdf:rest l₂`,
 `l₂ rdf:first m₂`, `l₂ rdf:rest l₃`, … down to a node whose `rdf:rest` is
 `rdf:nil`. The chain and the constructor triple must be asserted, not derived,
 because `Model` reads lists off the asserted graph.
+
+`cls-int2` and `cls-oo` license one conclusion per list member, so a
+certificate carries one step per member, each repeating the constructor triple
+and the chain. `cls-oo` has no premise beyond those two: an enumeration types
+its members on schema alone.
 
 `scm-eqc1` and `scm-eqp1` each license TWO conclusions from one premise, so a
 certificate carries two steps under one rule id and the checker accepts either
@@ -57,7 +78,9 @@ inductive Rule
   | rdfs2 | rdfs3 | rdfs5 | rdfs7 | rdfs9 | rdfs11
   | prpTrp | prpSymp | prpInv1 | prpInv2 | eqSym
   | scmEqc1 | scmEqp1
-  | clsSvf1 | clsAvf | clsHv1 | clsHv2 | clsInt1 | clsUni
+  | clsSvf1 | clsAvf | clsHv1 | clsHv2 | clsInt1 | clsInt2 | clsUni | clsOo
+  | scmSvf1 | scmSvf2 | scmAvf1 | scmAvf2
+  | scmDom1 | scmDom2 | scmRng1 | scmRng2
 deriving DecidableEq, Repr
 
 def Rule.name : Rule → String
@@ -68,13 +91,20 @@ def Rule.name : Rule → String
   | .scmEqc1 => "scm-eqc1" | .scmEqp1 => "scm-eqp1"
   | .clsSvf1 => "cls-svf1" | .clsAvf => "cls-avf"
   | .clsHv1 => "cls-hv1" | .clsHv2 => "cls-hv2"
-  | .clsInt1 => "cls-int1" | .clsUni => "cls-uni"
+  | .clsInt1 => "cls-int1" | .clsInt2 => "cls-int2"
+  | .clsUni => "cls-uni" | .clsOo => "cls-oo"
+  | .scmSvf1 => "scm-svf1" | .scmSvf2 => "scm-svf2"
+  | .scmAvf1 => "scm-avf1" | .scmAvf2 => "scm-avf2"
+  | .scmDom1 => "scm-dom1" | .scmDom2 => "scm-dom2"
+  | .scmRng1 => "scm-rng1" | .scmRng2 => "scm-rng2"
 
 def Rule.all : List Rule :=
   [.rdfs2, .rdfs3, .rdfs5, .rdfs7, .rdfs9, .rdfs11,
    .prpTrp, .prpSymp, .prpInv1, .prpInv2, .eqSym,
    .scmEqc1, .scmEqp1,
-   .clsSvf1, .clsAvf, .clsHv1, .clsHv2, .clsInt1, .clsUni]
+   .clsSvf1, .clsAvf, .clsHv1, .clsHv2, .clsInt1, .clsInt2, .clsUni, .clsOo,
+   .scmSvf1, .scmSvf2, .scmAvf1, .scmAvf2,
+   .scmDom1, .scmDom2, .scmRng1, .scmRng2]
 
 def Rule.ofName? (s : String) : Option Rule :=
   Rule.all.find? (fun r => r.name == s)
@@ -176,12 +206,68 @@ def checkStep (inG derived : Triple → Bool) (st : Step) : Bool :=
            allTyped st.conclusion.s k ms q &&
            decide (st.conclusion.p = V.type ∧ st.conclusion.o = c)
        | none => false)
+  | .clsInt2, ⟨c, io, l⟩ :: ps =>
+      decide (io = V.intersectionOf) && inG ⟨c, io, l⟩ &&
+      (match takeChain inG l ps with
+       | some (ms, [⟨x, t, c'⟩]) =>
+           decide (t = V.type ∧ c' = c ∧ k ⟨x, t, c'⟩ ∧
+             st.conclusion.s = x ∧ st.conclusion.p = V.type ∧ st.conclusion.o ∈ ms)
+       | _ => false)
   | .clsUni, ⟨c, uo, l⟩ :: ps =>
       decide (uo = V.unionOf) && inG ⟨c, uo, l⟩ &&
       (match takeChain inG l ps with
        | some (ms, [⟨x, t, m⟩]) =>
            decide (t = V.type ∧ m ∈ ms ∧ k ⟨x, t, m⟩ ∧ st.conclusion = ⟨x, V.type, c⟩)
        | _ => false)
+  | .clsOo, ⟨c, oo, l⟩ :: ps =>
+      decide (oo = V.oneOf) && inG ⟨c, oo, l⟩ &&
+      (match takeChain inG l ps with
+       | some (ms, []) =>
+           decide (st.conclusion.s ∈ ms ∧ st.conclusion.p = V.type ∧ st.conclusion.o = c)
+       | _ => false)
+  | .scmSvf1, [⟨c1, sv1, y1⟩, ⟨c1a, op1, p⟩, ⟨c2, sv2, y2⟩, ⟨c2a, op2, pa⟩, ⟨y1a, sc, y2a⟩] =>
+      sv1 = V.someValuesFrom ∧ op1 = V.onProperty ∧ c1a = c1 ∧
+      sv2 = V.someValuesFrom ∧ op2 = V.onProperty ∧ c2a = c2 ∧ pa = p ∧
+      sc = V.subClassOf ∧ y1a = y1 ∧ y2a = y2 ∧
+      k ⟨c1, sv1, y1⟩ ∧ k ⟨c1a, op1, p⟩ ∧ k ⟨c2, sv2, y2⟩ ∧ k ⟨c2a, op2, pa⟩ ∧
+      k ⟨y1a, sc, y2a⟩ ∧
+      st.conclusion = ⟨c1, V.subClassOf, c2⟩
+  | .scmSvf2, [⟨c1, sv1, y⟩, ⟨c1a, op1, p1⟩, ⟨c2, sv2, ya⟩, ⟨c2a, op2, p2⟩, ⟨p1a, sp, p2a⟩] =>
+      sv1 = V.someValuesFrom ∧ op1 = V.onProperty ∧ c1a = c1 ∧
+      sv2 = V.someValuesFrom ∧ op2 = V.onProperty ∧ c2a = c2 ∧ ya = y ∧
+      sp = V.subPropertyOf ∧ p1a = p1 ∧ p2a = p2 ∧
+      k ⟨c1, sv1, y⟩ ∧ k ⟨c1a, op1, p1⟩ ∧ k ⟨c2, sv2, ya⟩ ∧ k ⟨c2a, op2, p2⟩ ∧
+      k ⟨p1a, sp, p2a⟩ ∧
+      st.conclusion = ⟨c1, V.subClassOf, c2⟩
+  | .scmAvf1, [⟨c1, av1, y1⟩, ⟨c1a, op1, p⟩, ⟨c2, av2, y2⟩, ⟨c2a, op2, pa⟩, ⟨y1a, sc, y2a⟩] =>
+      av1 = V.allValuesFrom ∧ op1 = V.onProperty ∧ c1a = c1 ∧
+      av2 = V.allValuesFrom ∧ op2 = V.onProperty ∧ c2a = c2 ∧ pa = p ∧
+      sc = V.subClassOf ∧ y1a = y1 ∧ y2a = y2 ∧
+      k ⟨c1, av1, y1⟩ ∧ k ⟨c1a, op1, p⟩ ∧ k ⟨c2, av2, y2⟩ ∧ k ⟨c2a, op2, pa⟩ ∧
+      k ⟨y1a, sc, y2a⟩ ∧
+      st.conclusion = ⟨c1, V.subClassOf, c2⟩
+  -- scm-avf2 concludes `c2 subClassOf c1`. The other three restriction-ordering
+  -- arms conclude `c1 subClassOf c2`, and writing this one the same way would
+  -- make the checker accept a step no model supports.
+  | .scmAvf2, [⟨c1, av1, y⟩, ⟨c1a, op1, p1⟩, ⟨c2, av2, ya⟩, ⟨c2a, op2, p2⟩, ⟨p1a, sp, p2a⟩] =>
+      av1 = V.allValuesFrom ∧ op1 = V.onProperty ∧ c1a = c1 ∧
+      av2 = V.allValuesFrom ∧ op2 = V.onProperty ∧ c2a = c2 ∧ ya = y ∧
+      sp = V.subPropertyOf ∧ p1a = p1 ∧ p2a = p2 ∧
+      k ⟨c1, av1, y⟩ ∧ k ⟨c1a, op1, p1⟩ ∧ k ⟨c2, av2, ya⟩ ∧ k ⟨c2a, op2, p2⟩ ∧
+      k ⟨p1a, sp, p2a⟩ ∧
+      st.conclusion = ⟨c2, V.subClassOf, c1⟩
+  | .scmDom1, [⟨p, d, c1⟩, ⟨c1a, sc, c2⟩] =>
+      d = V.domain ∧ sc = V.subClassOf ∧ c1a = c1 ∧
+      k ⟨p, d, c1⟩ ∧ k ⟨c1a, sc, c2⟩ ∧ st.conclusion = ⟨p, V.domain, c2⟩
+  | .scmDom2, [⟨p2, d, c⟩, ⟨p1, sp, p2a⟩] =>
+      d = V.domain ∧ sp = V.subPropertyOf ∧ p2a = p2 ∧
+      k ⟨p2, d, c⟩ ∧ k ⟨p1, sp, p2a⟩ ∧ st.conclusion = ⟨p1, V.domain, c⟩
+  | .scmRng1, [⟨p, r, c1⟩, ⟨c1a, sc, c2⟩] =>
+      r = V.range ∧ sc = V.subClassOf ∧ c1a = c1 ∧
+      k ⟨p, r, c1⟩ ∧ k ⟨c1a, sc, c2⟩ ∧ st.conclusion = ⟨p, V.range, c2⟩
+  | .scmRng2, [⟨p2, r, c⟩, ⟨p1, sp, p2a⟩] =>
+      r = V.range ∧ sp = V.subPropertyOf ∧ p2a = p2 ∧
+      k ⟨p2, r, c⟩ ∧ k ⟨p1, sp, p2a⟩ ∧ st.conclusion = ⟨p1, V.range, c⟩
   | _, _ => false
 
 /-- Check every step in order, each seeing the conclusions of the ones before. -/

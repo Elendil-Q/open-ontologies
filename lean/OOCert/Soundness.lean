@@ -33,8 +33,8 @@ The parameter is what lets `Mixed.lean` put a built-in step and a step citing a
 user-supplied Horn rule in one certificate. Such a certificate is relative to
 those rules, so its entailment relation quantifies over models of `G` that also
 satisfy them, and that is a smaller class. Every per-rule case below reads its
-condition off `Model I G`, which such an interpretation still is, so all twenty
-cases are reused with no change to what any of them proves.
+condition off `Model I G`, which such an interpretation still is, so all
+twenty-nine cases are reused with no change to what any of them proves.
 
 The `#guard_msgs` at the end pins the axioms the theorem depends on. If a
 `sorry` ever enters this file, or a `native_decide`, the build fails there.
@@ -284,6 +284,126 @@ theorem checkStep_sound {inG derived : Triple → Bool} {st : Step}
         show I.iext (I.ι conclusion.p) (I.ι conclusion.s) (I.ι conclusion.o)
         rw [hp, ho]
         exact hc
+  case clsInt2 =>
+    rcases premises with _ | ⟨⟨c, io, l⟩, ps⟩
+    · simp at h
+    · simp only [Bool.and_eq_true, decide_eq_true_eq] at h
+      obtain ⟨⟨rfl, hin⟩, hm⟩ := h
+      revert hm
+      cases hchain : takeChain inG l ps with
+      | none =>
+        intro hm
+        simp at hm
+      | some pr =>
+        intro hm
+        obtain ⟨ms, q⟩ := pr
+        rcases q with _ | ⟨⟨x, t, c'⟩, _ | _⟩ <;>
+          simp only [decide_eq_true_eq, Bool.false_eq_true] at hm
+        obtain ⟨rfl, hcc, hkx, hs, hp, ho⟩ := hm
+        rw [hcc] at hkx
+        have hC : Chain G l ms :=
+          takeChain_sound hG ps.length ps (Nat.le_refl _) l ms _ hchain
+        intro I hPI
+        have M : Model I G := hP I hPI
+        have hc := M.int2 c l ms (hG _ hin) hC (I.ι x) (hk _ hkx I hPI) conclusion.o ho
+        show I.iext (I.ι conclusion.p) (I.ι conclusion.s) (I.ι conclusion.o)
+        rw [hs, hp]
+        exact hc
+  case clsOo =>
+    rcases premises with _ | ⟨⟨c, oo, l⟩, ps⟩
+    · simp at h
+    · simp only [Bool.and_eq_true, decide_eq_true_eq] at h
+      obtain ⟨⟨rfl, hin⟩, hm⟩ := h
+      revert hm
+      cases hchain : takeChain inG l ps with
+      | none =>
+        intro hm
+        simp at hm
+      | some pr =>
+        intro hm
+        obtain ⟨ms, q⟩ := pr
+        rcases q with _ | ⟨_, _⟩ <;>
+          simp only [decide_eq_true_eq, Bool.false_eq_true] at hm
+        obtain ⟨hs, hp, ho⟩ := hm
+        have hC : Chain G l ms :=
+          takeChain_sound hG ps.length ps (Nat.le_refl _) l ms _ hchain
+        intro I hPI
+        have M : Model I G := hP I hPI
+        have hc := M.oneOf c l ms (hG _ hin) hC conclusion.s hs
+        show I.iext (I.ι conclusion.p) (I.ι conclusion.s) (I.ι conclusion.o)
+        rw [hp, ho]
+        exact hc
+  case scmSvf1 =>
+    rcases premises with
+      _ | ⟨⟨c1, sv1, y1⟩, _ | ⟨⟨c1a, op1, p⟩, _ | ⟨⟨c2, sv2, y2⟩,
+        _ | ⟨⟨c2a, op2, pa⟩, _ | ⟨⟨y1a, sc, y2a⟩, _ | _⟩⟩⟩⟩⟩ <;>
+      simp only [decide_eq_true_eq, Bool.false_eq_true] at h
+    obtain ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, h1, h2, h3, h4, h5, rfl⟩ := h
+    intro I hPI
+    have M : Model I G := hP I hPI
+    exact M.conds.svf_sc _ _ _ _ _ (hk _ h1 I hPI) (hk _ h2 I hPI) (hk _ h3 I hPI)
+      (hk _ h4 I hPI) (hk _ h5 I hPI)
+  case scmSvf2 =>
+    rcases premises with
+      _ | ⟨⟨c1, sv1, y⟩, _ | ⟨⟨c1a, op1, p1⟩, _ | ⟨⟨c2, sv2, ya⟩,
+        _ | ⟨⟨c2a, op2, p2⟩, _ | ⟨⟨p1a, sp, p2a⟩, _ | _⟩⟩⟩⟩⟩ <;>
+      simp only [decide_eq_true_eq, Bool.false_eq_true] at h
+    obtain ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, h1, h2, h3, h4, h5, rfl⟩ := h
+    intro I hPI
+    have M : Model I G := hP I hPI
+    exact M.conds.svf_sp _ _ _ _ _ (hk _ h1 I hPI) (hk _ h2 I hPI) (hk _ h3 I hPI)
+      (hk _ h4 I hPI) (hk _ h5 I hPI)
+  case scmAvf1 =>
+    rcases premises with
+      _ | ⟨⟨c1, av1, y1⟩, _ | ⟨⟨c1a, op1, p⟩, _ | ⟨⟨c2, av2, y2⟩,
+        _ | ⟨⟨c2a, op2, pa⟩, _ | ⟨⟨y1a, sc, y2a⟩, _ | _⟩⟩⟩⟩⟩ <;>
+      simp only [decide_eq_true_eq, Bool.false_eq_true] at h
+    obtain ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, h1, h2, h3, h4, h5, rfl⟩ := h
+    intro I hPI
+    have M : Model I G := hP I hPI
+    exact M.conds.avf_sc _ _ _ _ _ (hk _ h1 I hPI) (hk _ h2 I hPI) (hk _ h3 I hPI)
+      (hk _ h4 I hPI) (hk _ h5 I hPI)
+  -- The conclusion here is `c2 subClassOf c1`. `avf_sp` is stated that way round
+  -- and the two must agree, so getting either one backwards fails to compile
+  -- rather than shipping a rule no model supports.
+  case scmAvf2 =>
+    rcases premises with
+      _ | ⟨⟨c1, av1, y⟩, _ | ⟨⟨c1a, op1, p1⟩, _ | ⟨⟨c2, av2, ya⟩,
+        _ | ⟨⟨c2a, op2, p2⟩, _ | ⟨⟨p1a, sp, p2a⟩, _ | _⟩⟩⟩⟩⟩ <;>
+      simp only [decide_eq_true_eq, Bool.false_eq_true] at h
+    obtain ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, h1, h2, h3, h4, h5, rfl⟩ := h
+    intro I hPI
+    have M : Model I G := hP I hPI
+    exact M.conds.avf_sp _ _ _ _ _ (hk _ h1 I hPI) (hk _ h2 I hPI) (hk _ h3 I hPI)
+      (hk _ h4 I hPI) (hk _ h5 I hPI)
+  case scmDom1 =>
+    rcases premises with _ | ⟨⟨p, d, c1⟩, _ | ⟨⟨c1a, sc, c2⟩, _ | _⟩⟩ <;>
+      simp only [decide_eq_true_eq, Bool.false_eq_true] at h
+    obtain ⟨rfl, rfl, rfl, h1, h2, rfl⟩ := h
+    intro I hPI
+    have M : Model I G := hP I hPI
+    exact M.conds.dom_sc _ _ _ (hk _ h1 I hPI) (hk _ h2 I hPI)
+  case scmDom2 =>
+    rcases premises with _ | ⟨⟨p2, d, c⟩, _ | ⟨⟨p1, sp, p2a⟩, _ | _⟩⟩ <;>
+      simp only [decide_eq_true_eq, Bool.false_eq_true] at h
+    obtain ⟨rfl, rfl, rfl, h1, h2, rfl⟩ := h
+    intro I hPI
+    have M : Model I G := hP I hPI
+    exact M.conds.dom_sp _ _ _ (hk _ h1 I hPI) (hk _ h2 I hPI)
+  case scmRng1 =>
+    rcases premises with _ | ⟨⟨p, r, c1⟩, _ | ⟨⟨c1a, sc, c2⟩, _ | _⟩⟩ <;>
+      simp only [decide_eq_true_eq, Bool.false_eq_true] at h
+    obtain ⟨rfl, rfl, rfl, h1, h2, rfl⟩ := h
+    intro I hPI
+    have M : Model I G := hP I hPI
+    exact M.conds.rng_sc _ _ _ (hk _ h1 I hPI) (hk _ h2 I hPI)
+  case scmRng2 =>
+    rcases premises with _ | ⟨⟨p2, r, c⟩, _ | ⟨⟨p1, sp, p2a⟩, _ | _⟩⟩ <;>
+      simp only [decide_eq_true_eq, Bool.false_eq_true] at h
+    obtain ⟨rfl, rfl, rfl, h1, h2, rfl⟩ := h
+    intro I hPI
+    have M : Model I G := hP I hPI
+    exact M.conds.rng_sp _ _ _ (hk _ h1 I hPI) (hk _ h2 I hPI)
   case clsUni =>
     rcases premises with _ | ⟨⟨c, uo, l⟩, ps⟩
     · simp at h

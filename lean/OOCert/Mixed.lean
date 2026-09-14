@@ -389,6 +389,12 @@ private theorem mixH_int_closed : ∀ t ∈ mixH, ∀ u ∈ mixH,
     (t.p = V.type ∧ t.o = mVendor ∧ u.p = V.type ∧ u.o = mApproved ∧ u.s = t.s) →
       (⟨t.s, V.type, mSupplier⟩ : Triple) ∈ mixH := by decide
 
+/-- The other half of what the intersection means, for `Model.int2`: everything
+this graph makes a `Supplier` it already makes a `Vendor` and an `Approved`. -/
+private theorem mixH_int2_closed : ∀ t ∈ mixH, t.p = V.type → t.o = mSupplier →
+    (⟨t.s, V.type, mVendor⟩ : Triple) ∈ mixH ∧ (⟨t.s, V.type, mApproved⟩ : Triple) ∈ mixH := by
+  decide
+
 theorem mixH_is_a_model : Model (herbrand mixH) mixG where
   conds :=
     { sc_sub := fun a b hab => absurd hab (not_mem_pred mixH V.subClassOf (by decide) a b)
@@ -407,7 +413,19 @@ theorem mixH_is_a_model : Model (herbrand mixH) mixG where
         absurd hab (not_mem_pred mixH V.equivalentProperty (by decide) a b)
       svf := fun r p _ hop => absurd hop (not_mem_pred mixH V.onProperty (by decide) r p)
       avf := fun r p _ hop => absurd hop (not_mem_pred mixH V.onProperty (by decide) r p)
-      hv := fun r p _ hop => absurd hop (not_mem_pred mixH V.onProperty (by decide) r p) }
+      hv := fun r p _ hop => absurd hop (not_mem_pred mixH V.onProperty (by decide) r p)
+      svf_sc := fun c1 _ _ y1 _ hsv =>
+        absurd hsv (not_mem_pred mixH V.someValuesFrom (by decide) c1 y1)
+      svf_sp := fun c1 _ _ _ y hsv =>
+        absurd hsv (not_mem_pred mixH V.someValuesFrom (by decide) c1 y)
+      avf_sc := fun c1 _ _ y1 _ hav =>
+        absurd hav (not_mem_pred mixH V.allValuesFrom (by decide) c1 y1)
+      avf_sp := fun c1 _ _ _ y hav =>
+        absurd hav (not_mem_pred mixH V.allValuesFrom (by decide) c1 y)
+      dom_sc := fun p c1 _ hd => absurd hd (not_mem_pred mixH V.domain (by decide) p c1)
+      dom_sp := fun _ p2 c hd => absurd hd (not_mem_pred mixH V.domain (by decide) p2 c)
+      rng_sc := fun p c1 _ hr => absurd hr (not_mem_pred mixH V.range (by decide) p c1)
+      rng_sp := fun _ p2 c hr => absurd hr (not_mem_pred mixH V.range (by decide) p2 c) }
   facts := fun t ht => List.mem_cons_of_mem _ ht
   int := by
     intro c l ms hc hchain x hx
@@ -416,9 +434,23 @@ theorem mixH_is_a_model : Model (herbrand mixH) mixG where
     subst hms
     exact mixH_int_closed _ (hx mVendor (by simp)) _ (hx mApproved (by simp))
       ⟨rfl, rfl, rfl, rfl, rfl⟩
+  int2 := by
+    intro c l ms hc hchain x hx m hm
+    obtain ⟨rfl, rfl⟩ := mix_only_int _ hc rfl
+    have hms := mix_chain_l0 ms hchain
+    subst hms
+    obtain ⟨h1, h2⟩ := mixH_int2_closed ⟨x, V.type, mSupplier⟩ hx rfl rfl
+    rcases List.mem_cons.mp hm with rfl | hm
+    · exact h1
+    · rw [List.mem_singleton] at hm
+      subst hm
+      exact h2
   uni := by
     intro c l _ hc
     exact absurd hc (not_mem_pred mixG V.unionOf (by decide) c l)
+  oneOf := by
+    intro c l _ hc
+    exact absurd hc (not_mem_pred mixG V.oneOf (by decide) c l)
 
 /-- **The distinction, machine-checked.** The certificate above was accepted and
 its conclusion is entailed under the supplied rule. It is NOT entailed by the
@@ -435,6 +467,12 @@ def mixH2 : List Triple := ⟨mAcme, mStatus, mCompliant⟩ :: mixH
 private theorem mixH2_int_closed : ∀ t ∈ mixH2, ∀ u ∈ mixH2,
     (t.p = V.type ∧ t.o = mVendor ∧ u.p = V.type ∧ u.o = mApproved ∧ u.s = t.s) →
       (⟨t.s, V.type, mSupplier⟩ : Triple) ∈ mixH2 := by decide
+
+/-- The other half of what the intersection means, for `Model.int2`: everything
+this graph makes a `Supplier` it already makes a `Vendor` and an `Approved`. -/
+private theorem mixH2_int2_closed : ∀ t ∈ mixH2, t.p = V.type → t.o = mSupplier →
+    (⟨t.s, V.type, mVendor⟩ : Triple) ∈ mixH2 ∧ (⟨t.s, V.type, mApproved⟩ : Triple) ∈ mixH2 := by
+  decide
 
 private theorem mixH2_rule_closed : ∀ t ∈ mixH2, t.p = V.type → t.o = mSupplier →
     (⟨t.s, mStatus, mCompliant⟩ : Triple) ∈ mixH2 := by decide
@@ -457,7 +495,19 @@ theorem mixH2_is_a_model : Model (herbrand mixH2) mixG where
         absurd hab (not_mem_pred mixH2 V.equivalentProperty (by decide) a b)
       svf := fun r p _ hop => absurd hop (not_mem_pred mixH2 V.onProperty (by decide) r p)
       avf := fun r p _ hop => absurd hop (not_mem_pred mixH2 V.onProperty (by decide) r p)
-      hv := fun r p _ hop => absurd hop (not_mem_pred mixH2 V.onProperty (by decide) r p) }
+      hv := fun r p _ hop => absurd hop (not_mem_pred mixH2 V.onProperty (by decide) r p)
+      svf_sc := fun c1 _ _ y1 _ hsv =>
+        absurd hsv (not_mem_pred mixH2 V.someValuesFrom (by decide) c1 y1)
+      svf_sp := fun c1 _ _ _ y hsv =>
+        absurd hsv (not_mem_pred mixH2 V.someValuesFrom (by decide) c1 y)
+      avf_sc := fun c1 _ _ y1 _ hav =>
+        absurd hav (not_mem_pred mixH2 V.allValuesFrom (by decide) c1 y1)
+      avf_sp := fun c1 _ _ _ y hav =>
+        absurd hav (not_mem_pred mixH2 V.allValuesFrom (by decide) c1 y)
+      dom_sc := fun p c1 _ hd => absurd hd (not_mem_pred mixH2 V.domain (by decide) p c1)
+      dom_sp := fun _ p2 c hd => absurd hd (not_mem_pred mixH2 V.domain (by decide) p2 c)
+      rng_sc := fun p c1 _ hr => absurd hr (not_mem_pred mixH2 V.range (by decide) p c1)
+      rng_sp := fun _ p2 c hr => absurd hr (not_mem_pred mixH2 V.range (by decide) p2 c) }
   facts := fun t ht => List.mem_cons_of_mem _ (List.mem_cons_of_mem _ ht)
   int := by
     intro c l ms hc hchain x hx
@@ -466,9 +516,23 @@ theorem mixH2_is_a_model : Model (herbrand mixH2) mixG where
     subst hms
     exact mixH2_int_closed _ (hx mVendor (by simp)) _ (hx mApproved (by simp))
       ⟨rfl, rfl, rfl, rfl, rfl⟩
+  int2 := by
+    intro c l ms hc hchain x hx m hm
+    obtain ⟨rfl, rfl⟩ := mix_only_int _ hc rfl
+    have hms := mix_chain_l0 ms hchain
+    subst hms
+    obtain ⟨h1, h2⟩ := mixH2_int2_closed ⟨x, V.type, mSupplier⟩ hx rfl rfl
+    rcases List.mem_cons.mp hm with rfl | hm
+    · exact h1
+    · rw [List.mem_singleton] at hm
+      subst hm
+      exact h2
   uni := by
     intro c l _ hc
     exact absurd hc (not_mem_pred mixG V.unionOf (by decide) c l)
+  oneOf := by
+    intro c l _ hc
+    exact absurd hc (not_mem_pred mixG V.oneOf (by decide) c l)
 
 theorem mixH2_sat_rule : SatRule (herbrand mixH2) complianceRule := by
   intro sigma hb

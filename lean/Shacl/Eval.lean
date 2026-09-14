@@ -84,40 +84,91 @@ theorem nodup_dedup [DecidableEq α] : ∀ (l : List α), (dedup l).Nodup
 
 /-! ## Reading the graph -/
 
-/-- The value nodes of `f` along `pa`, without duplicates. -/
-def valueNodes (G : Graph) (pa : Path) (f : Term) : List Term :=
-  dedup ((G.filter (pa.sel f)).map pa.val)
+/-- The value nodes of `f` along `pa`, without duplicates.
 
-theorem mem_valueNodes {G : Graph} {pa : Path} {f v : Term} :
-    v ∈ valueNodes G pa f ↔ IsValue G pa f v := by
-  rw [valueNodes, mem_dedup, List.mem_map]
+The recursion is on the PATH, not on the graph, so it terminates for the same
+reason a path is finite. That is the whole reason `sh:zeroOrMorePath` is not a
+constructor: it would need a fixpoint over the graph instead. -/
+def valueNodes (G : Graph) : Path → Term → List Term
+  | .pred p, f => dedup ((G.filter (fun t => t.s == f && t.p == p)).map Triple.o)
+  | .inv p, f => dedup ((G.filter (fun t => t.p == p && t.o == f)).map Triple.s)
+  | .seq a b, f => dedup ((valueNodes G a f).flatMap (fun m => valueNodes G b m))
+  | .alt a b, f => dedup (valueNodes G a f ++ valueNodes G b f)
+  | .zeroOrOne a, f => dedup (f :: valueNodes G a f)
+
+theorem mem_valueNodes {G : Graph} : ∀ {pa : Path} {f v : Term},
+    v ∈ valueNodes G pa f ↔ IsValue G pa f v
+  | .pred p, f, v => by
+      rw [valueNodes, mem_dedup, List.mem_map]
+      constructor
+      · rintro ⟨t, ht, hv⟩
+        rw [List.mem_filter] at ht
+        obtain ⟨hG, hsel⟩ := ht
+        simp only [Bool.and_eq_true, beq_iff_eq] at hsel
+        cases t
+        simp_all [IsValue]
+      · intro h
+        refine ⟨⟨f, p, v⟩, ?_, rfl⟩
+        rw [List.mem_filter]
+        exact ⟨h, by simp⟩
+  | .inv p, f, v => by
+      rw [valueNodes, mem_dedup, List.mem_map]
+      constructor
+      · rintro ⟨t, ht, hv⟩
+        rw [List.mem_filter] at ht
+        obtain ⟨hG, hsel⟩ := ht
+        simp only [Bool.and_eq_true, beq_iff_eq] at hsel
+        cases t
+        simp_all [IsValue]
+      · intro h
+        refine ⟨⟨v, p, f⟩, ?_, rfl⟩
+        rw [List.mem_filter]
+        exact ⟨h, by simp⟩
+  | .seq a b, f, v => by
+      rw [valueNodes, mem_dedup, List.mem_flatMap]
+      constructor
+      · rintro ⟨m, hm, hv⟩
+        exact ⟨m, mem_valueNodes.mp hm, mem_valueNodes.mp hv⟩
+      · rintro ⟨m, hm, hv⟩
+        exact ⟨m, mem_valueNodes.mpr hm, mem_valueNodes.mpr hv⟩
+  | .alt a b, f, v => by
+      rw [valueNodes, mem_dedup, List.mem_append]
+      constructor
+      · rintro (h | h)
+        · exact Or.inl (mem_valueNodes.mp h)
+        · exact Or.inr (mem_valueNodes.mp h)
+      · rintro (h | h)
+        · exact Or.inl (mem_valueNodes.mpr h)
+        · exact Or.inr (mem_valueNodes.mpr h)
+  | .zeroOrOne a, f, v => by
+      rw [valueNodes, mem_dedup, List.mem_cons]
+      constructor
+      · rintro (rfl | h)
+        · exact Or.inl rfl
+        · exact Or.inr (mem_valueNodes.mp h)
+      · rintro (rfl | h)
+        · exact Or.inl rfl
+        · exact Or.inr (mem_valueNodes.mpr h)
+
+theorem nodup_valueNodes {G : Graph} {pa : Path} {f : Term} : (valueNodes G pa f).Nodup := by
+  cases pa <;> (rw [valueNodes]; exact nodup_dedup _)
+
+/-- The value nodes of a shape that may or may not carry a path. -/
+def valueNodesOrSelf (G : Graph) : Option Path → Term → List Term
+  | none, f => [f]
+  | some pa, f => valueNodes G pa f
+
+theorem mem_valueNodesOrSelf {G : Graph} {pa : Option Path} {f v : Term} :
+    v ∈ valueNodesOrSelf G pa f ↔ IsValueOrSelf G pa f v := by
   cases pa with
-  | pred p =>
-    constructor
-    · rintro ⟨t, ht, hv⟩
-      rw [List.mem_filter] at ht
-      obtain ⟨hG, hsel⟩ := ht
-      simp only [Path.sel, Bool.and_eq_true, beq_iff_eq] at hsel
-      simp only [Path.val] at hv
-      cases t
-      simp_all [IsValue]
-    · intro h
-      refine ⟨⟨f, p, v⟩, ?_, rfl⟩
-      rw [List.mem_filter]
-      exact ⟨h, by simp [Path.sel]⟩
-  | inv p =>
-    constructor
-    · rintro ⟨t, ht, hv⟩
-      rw [List.mem_filter] at ht
-      obtain ⟨hG, hsel⟩ := ht
-      simp only [Path.sel, Bool.and_eq_true, beq_iff_eq] at hsel
-      simp only [Path.val] at hv
-      cases t
-      simp_all [IsValue]
-    · intro h
-      refine ⟨⟨v, p, f⟩, ?_, rfl⟩
-      rw [List.mem_filter]
-      exact ⟨h, by simp [Path.sel]⟩
+  | none => simp [valueNodesOrSelf, IsValueOrSelf]
+  | some p => exact mem_valueNodes
+
+theorem nodup_valueNodesOrSelf {G : Graph} {pa : Option Path} {f : Term} :
+    (valueNodesOrSelf G pa f).Nodup := by
+  cases pa with
+  | none => simp [valueNodesOrSelf]
+  | some p => rw [valueNodesOrSelf]; exact nodup_valueNodes
 
 /-- Every `rdf:type` value of `x`. Duplicates are harmless here: only membership is
 ever asked. -/
@@ -299,6 +350,13 @@ inductive Refusal where
   | unknownLexicalSpace (dt : Term) (lex : String)
   /-- The `rdfs:subClassOf` iteration did not reach a closed set in budget. -/
   | subclassClosureNotReached (c : Term)
+  /-- A value-range or property-pair constraint had to compare two terms by value
+  and `cmpTerms` declined. Note that this is NOT the case where SPARQL raises a
+  type error: that one is comparable-by-refusal, reported as a violation. -/
+  | unknownComparison (a b : Term)
+  /-- A length constraint had to count the characters of the string a spelling
+  denotes, and the spelling carries a backslash escape that nothing here decodes. -/
+  | escapedLexicalForm (t : Term)
 deriving Repr
 
 def Refusal.describe : Refusal → String
@@ -306,6 +364,12 @@ def Refusal.describe : Refusal → String
       s!"sh:datatype: the lexical space of {dt} is not implemented, so \"{lex}\" cannot be judged well formed"
   | .subclassClosureNotReached c =>
       s!"sh:class: the rdfs:subClassOf closure of {c} did not settle within the iteration budget"
+  | .unknownComparison a b =>
+      s!"value comparison: no rule this development implements orders {a} against {b}, and \
+         SPARQL's type-error case is not known to apply either, so no order is claimed"
+  | .escapedLexicalForm t =>
+      s!"string length: {t} carries a backslash escape and escapes are never decoded here, so \
+         the length of the string it denotes is unknown"
 
 /-- A result blaming the focus node itself. -/
 def violation (src comp : Term) (s : Shape) (f : Term) : Result :=
@@ -319,6 +383,21 @@ def violationOn (src comp : Term) (s : Shape) (f : Term) (pa : Path) : Result :=
   { focus := f, path := some pa, value := none, source := src, component := comp,
     blamed := s, blamedNode := f }
 
+/-- A result blaming the value-node SET of a shape that may or may not carry a
+path. The property-pair constraints and `sh:uniqueLang` are about the set, so they
+name the path when there is one and carry no `sh:value`.
+
+**One result per focus node, not one per offending value.** The Recommendation asks
+for a separate result for each value node that breaks `sh:equals`, `sh:disjoint`,
+`sh:lessThan` or `sh:lessThanOrEquals`, each carrying that value in `sh:value`.
+This validator reports one. The verdict is unaffected and the result it does
+produce is licensed by `eval_results_licensed`, but a consumer counting results
+will count fewer than a fully conforming validator would. Named here rather than
+discovered. -/
+def violationPair (src comp : Term) (s : Shape) (f : Term) (pa : Option Path) : Result :=
+  { focus := f, path := pa, value := none, source := src, component := comp,
+    blamed := s, blamedNode := f }
+
 /-- Decide a leaf constraint: no results when it holds, exactly one when it does not. -/
 def check (b : Bool) (r : Result) : Except Refusal (List Result) :=
   if b then .ok [] else .ok [r]
@@ -330,7 +409,7 @@ Only results that do not already carry a path are re-aimed. A result that has on
 came from a property shape nested inside this one and already names its own focus
 node, which is the value node here; SHACL reports it unchanged. -/
 def liftValue (f : Term) (pa : Path) (v : Term) (r : Result) : Result :=
-  { r with focus := f, path := some pa, value := some v }
+  if r.path.isNone then { r with focus := f, path := some pa, value := some v } else r
 
 /-- Evaluate a shape at each of a list of nodes, keeping the pairing so the caller
 can say which node produced which results. Any refusal aborts. -/
@@ -371,6 +450,114 @@ def evalDatatype (d src f : Term) : Except Refusal (List Result) :=
         | some b => check b (violation src C.datatype (.datatype d) f)
       else check false (violation src C.datatype (.datatype d) f)
 
+/-- The four value-range constraints, which differ only in which orders they
+accept. A comparison the term model declines to make is a refusal; a comparison it
+reports as a SPARQL type error is a violation, because the Recommendation asks
+whether the SPARQL expression returns true and a type error does not. -/
+def evalCompare (ok : List Cmp) (comp : Term) (s : Shape) (c src f : Term) :
+    Except Refusal (List Result) :=
+  match cmpTerms c f with
+  | none => .error (.unknownComparison c f)
+  | some k => check (ok.contains k) (violation src comp s f)
+
+/-- Any constraint that asks a question about the string a value node denotes. A
+blank node fails all of them, which is what the Recommendation says in as many
+words for `sh:minLength` and `sh:maxLength` and what the approved tests
+`core/node/minLength-001` and `core/node/pattern-001` both require. -/
+def evalStr (P : List Char → Bool) (comp : Term) (s : Shape) (src f : Term) :
+    Except Refusal (List Result) :=
+  match strRep f with
+  | .chars cs => check (P cs) (violation src comp s f)
+  | .noString => check false (violation src comp s f)
+  | .unknown => .error (.escapedLexicalForm f)
+
+/-- The two length constraints. -/
+def evalLength (P : Nat → Bool) (comp : Term) (s : Shape) (src f : Term) :
+    Except Refusal (List Result) :=
+  evalStr (fun cs => P cs.length) comp s src f
+
+/-! ## Deciding a pattern
+
+`reRem items s` is the set of REMAINDERS the items can leave after consuming a
+prefix of `s`. Reading the answer as a set of remainders rather than as a boolean is
+what makes the anchored and unanchored cases one function: `$` asks whether the
+empty remainder is among them, and its absence asks whether there is any remainder
+at all. -/
+
+def reRem (fold : Bool) : (items : List Item) → (s : List Char) → List (List Char)
+  | [], s => [s]
+  | it :: rest, s =>
+      match it.quant with
+      | .one =>
+          match s with
+          | [] => []
+          | c :: s' => if itemAdmits fold it c then reRem fold rest s' else []
+      | .star =>
+          ((List.range (s.length + 1)).filter
+            (fun k => (s.take k).all (fun c => itemAdmits fold it c))).flatMap
+              (fun k => reRem fold rest (s.drop k))
+  termination_by items => items.length
+  decreasing_by all_goals simp
+
+/-- Every suffix of a string, longest first, including the empty one. These are the
+positions an unanchored search may start at. -/
+def suffixesOf : List Char → List (List Char)
+  | [] => [[]]
+  | c :: s => (c :: s) :: suffixesOf s
+
+def regexMatchB (re : Regex) (s : List Char) : Bool :=
+  (if re.anchorStart then [s] else suffixesOf s).any fun t =>
+    (reRem re.fold re.items t).any fun r => !re.anchorEnd || r.isEmpty
+
+/-! ## The two property-pair comparisons
+
+`sh:lessThan` and `sh:lessThanOrEquals` compare every value node against every
+value of the other property, so a single unknown comparison anywhere in that grid
+makes the whole constraint undetermined. The traversal below binds BOTH halves
+before combining them, so a refusal in any cell propagates whatever the other cells
+decided: the answer cannot depend on which cell was reached first. -/
+
+def cmpPair (ok : List Cmp) (v w : Term) : Except Refusal Bool :=
+  match cmpTerms v w with
+  | none => .error (.unknownComparison v w)
+  | some k => .ok (ok.contains k)
+
+def cmpRow (ok : List Cmp) (v : Term) : List Term → Except Refusal Bool
+  | [] => .ok true
+  | w :: ws => do
+      let a ← cmpPair ok v w
+      let b ← cmpRow ok v ws
+      .ok (a && b)
+
+def cmpGrid (ok : List Cmp) : List Term → List Term → Except Refusal Bool
+  | [], _ => .ok true
+  | v :: vs, ws => do
+      let a ← cmpRow ok v ws
+      let b ← cmpGrid ok vs ws
+      .ok (a && b)
+
+/-- The triples at a value node whose predicate the closed shape does not allow. -/
+def closedOffenders (G : Graph) (allowed : List Term) (f : Term) : List Triple :=
+  G.filter (fun t => t.s == f && !(allowed.contains t.p))
+
+/-- One result per offending triple, each naming the predicate that was not allowed
+and the object that was reached through it, which is what the Recommendation asks
+for. All of them blame the same node and the same constraint. -/
+def closedResults (G : Graph) (allowed : List Term) (src : Term) (s : Shape) (f : Term) :
+    List Result :=
+  (closedOffenders G allowed f).map fun t =>
+    { focus := f, path := some (.pred t.p), value := some t.o, source := src,
+      component := C.closed, blamed := s, blamedNode := f }
+
+/-- The value nodes that conformed, out of what `collect` returned. -/
+def qualifyingNodes (out : List (Term × List Result)) : List Term :=
+  (out.filter (fun p => p.2.isEmpty)).map Prod.fst
+
+/-- No two distinct value nodes carry the same language tag. -/
+def uniqueLangB (vs : List Term) : Bool :=
+  vs.all (fun v => vs.all (fun w =>
+    (v == w) || ((langOf v).isNone || !(decide (langOf v = langOf w)))))
+
 /-! ## The evaluator -/
 
 def eval (G : Graph) : Shape → Term → Term → Except Refusal (List Result)
@@ -381,6 +568,47 @@ def eval (G : Graph) : Shape → Term → Term → Except Refusal (List Result)
   | .nodeKind k, src, f => check (nodeKindOK k f) (violation src C.nodeKind (.nodeKind k) f)
   | .hasValue v, src, f => check (f == v) (violation src C.hasValue (.hasValue v) f)
   | .inSet vs, src, f => check (vs.contains f) (violation src C.inSet (.inSet vs) f)
+  | .minInclusive c, src, f => evalCompare [.lt, .eq] C.minInclusive (.minInclusive c) c src f
+  | .maxInclusive c, src, f => evalCompare [.gt, .eq] C.maxInclusive (.maxInclusive c) c src f
+  | .minExclusive c, src, f => evalCompare [.lt] C.minExclusive (.minExclusive c) c src f
+  | .maxExclusive c, src, f => evalCompare [.gt] C.maxExclusive (.maxExclusive c) c src f
+  | .minLength n, src, f =>
+      evalLength (fun len => decide (n ≤ len)) C.minLength (.minLength n) src f
+  | .maxLength n, src, f =>
+      evalLength (fun len => decide (len ≤ n)) C.maxLength (.maxLength n) src f
+  | .pattern re, src, f =>
+      evalStr (fun cs => regexMatchB re cs) C.pattern (.pattern re) src f
+  | .languageIn tags, src, f =>
+      check (match langOf f with
+             | none => false
+             | some t => tags.any (fun r => langMatches r t))
+        (violation src C.languageIn (.languageIn tags) f)
+  | .equals pa q, src, f =>
+      check ((valueNodesOrSelf G pa f).all (fun v => (valueNodes G (.pred q) f).contains v) &&
+             (valueNodes G (.pred q) f).all (fun w => (valueNodesOrSelf G pa f).contains w))
+        (violationPair src C.equals (.equals pa q) f pa)
+  | .disjoint pa q, src, f =>
+      check ((valueNodesOrSelf G pa f).all
+              (fun v => !((valueNodes G (.pred q) f).contains v)))
+        (violationPair src C.disjoint (.disjoint pa q) f pa)
+  | .lessThan pa q, src, f => do
+      let b ← cmpGrid [.lt] (valueNodesOrSelf G pa f) (valueNodes G (.pred q) f)
+      check b (violationPair src C.lessThan (.lessThan pa q) f pa)
+  | .lessThanOrEq pa q, src, f => do
+      let b ← cmpGrid [.lt, .eq] (valueNodesOrSelf G pa f) (valueNodes G (.pred q) f)
+      check b (violationPair src C.lessThanOrEq (.lessThanOrEq pa q) f pa)
+  | .uniqueLang pa, src, f =>
+      check (uniqueLangB (valueNodesOrSelf G pa f))
+        (violationPair src C.uniqueLang (.uniqueLang pa) f pa)
+  | .closed allowed, src, f => .ok (closedResults G allowed src (.closed allowed) f)
+  | .qualifiedMin pa q n, src, f => do
+      let out ← collect (fun v => eval G q src v) (valueNodes G pa f)
+      check (decide (n ≤ (qualifyingNodes out).length))
+        (violationOn src C.qualifiedMin (.qualifiedMin pa q n) f pa)
+  | .qualifiedMax pa q n, src, f => do
+      let out ← collect (fun v => eval G q src v) (valueNodes G pa f)
+      check (decide ((qualifyingNodes out).length ≤ n))
+        (violationOn src C.qualifiedMax (.qualifiedMax pa q n) f pa)
   | .minCount pa n, src, f =>
       check (decide (n ≤ (valueNodes G pa f).length))
         (violationOn src C.minCount (.minCount pa n) f pa)
@@ -409,6 +637,9 @@ def eval (G : Graph) : Shape → Term → Term → Except Refusal (List Result)
   | .nodeC a, src, f => do
       let ra ← eval G a src f
       check ra.isEmpty (violation src C.nodeC (.nodeC a) f)
+  | .report comp a, src, f => do
+      let ra ← eval G a src f
+      check ra.isEmpty (violation src comp (.report comp a) f)
   | .forAll pa a, src, f => do
       let out ← collect (fun v => eval G a src v) (valueNodes G pa f)
       .ok (out.flatMap (fun q => q.2.map (liftValue f pa q.1)))

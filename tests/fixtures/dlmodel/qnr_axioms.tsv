@@ -1,0 +1,7 @@
+sub	atom <http://ex.org/Committee>	min 2 <http://ex.org/hasMember> atom <http://ex.org/Person>
+sub	atom <http://ex.org/Committee>	max 3 <http://ex.org/hasMember> atom <http://ex.org/Person>
+range	<http://ex.org/hasMember>	atom <http://ex.org/Person>
+inv	<http://ex.org/hasMember>	<http://ex.org/memberOf>
+invfunc	<http://ex.org/chairedBy>
+disjoint	atom <http://ex.org/Committee>	atom <http://ex.org/Person>
+nonempty	atom <http://ex.org/Committee>

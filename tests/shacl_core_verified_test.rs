@@ -71,7 +71,7 @@
 
 mod common;
 
-use open_ontologies::graph::GraphStore;
+
 use oxigraph::io::{RdfFormat, RdfParser};
 use oxigraph::sparql::{QueryResults, SparqlEvaluator};
 use oxigraph::store::Store;
@@ -279,8 +279,26 @@ fn short(iri: &str) -> String {
 }
 
 /// Canonical comparison form. IRIs lose their angle brackets, blank nodes collapse
-/// to `_:`, literals are left as printed. Applied to both sides, so the two are
-/// symmetric.
+/// to `_:`, and a literal is passed through an Oxigraph store once. Applied to both
+/// sides, so the two are symmetric.
+///
+/// # Why a literal goes through a store
+///
+/// Oxigraph encodes an XSD-typed literal as a native value and hands back the
+/// CANONICAL lexical form on the way out, so `"4.0"^^xsd:decimal` comes out of a
+/// store as `"4"^^xsd:decimal`. The expected side of every comparison is read out of
+/// a `Store` with SPARQL, so it has already been through that; the produced side
+/// comes straight from the validator, which is now fed a term-faithful graph (see
+/// `to_ntriples`) and so has not. Putting both through the same step is what keeps
+/// the lens symmetric. Canonicalisation is idempotent, so the expected side is
+/// unchanged by it.
+///
+/// What it costs, stated rather than discovered: two lexical forms of one value
+/// within one datatype become one comparison key, so a validator that reported
+/// `"4.0"^^xsd:decimal` where the Working Group wrote `"4"^^xsd:decimal` is not
+/// caught here. Two DIFFERENT datatypes never merge, so `"4"^^xsd:integer` and
+/// `"4.0"^^xsd:decimal` stay distinct and a validator confusing those two is still
+/// caught.
 fn canon(term: &str) -> String {
     let t = term.trim();
     if t.starts_with("_:") {
@@ -289,7 +307,30 @@ fn canon(term: &str) -> String {
     if let Some(inner) = t.strip_prefix('<').and_then(|s| s.strip_suffix('>')) {
         return inner.to_string();
     }
+    if t.starts_with('"') {
+        return literal_canon(t);
+    }
     t.to_string()
+}
+
+/// One literal through an Oxigraph store and back. Anything that will not make the
+/// round trip is handed back untouched, so a term this cannot parse turns into a
+/// disagreement rather than into a silent match.
+fn literal_canon(lit: &str) -> String {
+    let Ok(store) = Store::new() else { return lit.to_string() };
+    let line = format!("<urn:x-oo-canon:s> <urn:x-oo-canon:p> {lit} .\n");
+    let parser =
+        RdfParser::from_format(RdfFormat::NTriples).for_reader(Cursor::new(line.into_bytes()));
+    for quad in parser {
+        let Ok(quad) = quad else { return lit.to_string() };
+        if store.insert(&quad).is_err() {
+            return lit.to_string();
+        }
+    }
+    match store.iter().next() {
+        Some(Ok(q)) => q.object.to_string(),
+        _ => lit.to_string(),
+    }
 }
 
 fn rows(store: &Store, query: &str) -> anyhow::Result<Vec<HashMap<String, String>>> {
@@ -470,22 +511,50 @@ fn read_entry(store: &Store, manifest: &Path, entry: &str) -> anyhow::Result<Tes
 // Running one test
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Turtle to N-Triples through the engine's own parser, with the file's IRI as
-/// base. The Lean bridge reads N-Triples only, on purpose: prefix and base
-/// resolution are exactly the kind of work that is easy to get subtly wrong, and
-/// doing it here rather than in Lean keeps it out of the verified path AND makes
-/// this harness resolve IRIs the same way the expected reports do.
+/// Turtle to N-Triples with the file's IRI as base. The Lean bridge reads
+/// N-Triples only, on purpose: prefix and base resolution are exactly the kind of
+/// work that is easy to get subtly wrong, and doing it here rather than in Lean
+/// keeps it out of the verified path AND makes this harness resolve IRIs the same
+/// way the expected reports do.
 ///
 /// This is the one part of the pipeline whose correctness is assumed rather than
 /// proved or measured. A mis-resolved IRI would show up as a disagreement, not as a
 /// false pass, because the expected side resolves through the same code.
+///
+/// # It goes parser to serialiser, and no longer through the engine's store
+///
+/// It used to load the Turtle into `GraphStore` and serialise that. **That round
+/// trip does not preserve RDF terms.** Oxigraph encodes an XSD-typed literal as a
+/// native value and hands back the CANONICAL lexical form on the way out, so
+/// `"1"^^xsd:boolean` in a shapes file arrived at the validator as
+/// `"true"^^xsd:boolean`. SHACL reads several parameter values as terms rather
+/// than as values, and `core/property/uniqueLang-002` is the Working Group's test
+/// for exactly that distinction: it says in a comment that `"1"^^xsd:boolean` must
+/// NOT activate `sh:uniqueLang`. Under the old conversion no validator could pass
+/// it, because the distinction was destroyed before the validator ran.
+///
+/// The finding is about `GraphStore`, which this task does not own, so it is
+/// reported rather than fixed there: **`GraphStore::load_turtle` followed by
+/// `GraphStore::serialize("ntriples")` is not term-preserving.** Anything in `src/`
+/// that round-trips a graph through the store and then compares terms, SHACL
+/// validation included, inherits that.
+///
+/// Parsing is still Oxigraph's, so base and prefix resolution are unchanged.
+/// Triples are deduplicated and sorted here because the store used to do both, and
+/// the compiler in `lean/Shacl/Compile.lean` reads `sh:path` as "exactly one
+/// object" and would refuse a shapes graph that merely repeated a triple.
 fn to_ntriples(path: &Path) -> Result<String, String> {
-    let store = GraphStore::new();
     let text = std::fs::read_to_string(path).map_err(|e| format!("unreadable: {e}"))?;
-    store
-        .load_turtle(&text, Some(&base_of(path)))
-        .map_err(|e| format!("does not parse: {}", first_line(&e.to_string())))?;
-    store.serialize("ntriples").map_err(|e| format!("will not re-serialise: {e}"))
+    let parser = RdfParser::from_format(RdfFormat::Turtle)
+        .with_base_iri(base_of(path))
+        .map_err(|e| format!("has an unusable base IRI: {e}"))?
+        .for_reader(Cursor::new(text.into_bytes()));
+    let mut lines: BTreeSet<String> = BTreeSet::new();
+    for quad in parser {
+        let q = quad.map_err(|e| format!("does not parse: {}", first_line(&e.to_string())))?;
+        lines.insert(format!("{} {} {} .", q.subject, q.predicate, q.object));
+    }
+    Ok(lines.into_iter().collect::<Vec<_>>().join("\n"))
 }
 
 /// The outcome of one test, plus how many targeted shapes the compiler found.
@@ -512,6 +581,9 @@ fn run_case(tc: &TestCase, idx: usize) -> (Outcome, Option<u64>) {
         return (Outcome::Error(format!("cannot write scratch shapes graph: {e}")), None);
     }
 
+    if std::env::var("OO_SHACL_DUMP").as_deref() == Ok(tc.name.as_str()) {
+        eprintln!("---- {} data ----\n{data_nt}\n---- shapes ----\n{shapes_nt}", tc.name);
+    }
     let v = run_bridge(&dp, &sp);
     let shapes_found = v.json["shapes"].as_u64();
     let outcome = match v.code {
@@ -832,9 +904,14 @@ fn the_bridge_refuses_what_it_cannot_check() {
         dup.raw
     );
 
-    // Four refusals, each naming what it refused.
-    let refusals: [(&str, &str, &str); 4] = [
-        ("conforming-data.nt", "unsupported-shapes.nt", "shacl#pattern"),
+    // Six refusals, each naming what it refused. One per way the pipeline can
+    // decline: an unknown parameter, an unimplemented path form, a regular
+    // expression outside the proved subset, recursion, the extension mechanism, and
+    // a datatype whose lexical space is not implemented.
+    let refusals: [(&str, &str, &str); 6] = [
+        ("conforming-data.nt", "unsupported-shapes.nt", "shacl#prefixes"),
+        ("conforming-data.nt", "unsupported-path-shapes.nt", "zeroOrMorePath"),
+        ("conforming-data.nt", "unsupported-regex-shapes.nt", "'+'"),
         ("conforming-data.nt", "recursive-shapes.nt", "recursive"),
         ("conforming-data.nt", "component-shapes.nt", "extension mechanism"),
         ("unknown-datatype-data.nt", "unknown-datatype-shapes.nt", "lexical space"),
@@ -932,21 +1009,24 @@ fn the_verified_conformance_report() {
          suite commit: PASS 36 / FAIL 24 / UNDETERMINED 60. It answers more and is wrong more."
     );
 
-    // Where the undetermined tests went, clustered, with one test named per
-    // cluster so the next piece of work can be picked by evidence.
-    let mut clusters: BTreeMap<String, (usize, String)> = BTreeMap::new();
+    // Where the undetermined tests went, clustered, with every test named under
+    // its cluster so the next piece of work can be picked by evidence rather than
+    // by guessing which tests a cluster holds.
+    let mut clusters: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (tc, o) in r.cases.iter().zip(r.outcomes.iter()) {
         if let Outcome::Undetermined(d) = o {
-            let e = clusters.entry(refusal_class(d)).or_insert((0, tc.name.clone()));
-            e.0 += 1;
+            clusters.entry(refusal_class(d)).or_default().push(tc.name.clone());
         }
     }
     if !clusters.is_empty() {
-        eprintln!("\n  UNDETERMINED by reason, with one test named per reason:");
-        let mut rows: Vec<(&String, &(usize, String))> = clusters.iter().collect();
-        rows.sort_by(|a, b| b.1.0.cmp(&a.1.0).then(a.0.cmp(b.0)));
-        for (why, (n, example)) in rows {
-            eprintln!("    {n:>4}  {why}   e.g. {example}");
+        eprintln!("\n  UNDETERMINED by reason, with every test named under its reason:");
+        let mut rows: Vec<(&String, &Vec<String>)> = clusters.iter().collect();
+        rows.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then(a.0.cmp(b.0)));
+        for (why, names) in rows {
+            eprintln!("    {:>4}  {why}", names.len());
+            for n in names {
+                eprintln!("            {n}");
+            }
         }
     }
 

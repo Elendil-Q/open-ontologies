@@ -117,14 +117,32 @@ theorem demoH_is_a_model : Model (herbrand demoH) demoG where
         absurd hab (not_mem_pred demoH V.equivalentProperty (by decide) a b)
       svf := fun r p _ hop => absurd hop (not_mem_pred demoH V.onProperty (by decide) r p)
       avf := fun r p _ hop => absurd hop (not_mem_pred demoH V.onProperty (by decide) r p)
-      hv := fun r p _ hop => absurd hop (not_mem_pred demoH V.onProperty (by decide) r p) }
+      hv := fun r p _ hop => absurd hop (not_mem_pred demoH V.onProperty (by decide) r p)
+      svf_sc := fun c1 _ _ y1 _ hsv =>
+        absurd hsv (not_mem_pred demoH V.someValuesFrom (by decide) c1 y1)
+      svf_sp := fun c1 _ _ _ y hsv =>
+        absurd hsv (not_mem_pred demoH V.someValuesFrom (by decide) c1 y)
+      avf_sc := fun c1 _ _ y1 _ hav =>
+        absurd hav (not_mem_pred demoH V.allValuesFrom (by decide) c1 y1)
+      avf_sp := fun c1 _ _ _ y hav =>
+        absurd hav (not_mem_pred demoH V.allValuesFrom (by decide) c1 y)
+      dom_sc := fun p c1 _ hd => absurd hd (not_mem_pred demoH V.domain (by decide) p c1)
+      dom_sp := fun _ p2 c hd => absurd hd (not_mem_pred demoH V.domain (by decide) p2 c)
+      rng_sc := fun p c1 _ hr => absurd hr (not_mem_pred demoH V.range (by decide) p c1)
+      rng_sp := fun _ p2 c hr => absurd hr (not_mem_pred demoH V.range (by decide) p2 c) }
   facts := fun t ht => List.mem_cons_of_mem _ ht
   int := by
+    intro c l _ hc
+    exact absurd hc (not_mem_pred demoG V.intersectionOf (by decide) c l)
+  int2 := by
     intro c l _ hc
     exact absurd hc (not_mem_pred demoG V.intersectionOf (by decide) c l)
   uni := by
     intro c l _ hc
     exact absurd hc (not_mem_pred demoG V.unionOf (by decide) c l)
+  oneOf := by
+    intro c l _ hc
+    exact absurd hc (not_mem_pred demoG V.oneOf (by decide) c l)
 
 /-- Adding a user rule does not collapse entailment: `a gp b` is still not a
 consequence, so the Horn layer derives less than everything. -/

@@ -21,6 +21,7 @@ const OWL_HAS_VALUE: &str = "<http://www.w3.org/2002/07/owl#hasValue>";
 const OWL_ON_PROPERTY: &str = "<http://www.w3.org/2002/07/owl#onProperty>";
 const OWL_INTERSECTION: &str = "<http://www.w3.org/2002/07/owl#intersectionOf>";
 const OWL_UNION: &str = "<http://www.w3.org/2002/07/owl#unionOf>";
+const OWL_ONEOF: &str = "<http://www.w3.org/2002/07/owl#oneOf>";
 const RDF_FIRST: &str = "<http://www.w3.org/1999/02/22-rdf-syntax-ns#first>";
 const RDF_REST: &str = "<http://www.w3.org/1999/02/22-rdf-syntax-ns#rest>";
 const RDF_NIL: &str = "<http://www.w3.org/1999/02/22-rdf-syntax-ns#nil>";
@@ -70,9 +71,45 @@ impl Interner {
 /// Profiles:
 ///   "rdfs"       — RDFS rules (subclass, domain/range, subproperty)
 ///   "owl-rl"     — RDFS + core OWL-RL (transitive, symmetric, inverse,
-///                  sameAs, equivalentClass/Property)
+///                  sameAs, equivalentClass/Property) + the schema rules that
+///                  move a domain or a range along the class and property
+///                  hierarchies (scm-dom1, scm-dom2, scm-rng1, scm-rng2)
 ///   "owl-rl-ext" — All above + someValuesFrom, allValuesFrom, hasValue,
-///                  intersectionOf, unionOf
+///                  intersectionOf (both directions), unionOf, oneOf, and the
+///                  four rules that order two restrictions by their filler or
+///                  by their property (scm-svf1, scm-svf2, scm-avf1, scm-avf2)
+///
+/// Twenty-nine rule ids in all, every one of them with an arm in
+/// `lean/OOCert/Rules.lean` and a lemma in `lean/OOCert/Soundness.lean`. A rule
+/// the checker cannot prove sound is a rule this file does not run: that is the
+/// contract, and `tests/lean_certificate_test.rs` walks the whole corpus to
+/// enforce it.
+///
+/// What is deliberately NOT here, with the reason, because "not implemented" and
+/// "not sound" are different statements and a reader is owed which one applies:
+///
+///   * `eq-ref` is sound and useless. It asserts `owl:sameAs` reflexivity for
+///     every term in every position. Measured on the largest file this
+///     repository ships, `benchmark/oaei/data/anatomy/human.owl`, that is
+///     17,194 triples of no consequence added to a graph of 35,354. It would
+///     also put a derivation into the empty-graph case that
+///     `OOCert.not_everything_is_entailed` depends on staying empty.
+///   * The `eq-rep-s`, `eq-rep-p`, `eq-rep-o` family is sound and quadratic in
+///     the size of a `owl:sameAs` clique. Counted by SPARQL over every RDF file
+///     this repository tracks that parses and is under the size cap, the corpus
+///     contains ZERO `owl:sameAs` triples, so the cost is certain and the
+///     benefit here is nothing at all. Three files mention `sameAs` inside an
+///     `rdfs:comment` and none of them asserts one.
+///   * `scm-cls`, `scm-op` and `scm-dp` are sound and emit reflexive trivia
+///     (`c rdfs:subClassOf c`, `c owl:equivalentClass c`) of exactly the kind
+///     the `a != b` guards elsewhere in this file exist to suppress.
+///   * The `dt-*` family needs a datatype VALUE space. `OOCert.Semantics`
+///     reads a literal as its N-Triples spelling and says so, so there is no
+///     condition here for those rules to be sound against.
+///   * Nothing concludes `false`. The profile's inconsistency rules need a
+///     certificate format that can carry a refutation, which this format
+///     cannot.
+///
 /// The graph materialised inferences are written to when the caller asks for
 /// them to be kept apart from what was asserted.
 pub const INFERRED_GRAPH: &str = "https://open-ontologies.org/graph/inferred";
@@ -196,6 +233,7 @@ impl Reasoner {
         let owl_has_value = interner.intern(OWL_HAS_VALUE);
         let owl_intersection = interner.intern(OWL_INTERSECTION);
         let owl_union = interner.intern(OWL_UNION);
+        let owl_oneof = interner.intern(OWL_ONEOF);
         let rdf_first = interner.intern(RDF_FIRST);
         let rdf_rest = interner.intern(RDF_REST);
         let rdf_nil = interner.intern(RDF_NIL);
@@ -265,6 +303,7 @@ impl Reasoner {
             let mut restr_hv: HashMap<u32, u32> = HashMap::new();
             let mut intersection_classes: Vec<(u32, u32, Vec<Fact>, Vec<u32>)> = Vec::new();
             let mut union_classes: Vec<(u32, u32, Vec<Fact>, Vec<u32>)> = Vec::new();
+            let mut oneof_classes: Vec<(u32, u32, Vec<Fact>, Vec<u32>)> = Vec::new();
             let mut svf_rules: Vec<(u32, u32, u32)> = Vec::new();
             let mut hv_rules: Vec<(u32, u32, u32)> = Vec::new();
             let mut avf_rules: Vec<(u32, u32, u32)> = Vec::new();
@@ -330,6 +369,12 @@ impl Reasoner {
                         && !items.is_empty()
                     {
                         union_classes.push((s, o, chain, items));
+                    }
+                    if p == owl_oneof
+                        && let Some((chain, items)) = walk_list(o)
+                        && !items.is_empty()
+                    {
+                        oneof_classes.push((s, o, chain, items));
                     }
                 }
             }
@@ -524,6 +569,76 @@ impl Reasoner {
                     emit((a, rdfs_subprop, b), "scm-eqp1", &[(a, owl_equiv_prop, b)]);
                     emit((b, rdfs_subprop, a), "scm-eqp1", &[(a, owl_equiv_prop, b)]);
                 }
+
+                // scm-dom1, scm-dom2, scm-rng1, scm-rng2: a declared domain or
+                // range moved along the class and the property hierarchy.
+                //
+                // These four add no ANSWERS. Everything they license at the
+                // instance level is already reachable: rdfs2 over the original
+                // domain gives `s rdf:type c1` and rdfs9 carries it up to `c2`,
+                // which is what scm-dom1 followed by rdfs2 gives, and scm-dom2
+                // is rdfs7 up to the superproperty followed by rdfs2. What they
+                // add is the SCHEMA those answers are consequences of. A
+                // consumer reading the materialised graph for "what is the
+                // domain of this property" saw the declaration and not its
+                // consequences, and a second reasoner run over the output
+                // derived them, so the output was not a fixpoint of the
+                // profile.
+                //
+                // They also fire on schema alone, so unlike almost everything
+                // else in the extended profile they fire on a schema-only file
+                // with no instances at all, which is most of this repository's
+                // corpus.
+
+                // scm-dom1: p rdfs:domain c1, c1 subClassOf c2 → p rdfs:domain c2
+                for &(p, c1) in &domain_map {
+                    if let Some(supers) = sub_to_super.get(&c1) {
+                        for &c2 in supers {
+                            if c1 != c2 {
+                                emit((p, rdfs_domain, c2), "scm-dom1",
+                                    &[(p, rdfs_domain, c1), (c1, rdfs_subclass, c2)]);
+                            }
+                        }
+                    }
+                }
+
+                // scm-dom2: p2 rdfs:domain c, p1 subPropertyOf p2 → p1 rdfs:domain c
+                for &(p1, p2) in &subprop_idx {
+                    if p1 == p2 {
+                        continue;
+                    }
+                    for &(pd, c) in &domain_map {
+                        if pd == p2 {
+                            emit((p1, rdfs_domain, c), "scm-dom2",
+                                &[(p2, rdfs_domain, c), (p1, rdfs_subprop, p2)]);
+                        }
+                    }
+                }
+
+                // scm-rng1: p rdfs:range c1, c1 subClassOf c2 → p rdfs:range c2
+                for &(p, c1) in &range_map {
+                    if let Some(supers) = sub_to_super.get(&c1) {
+                        for &c2 in supers {
+                            if c1 != c2 {
+                                emit((p, rdfs_range, c2), "scm-rng1",
+                                    &[(p, rdfs_range, c1), (c1, rdfs_subclass, c2)]);
+                            }
+                        }
+                    }
+                }
+
+                // scm-rng2: p2 rdfs:range c, p1 subPropertyOf p2 → p1 rdfs:range c
+                for &(p1, p2) in &subprop_idx {
+                    if p1 == p2 {
+                        continue;
+                    }
+                    for &(pr, c) in &range_map {
+                        if pr == p2 {
+                            emit((p1, rdfs_range, c), "scm-rng2",
+                                &[(p2, rdfs_range, c), (p1, rdfs_subprop, p2)]);
+                        }
+                    }
+                }
             }
 
             // ── OWL-RL extended (someValuesFrom, hasValue, intersection, union)
@@ -633,6 +748,127 @@ impl Reasoner {
                     }
                 }
 
+                // scm-svf1, scm-svf2, scm-avf1, scm-avf2: two restrictions
+                // ordered by their fillers or by their properties.
+                //
+                // These are the rules that reach subsumptions no instance-level
+                // rule can. `cls-svf1` needs an individual with a witness before
+                // it says anything, and a schema-only ontology has none, so a
+                // pizza-style file full of restrictions licensed nothing at all
+                // from them. These four run on the schema.
+                //
+                // Two indices per restriction kind: (property, filler) → the
+                // restrictions with both, and property → its (filler,
+                // restriction) pairs. The first is the lookup and the second is
+                // the scan, which keeps each rule linear in the hierarchy it
+                // walks rather than quadratic in the restriction count.
+                let mut svf_by_pf: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+                let mut svf_by_filler: HashMap<u32, Vec<(u32, u32)>> = HashMap::new();
+                let mut svf_by_prop: HashMap<u32, Vec<(u32, u32)>> = HashMap::new();
+                for &(prop, filler, restr) in &svf_rules {
+                    svf_by_pf.entry((prop, filler)).or_default().push(restr);
+                    svf_by_filler.entry(filler).or_default().push((prop, restr));
+                    svf_by_prop.entry(prop).or_default().push((filler, restr));
+                }
+                let mut avf_by_pf: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+                let mut avf_by_filler: HashMap<u32, Vec<(u32, u32)>> = HashMap::new();
+                let mut avf_by_prop: HashMap<u32, Vec<(u32, u32)>> = HashMap::new();
+                for &(prop, filler, restr) in &avf_rules {
+                    avf_by_pf.entry((prop, filler)).or_default().push(restr);
+                    avf_by_filler.entry(filler).or_default().push((prop, restr));
+                    avf_by_prop.entry(prop).or_default().push((filler, restr));
+                }
+
+                // scm-svf1: c1 svf y1, c1 onProperty p, c2 svf y2,
+                //           c2 onProperty p, y1 subClassOf y2 → c1 subClassOf c2
+                for &(y1, y2) in &subclass_idx {
+                    let Some(ones) = svf_by_filler.get(&y1) else { continue };
+                    for &(p, r1) in ones {
+                        let Some(twos) = svf_by_pf.get(&(p, y2)) else { continue };
+                        for &r2 in twos {
+                            if r1 != r2 {
+                                emit((r1, rdfs_subclass, r2), "scm-svf1", &[
+                                    (r1, owl_some_values, y1),
+                                    (r1, owl_on_property, p),
+                                    (r2, owl_some_values, y2),
+                                    (r2, owl_on_property, p),
+                                    (y1, rdfs_subclass, y2),
+                                ]);
+                            }
+                        }
+                    }
+                }
+
+                // scm-svf2: c1 svf y, c1 onProperty p1, c2 svf y,
+                //           c2 onProperty p2, p1 subPropertyOf p2 → c1 subClassOf c2
+                for &(p1, p2) in &subprop_idx {
+                    let Some(ones) = svf_by_prop.get(&p1) else { continue };
+                    for &(y, r1) in ones {
+                        let Some(twos) = svf_by_pf.get(&(p2, y)) else { continue };
+                        for &r2 in twos {
+                            if r1 != r2 {
+                                emit((r1, rdfs_subclass, r2), "scm-svf2", &[
+                                    (r1, owl_some_values, y),
+                                    (r1, owl_on_property, p1),
+                                    (r2, owl_some_values, y),
+                                    (r2, owl_on_property, p2),
+                                    (p1, rdfs_subprop, p2),
+                                ]);
+                            }
+                        }
+                    }
+                }
+
+                // scm-avf1: the same shape with owl:allValuesFrom, and the same
+                // direction: a wider filler makes a wider class.
+                for &(y1, y2) in &subclass_idx {
+                    let Some(ones) = avf_by_filler.get(&y1) else { continue };
+                    for &(p, r1) in ones {
+                        let Some(twos) = avf_by_pf.get(&(p, y2)) else { continue };
+                        for &r2 in twos {
+                            if r1 != r2 {
+                                emit((r1, rdfs_subclass, r2), "scm-avf1", &[
+                                    (r1, owl_all_values, y1),
+                                    (r1, owl_on_property, p),
+                                    (r2, owl_all_values, y2),
+                                    (r2, owl_on_property, p),
+                                    (y1, rdfs_subclass, y2),
+                                ]);
+                            }
+                        }
+                    }
+                }
+
+                // scm-avf2: c1 avf y, c1 onProperty p1, c2 avf y,
+                //           c2 onProperty p2, p1 subPropertyOf p2
+                //           → c2 subClassOf c1
+                //
+                // THE CONCLUSION IS THE OTHER WAY ROUND. The W3C table reads
+                // `T(?c2, rdfs:subClassOf, ?c1)` where scm-svf2 reads
+                // `T(?c1, rdfs:subClassOf, ?c2)`, because a universal
+                // restriction is antitone in its property: `all p2 y` has more
+                // values to constrain than `all p1 y`, so it is the smaller
+                // class. Writing it the way scm-svf2 is written gives a step no
+                // model supports, and `OOCert.the_natural_avf2_direction_is_not_entailed`
+                // is the refutation.
+                for &(p1, p2) in &subprop_idx {
+                    let Some(ones) = avf_by_prop.get(&p1) else { continue };
+                    for &(y, r1) in ones {
+                        let Some(twos) = avf_by_pf.get(&(p2, y)) else { continue };
+                        for &r2 in twos {
+                            if r1 != r2 {
+                                emit((r2, rdfs_subclass, r1), "scm-avf2", &[
+                                    (r1, owl_all_values, y),
+                                    (r1, owl_on_property, p1),
+                                    (r2, owl_all_values, y),
+                                    (r2, owl_on_property, p2),
+                                    (p1, rdfs_subprop, p2),
+                                ]);
+                            }
+                        }
+                    }
+                }
+
                 // cls-int1: x type ALL members → x type intersection class
                 for (cls, head, chain, members) in &intersection_classes {
                     for (&x, x_types) in &inst_types {
@@ -646,6 +882,53 @@ impl Reasoner {
                                 Vec::new()
                             };
                             emit((x, rdf_type, *cls), "cls-int1", &premises);
+                        }
+                    }
+                }
+
+                // cls-int2: x type intersection class → x type EVERY member
+                //
+                // The mirror of cls-int1, and the only high-count rule in the
+                // measured gap that produces genuinely new instance typings
+                // rather than schema. One step per member, each repeating the
+                // constructor triple and the chain, because a certificate step
+                // carries one conclusion.
+                for (cls, head, chain, members) in &intersection_classes {
+                    for &(x, c) in &type_idx {
+                        if c != *cls {
+                            continue;
+                        }
+                        let premises: Vec<Fact> = if certify {
+                            let mut v = vec![(*cls, owl_intersection, *head)];
+                            v.extend(chain.iter().copied());
+                            v.push((x, rdf_type, *cls));
+                            v
+                        } else {
+                            Vec::new()
+                        };
+                        for &m in members {
+                            emit((x, rdf_type, m), "cls-int2", &premises);
+                        }
+                    }
+                }
+
+                // cls-oo: every member of an owl:oneOf list is an instance of
+                // the enumerated class. The only rule here with no instance
+                // premise at all: an enumeration types its members on schema
+                // alone. A literal member is skipped for the same reason the
+                // four rules above skip one, since it would be the subject of
+                // the conclusion.
+                for (cls, head, chain, members) in &oneof_classes {
+                    let premises: Vec<Fact> = if certify {
+                        let mut v = vec![(*cls, owl_oneof, *head)];
+                        v.extend(chain.iter().copied());
+                        v
+                    } else {
+                        Vec::new()
+                    };
+                    for &m in members {
+                        if !is_literal(m) {
+                            emit((m, rdf_type, *cls), "cls-oo", &premises);
                         }
                     }
                 }
