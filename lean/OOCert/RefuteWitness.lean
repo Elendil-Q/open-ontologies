@@ -228,7 +228,17 @@ theorem no_violation_means_a_joint_model (G : List Triple)
 refutable then its closure contains a disjointness violation. So `cax-dw` is not
 merely sound for this fragment, it is the only way to be unsatisfiable in it, and
 a consumer who finds no violation has a positive result rather than a failure to
-find one. Same `owl:sameAs` hypothesis. -/
+find one. Same `owl:sameAs` hypothesis.
+
+Read "unsatisfiable" here as `Unsat`, which is the whole content of the
+statement and is narrower than a consumer's word for it. `Unsat` quantifies over
+`RefuteConditions`, and `RefuteConditions` reads `owl:disjointWith` and nothing
+else, so this theorem says `cax-dw` is the only clash IN THAT MODEL CLASS. It
+does not say a graph with no disjointness violation is consistent under OWL 2
+RL: sixteen further rules of the profile conclude `false` and none of them has a
+condition here, so a graph refutable only by `prp-irp` or `cls-nothing2` passes
+this test and is contradictory anyway. The positive result is "no clash of the
+one kind this layer can see", and it is worth having for exactly that. -/
 theorem unsat_means_a_violation (G : List Triple)
     (hsame : ∀ a b : Term, Der G ⟨a, V.sameAs, b⟩ → a = b) (h : Unsat G) :
     ∃ c1 c2 x : Term, Der G ⟨c1, RV.disjointWith, c2⟩ ∧ Der G ⟨x, V.type, c1⟩ ∧

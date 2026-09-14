@@ -20,6 +20,21 @@ All notable changes to Open Ontologies are documented here.
   trace. See docs/lean-certificates.md and decision 0002.
 
 ### Fixed
+- **The refutation layer counted the OWL 2 RL rules that conclude `false` as
+  sixteen, and there are seventeen.** The missing one is `dt-not-type`, from
+  Table 8 of OWL 2 Profiles, and the undercount reached a consumer: `oo-refute
+  check` told a caller whose refutation was rejected that "fifteen other OWL 2
+  RL clash rules have no condition in this checker", one fewer than the truth.
+  `lean/OOCert/Refute.lean` now carries the full list with the W3C table each
+  rule comes from, so the number can be re-counted rather than trusted, and it
+  states the split the number hides: of the sixteen this checker does not
+  implement, fifteen are expressible here and simply absent, while
+  `dt-not-type` cannot be stated at all, because `OOCert.Semantics` has no
+  datatype value space and says so. That is the same ground on which
+  `src/reason.rs` keeps the whole `dt-*` family out of the engine, and the
+  reason is now written where the count is instead of being inferable from
+  another file. Prose and one report string only; no theorem changed, and the
+  checker still implements exactly `cax-dw`.
 - **`sh:sparql` ignored `sh:prefixes` and merged every `sh:declare` in the
   shapes graph into one prologue.** A prefix bound to two namespaces emitted
   two `PREFIX` lines, SPARQL took the last, and which one won was decided by

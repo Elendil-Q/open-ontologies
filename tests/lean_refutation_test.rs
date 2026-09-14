@@ -1,10 +1,17 @@
 //! `oo-refute/1`: certifying that a graph has NO model.
 //!
-//! Sixteen rules in the OWL 2 RL profile conclude `false` rather than a triple.
-//! The derivation certificate cannot express that, because `Step.conclusion` is
-//! a `Triple` and `OOCert.certificate_sound` concludes `Entails`. There is no
-//! triple to conclude. `lean/OOCert/Refute.lean` adds the second format, with
-//! `cax-dw` as its one rule, and `OOCert.refutation_sound` proved about it.
+//! Seventeen rules in the OWL 2 RL profile conclude `false` rather than a
+//! triple; `lean/OOCert/Refute.lean` lists all seventeen with the W3C tables
+//! they come from. The derivation certificate cannot express that, because
+//! `Step.conclusion` is a `Triple` and `OOCert.certificate_sound` concludes
+//! `Entails`. There is no triple to conclude. `Refute.lean` adds the second
+//! format, with `cax-dw` as its one rule, and `OOCert.refutation_sound` proved
+//! about it. Of the sixteen it does not implement, fifteen are expressible in
+//! that layer and absent; `dt-not-type` is not expressible there at all,
+//! because `OOCert.Semantics` has no datatype value space, which is the same
+//! ground on which `the_rules_that_were_left_out_stay_out` in
+//! `reason_rl_coverage_test.rs` keeps the whole `dt-*` family out of the
+//! engine.
 //!
 //! # The two things this file exists to protect
 //!
@@ -324,9 +331,9 @@ fn the_guard_passes_when_nothing_is_refuted() {
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("\"refuted\":false"), "{out}");
     assert_eq!(field(&out, "theorem"), "OOCert.certificate_sound", "{out}");
-    // A pass is not a consistency proof. Only one of the sixteen OWL 2 RL clash
-    // rules is implemented, so "no clash found" is the honest wording and the
-    // report must use it.
+    // A pass is not a consistency proof. Only one of the seventeen OWL 2 RL
+    // rules that conclude `false` is implemented, so "no clash found" is the
+    // honest wording and the report must use it.
     assert!(
         field(&out, "means").contains("not a proof of consistency"),
         "the passing verdict must not be read as consistency: {out}"

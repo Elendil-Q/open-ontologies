@@ -3,12 +3,36 @@ import OOCert.Soundness
 /-!
 # `oo-refute/1`: certifying that a graph has NO model
 
-Sixteen rules in the OWL 2 RL profile conclude `false` rather than a triple.
-`cax-dw` is the first of them and the one with the most axioms waiting for it:
-given `c1 owl:disjointWith c2`, `x rdf:type c1` and `x rdf:type c2`, the graph
-is contradictory. The certificate format in `Rules.lean` cannot express that,
-because `Step.conclusion` is a `Triple` and `certificate_sound` concludes
+Seventeen rules in the OWL 2 RL profile conclude `false` rather than a triple.
+Counted off OWL 2 Web Ontology Language Profiles (Second Edition), W3C
+Recommendation 11 December 2012, section 4.3, the whole list is:
+
+| Table | Rules concluding `false` |
+| --- | --- |
+| 4, Equality | `eq-diff1`, `eq-diff2`, `eq-diff3` |
+| 5, Axioms about Properties | `prp-irp`, `prp-asyp`, `prp-pdw`, `prp-adp`, `prp-npa1`, `prp-npa2` |
+| 6, Classes | `cls-nothing2`, `cls-com`, `cls-maxc1`, `cls-maxqc1`, `cls-maxqc2` |
+| 7, Class Axioms | `cax-dw`, `cax-adc` |
+| 8, Datatypes | `dt-not-type` |
+
+The list is written out rather than summarised because the number alone is a
+claim nobody can re-check. Three plus six plus five plus two plus one is
+seventeen, out of the 78 rules named across Tables 4 to 9. Table 9, Schema
+Vocabulary, contributes none of them: all 20 of its rules conclude a triple, so
+the ones this project implements live in `Semantics.lean` as ordinary
+conditions.
+
+`cax-dw` is the one implemented here, and the one with the most axioms waiting
+for it: given `c1 owl:disjointWith c2`, `x rdf:type c1` and `x rdf:type c2`, the
+graph is contradictory. The certificate format in `Rules.lean` cannot express
+that, because `Step.conclusion` is a `Triple` and `certificate_sound` concludes
 `Entails`. There is no triple to conclude. This file adds the second format.
+
+Sixteen of the seventeen are rules this layer can state, and it states one of
+them, `cax-dw`. The seventeenth, `dt-not-type`, it cannot state at all. The
+distinction is drawn where the count is, below, because a reader who meets only
+the number will otherwise take "not implemented" and "not expressible" for the
+same thing, and they are different claims about this checker.
 
 ## Why the negative conditions live HERE and not in `Semantics.lean`
 
@@ -36,12 +60,40 @@ that reading `owl:disjointWith` as disjointness leaves no models, which is what
 an OWL 2 RL consumer means by "inconsistent" and is not the same sentence.
 
 `RefuteConditions` carries exactly one field, because exactly one rule is
-implemented. The other fifteen clash rules (`cax-adc`, `cls-com`,
-`cls-nothing2`, `cls-maxc1`, `prp-irp`, `prp-asyp`, `prp-pdw`, `prp-adp`,
-`prp-npa1`, `prp-npa2`, `eq-diff1`, `eq-diff2`, `eq-diff3` and the rest) each
-need their own condition and their own field, and none of them is here. A
-graph that only a missing rule could refute is not refutable by this checker,
-and the checker says so by rejecting, never by passing.
+implemented. The other sixteen fall into two groups, and the difference between
+them is the difference between work not done and work that cannot be done here.
+
+FIFTEEN are missing and expressible. They are `eq-diff1`, `eq-diff2`,
+`eq-diff3`, `prp-irp`, `prp-asyp`, `prp-pdw`, `prp-adp`, `prp-npa1`,
+`prp-npa2`, `cls-nothing2`, `cls-com`, `cls-maxc1`, `cls-maxqc1`, `cls-maxqc2`
+and `cax-adc`. Each needs its own field on `RefuteConditions` and its own
+constructor on `RefuteRule`, and none of them is here. Adding one is ordinary
+work: the condition is a sentence about `I.iext` and `I.cext`, which `Interp`
+already provides, and the four list-valued ones (`eq-diff2`, `eq-diff3`,
+`prp-adp`, `cax-adc`) read their members through `Chain` as `Model` already
+does for `owl:intersectionOf`. The three cardinality rules (`cls-maxc1`,
+`cls-maxqc1`, `cls-maxqc2`) would match `"0"^^xsd:nonNegativeInteger` by its
+spelling, as this layer matches every other term. That is sound and it is not
+complete: a graph writing the same value some other way would be missed, which
+is a rejection and never a false pass.
+
+ONE is not missing. `dt-not-type` fires when the data value of a literal falls
+outside the value space of the datatype it is typed with, and `Semantics.lean`
+has no value spaces to fall outside of. An `Interp` there is a domain, a
+denotation `ι : Term → D` and one ternary relation; a literal is its N-Triples
+spelling like any other term; and that file's "What is not here" section states
+the restriction and its consequence, that `Entails` must not be read as
+datatype-aware. No field added to `RefuteConditions` could cover the rule,
+because what it needs is absent from `Interp` rather than from the condition
+structure. Covering it means extending the signature with a datatype map and a
+lexical-to-value reading, which is a different piece of work from adding a
+clash rule and would change what every existing theorem quantifies over.
+`src/reason.rs` keeps the whole `dt-*` family out of the engine on the same
+ground, and `tests/reason_rl_coverage_test.rs` pins that exclusion.
+
+A graph that only a missing rule could refute is not refutable by this checker,
+whichever group the rule falls in, and the checker says so by rejecting, never
+by passing.
 
 ## The explosion, and what a consumer must do about it
 
