@@ -59,13 +59,16 @@ one with its rule, conclusion and premises; `2` a file could not be read or pars
 
 ## The files
 
-Two tab-separated files. Terms are in N-Triples spelling, exactly as the engine's interner holds
+Tab-separated. Terms are in N-Triples spelling, exactly as the engine's interner holds
 them, so a term is spelled identically wherever it appears and tabs and newlines cannot occur
 inside one.
 
 - `asserted.tsv`: one triple per line, `s TAB p TAB o`. Every triple the run started from.
 - `derivations.tsv`: one step per line, `rule TAB s TAB p TAB o` for the conclusion, then the
   premises as further triples, in the order documented per rule in `lean/OOCert/Rules.lean`.
+- `refutation.tsv`, only when the run found a contradiction it can certify: the line `oo-refute/1`,
+  then the derivation steps that reached the clash in the same spelling as `derivations.tsv`, then
+  one `refute TAB rule` line with the clash rule's premises. See the refutation section below.
 
 ## What is proved
 
@@ -141,6 +144,123 @@ repository's RDF was never walked and was excluded without being named. Widening
 surfaced the literal-subject defect in `prp-symp`, `prp-inv1`, `prp-inv2` and `eq-sym`, which lived
 in `benchmark/`.
 
+## Refutations: certifying that a graph has NO model
+
+A derivation certificate says a triple follows. A *refutation* says the graph contradicts itself, and
+it needs a second format because there is no triple to conclude. `lean/OOCert/Refute.lean` holds it,
+`oo-refute` checks it, and `OOCert.refutation_sound` is proved about it.
+
+The reasoner now writes one. `reason --certificate DIR` looks for a contradiction in the closure it
+reached and, when it finds one the checker can judge, writes `DIR/refutation.tsv` beside the other
+two files.
+
+```bash
+open-ontologies reason --profile owl-rl --certificate /tmp/cert
+cd lean
+lake exe oo-refute check /tmp/cert/asserted.tsv /tmp/cert/refutation.tsv
+lake exe oo-refute guard /tmp/cert/asserted.tsv /tmp/cert/derivations.tsv /tmp/cert/refutation.tsv
+```
+
+`check` exits 0 when the refutation is valid, which is a good exit code reporting bad news. `guard`
+runs both checkers and REFUSES the derivation certificate when the refutation succeeds, because over
+a refuted graph every triple is entailed under the disjointness reading and an ordinary certificate
+carries no information (`OOCert.a_certificate_adds_nothing_when_the_graph_is_refuted`). `oo-cert`
+will still accept that certificate and will still be telling the truth: its verdict quantifies over
+a model class that ignores disjointness, and that class is never empty.
+
+The response gains an `inconsistency` object:
+
+```json
+{
+  "inconsistency": {
+    "found": true,
+    "verdict": "clash_found_by_this_engine",
+    "checked_by_lean": false,
+    "by_rule": {"cax-dw": 1},
+    "refutation": {
+      "written": true,
+      "rule": "cax-dw",
+      "prefix": 2,
+      "verdict": "refutation_written_not_yet_checked",
+      "check_with": "cd lean && lake exe oo-refute check /tmp/cert/asserted.tsv /tmp/cert/refutation.tsv"
+    }
+  }
+}
+```
+
+**Read the two verdicts apart.** `clash_found_by_this_engine` is this engine saying so, with nothing
+behind it. `unsatisfiable_under_disjointness` is what `oo-refute` prints when it has ACCEPTED a
+refutation, and the engine never states it.
+`tests/lean_refutation_producer_test.rs::the_engine_never_states_the_checkers_verdict` fails if any
+string in the response is ever that verdict, on the pattern the Horn layer's laundering guard set.
+
+### Which rules conclude `false`, and which of them can be certified
+
+Seventeen rules of the OWL 2 RL profile conclude `false` rather than a triple. None of them is in the
+forward-chaining table, and none could be: a certificate step's conclusion is a triple. They are
+looked for once, after the fixpoint.
+
+| rule | detected | certifiable |
+|---|---|---|
+| `cax-dw` (`c1 owl:disjointWith c2`, `x a c1`, `x a c2`) | yes | **yes** |
+| `cls-com` (`owl:complementOf`) | yes | no |
+| `cls-nothing2` (`x a owl:Nothing`) | yes | no |
+| `cls-maxc1` (`owl:maxCardinality 0`) | yes | no |
+| `eq-diff1` (`owl:sameAs` and `owl:differentFrom`) | yes | no |
+| `prp-irp` (`owl:IrreflexiveProperty`) | yes | no |
+| `prp-asyp` (`owl:AsymmetricProperty`) | yes | no |
+| `prp-pdw` (`owl:propertyDisjointWith`) | yes | no |
+| `prp-npa1`, `prp-npa2` (negative property assertions) | yes | no |
+| `cax-adc`, `prp-adp`, `eq-diff2`, `eq-diff3` | no, they read an RDF list | no |
+| `cls-maxqc1`, `cls-maxqc2` | no, qualified cardinality is not implemented | no |
+| `dt-not-type` | no, an ill-typed literal needs a datatype value space | no |
+
+Only `cax-dw` is certifiable, and the reason belongs to the checker rather than to the engine.
+`OOCert.RefuteConditions` carries exactly one semantic field, for `cax-dw`, and `oo-refute` refuses a
+refutation naming any other clash rule with exit 2 rather than guessing at it. So the producer writes
+a refutation for that rule alone. For the other nine it detects, the response says a clash was found
+and `"refutation": {"written": false}` with the reason. Every rule the engine does not look for is
+listed in `rules_not_detected` with its own reason, so a run with no clash is never a consistency
+result: most of the table was not tried.
+
+`lean/OOCert/Refute.lean` says sixteen rules conclude `false`. Counted against the W3C tables it is
+seventeen; the difference is `dt-not-type`, which that file excludes elsewhere on the stated ground
+that the Lean semantics has no datatype value space. Nothing computes with the number.
+
+### The limit, which is real
+
+`cax-dw` needs an INDIVIDUAL in two disjoint classes. A TBox that is unsatisfiable with no individual
+asserted cannot be seen this way at all. `:Lion rdfs:subClassOf :Carnivore, :Herbivore` with those
+two disjoint makes `:Lion` unsatisfiable, and until something is asserted to BE a `:Lion` the
+rule-based route has nothing to fire on. That is a boundary of forward chaining, not a defect in the
+producer.
+
+The SHIQ tableau (`--profile owl-dl`, `src/tableaux.rs`) does see it, and reports
+`unsatisfiable_classes`. **Its answer carries no certificate**, which its own report already states
+(`"not_covered": "unsatisfiability and inconsistency carry no certificate"`). No refutation is
+emitted from it, and the obstruction is precise rather than a matter of effort:
+
+- `oo-refute/1` can express exactly one contradiction, `cax-dw`, whose three premises must each be
+  asserted or concluded by a step of the 29-rule forward-chaining prefix. A tableau clash reached
+  through `∃`/`∀` expansion, node merging or a cardinality bound is not three triples of that shape
+  and there is nothing in the format to write it as.
+- Where a tableau clash IS a `cax-dw` instance over triples the forward-chaining rules can reach, the
+  rule-based producer has already found it, so the tableau adds nothing that can be certified.
+- Feeding the tableau's inferred subsumptions back into the store and re-reasoning would let more
+  clashes surface, but those subsumptions would then appear in `asserted.tsv` as axioms with nothing
+  marking them derived. That is the assumption-laundering failure this layer exists to prevent, so it
+  is not done.
+- Adding a clash rule to the format means a new field in `OOCert.RefuteConditions`, a new arm in
+  `OOCert.checkRefuteStep` and a new soundness case. That is a change to `lean/`, not to the producer.
+
+`tests/lean_refutation_producer_test.rs::the_tbox_only_case_is_invisible_here_and_the_tableau_sees_it`
+computes this boundary on one ontology rather than asserting it here.
+
+`onto_defects` asks a different question again, and the three do not substitute for one another.
+It checks the ontology against ITSELF with no data present, so `disjoint_with_ancestor` and
+`inherited_disjoint` catch the schema that will contradict itself the moment an instance arrives.
+This layer needs the instance to be there. The tableau needs neither and certifies nothing.
+
 ## User-written rules
 
 The twenty built-in rules were twenty arms in the checker, which does not extend to rules you write.
@@ -189,6 +309,18 @@ Stated rather than discovered later.
   but if you materialise into a store that already held inferences they appear in `asserted.tsv` as
   assumptions with nothing marking them derived. Use `inference_graph: true` (decision 0001) when
   that distinction matters.
+- **No clash found is not consistency.** Seven of the seventeen clash rules are not looked for at
+  all and eight of the ten that are cannot be certified, so a clean `reason` run means "none of the
+  ten rules tried fired", never "this ontology is consistent". A rejected refutation means the same:
+  `oo-refute`'s own report says so in every verdict it prints.
+- **One clash is reported per refutation, and only the first certifiable one is written.** A graph
+  with twenty disjointness clashes gets one `refutation.tsv`. `clash_count` and `by_rule` carry the
+  rest; ten are listed in full under `clashes`. Refuting a graph once is enough to invalidate every
+  derivation over it, so a second refutation would add nothing.
+- **The refutation's derivation prefix is not byte-stable across runs.** Which of several valid
+  derivations of a premise the fixpoint recorded first depends on the same hash iteration order that
+  already decides the line order of `derivations.tsv`. The contradiction itself IS stable: clashes
+  are sorted on their N-Triples spelling before one is chosen.
 - **A SHACL report double-counts a node selected by two target declarations of one shape.** Both
   `focus_nodes` and `violation_count` are affected. Collapsing identical results is not the fix:
   SHACL emits one result per SPARQL solution, pyshacl does too, and deduplicating breaks an exact

@@ -5,6 +5,47 @@ All notable changes to Open Ontologies are documented here.
 ## [Unreleased]
 
 ### Added
+- **The refutation checker has a producer.** `lean/OOCert/Refute.lean` has
+  checked refutations since it landed and nothing in `src/` could write one: a
+  checker with no producer, which is the same shape of defect as a gate that
+  cannot fail. `reason --certificate DIR` (and `onto_reason` with
+  `certificate_dir`) now looks for a contradiction in the closure the fixpoint
+  reached and writes `refutation.tsv` beside `asserted.tsv` and
+  `derivations.tsv`, in the `oo-refute/1` format, with the minimal derivation
+  prefix that reached the clash. `lake exe oo-refute check` accepts it and
+  `oo-refute guard` refuses the derivation certificate over the same graph,
+  which is what `OOCert.a_certificate_adds_nothing_when_the_graph_is_refuted`
+  says to do.
+- **Ten of the seventeen OWL 2 RL rules that conclude `false` are detected, and
+  exactly one is certifiable.** `cax-dw`, `cls-com`, `cls-nothing2`,
+  `cls-maxc1`, `eq-diff1`, `prp-irp`, `prp-asyp`, `prp-pdw`, `prp-npa1` and
+  `prp-npa2` are looked for after the fixpoint. Only `cax-dw` gets a refutation
+  file, because `OOCert.RefuteConditions` carries a semantic condition for that
+  rule alone and `oo-refute` refuses a refutation naming any other with exit 2.
+  The other nine report `clash_found_by_this_engine` and write nothing, and the
+  seven not looked for at all (`cax-adc`, `prp-adp`, `eq-diff2`, `eq-diff3`,
+  `cls-maxqc1`, `cls-maxqc2`, `dt-not-type`) are listed in the response with the
+  reason, so a clean run is never read as a consistency result.
+- **The two verdicts are kept apart by a test.** `clash_found_by_this_engine` is
+  the engine's word and `unsatisfiable_under_disjointness` is what `oo-refute`
+  prints for an ACCEPTED refutation.
+  `tests/lean_refutation_producer_test.rs::the_engine_never_states_the_checkers_verdict`
+  walks every string in the response and fails if the engine ever states the
+  checker's verdict or names its soundness theorem, on the pattern
+  `a_user_rule_never_earns_the_absolute_verdict` set for the Horn layer.
+  `a_consistent_ontology_is_not_refuted` is the test that matters most: no
+  refutation is produced for a consistent ontology and a hand-written one over
+  it is rejected.
+- **The limit is stated and computed, not papered over.** `cax-dw` needs an
+  INDIVIDUAL in two disjoint classes, so a TBox unsatisfiable with no individual
+  asserted is invisible to the rule-based route.
+  `the_tbox_only_case_is_invisible_here_and_the_tableau_sees_it` runs one
+  ontology through both paths: `owl-rl` finds nothing and `owl-dl` reports the
+  unsatisfiable class. No refutation is emitted from the tableau, and the
+  obstruction is written down: `oo-refute/1` can express one contradiction,
+  `cax-dw`, over triples the forward-chaining prefix can reach, and a clash
+  reached through `∃`/`∀` expansion or a cardinality bound has no form in it.
+  Widening that is a change to `lean/`.
 - **First-order export, over the translation a machine-checked adequacy theorem
   is about.** `fol --out DIR --format tptp|clif` (also `onto_fol_export` and
   batch `fol`) writes the loaded ontology as TPTP FOF or as ISO/IEC 24707

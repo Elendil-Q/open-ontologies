@@ -431,6 +431,11 @@ enum Commands {
         /// Write a derivation certificate (asserted.tsv + derivations.tsv)
         /// to this directory. `lean/` holds a checker for it whose soundness
         /// is a machine-checked theorem; see docs/lean-certificates.md.
+        ///
+        /// When the run also finds a contradiction that the checker can judge,
+        /// a refutation.tsv lands here too, for `lake exe oo-refute check`.
+        /// Only `cax-dw` is certifiable; other clash rules are reported in the
+        /// response as found by this engine and nothing is written for them.
         #[arg(long)]
         certificate: Option<String>,
         /// Evaluate a SUPPLIED Horn rule table instead of a built-in profile,
