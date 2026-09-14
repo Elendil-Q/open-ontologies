@@ -135,10 +135,15 @@ a Herbrand witness that carries no `rdf:type` triple has `IC` empty, so
 Table 5.8's backward direction forces `rdfs:subClassOf` and `rdfs:subPropertyOf`
 triples the witness does not contain.
 
-Exactly one of them has a conforming replacement, and it is in
-`W3CWitness.lean`: `the_natural_avf2_direction_is_not_w3c_entailed` refutes the
-reversed `scm-avf2` with a seventeen-element model that meets the quoted cells.
-The others are open, and the obstruction is stated rather than worked around:
+Two of them are closed over the conforming class, both in `W3CWitness.lean`.
+`the_natural_avf2_direction_is_not_w3c_entailed` refutes the reversed `scm-avf2`
+with a seventeen-element model that meets the quoted cells, and it is the only
+one that needed a new structure built for it. `not_everything_is_w3c_entailed`
+is the other, and it came free: over the EMPTY graph every antecedent of `W3C` is
+false and `IP := fun _ => False` makes the four backward conditions vacuous, so
+the same interpretation serves.
+
+The rest are open, and the obstruction is stated rather than worked around:
 `RefuteWitness.lean`'s `Der` cannot carry Table 5.8's backward halves, because a
 constructor whose premise contains `∀ x, Der G ⟨x, type, a⟩ → Der G ⟨x, type, b⟩`
 puts `Der` to the left of an arrow and Lean rejects the strictly negative
