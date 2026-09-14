@@ -31,20 +31,46 @@
 
 ---
 
-Ask a reasoner why it reached a conclusion and it will usually tell you to trust it.
+Ask a reasoner why it believes something and it will tell you to trust it.
 
-This one hands you the working. An inference comes back with a derivation certificate. A
-satisfiable ontology comes back with a model. An inconsistent one comes back with a refutation.
-Each is replayed by a small checker written in Lean 4, in core Lean with no Mathlib, whose
-theorems say the conclusion holds in **every** model of what you asserted.
-
-You do not have to trust this engine. You can check what it did.
+This one hands you the proof, and refuses a fake one. Run it yourself; the three files are in
+the repository and the output below is what the checker printed, trimmed to the fields that matter.
 
 ```bash
-open-ontologies reason --profile owl-rl --certificate ./cert
-cd lean && lake exe oo-cert ../cert/asserted.tsv ../cert/derivations.tsv
-# {"ok":true,"verdict":"entailed","theorem":"OOCert.certificate_sound"}
+$ cd lean && lake build            # builds the checkers, core Lean 4, no Mathlib
+$ F=../tests/fixtures/horn
+
+$ lake exe oo-horn check $F/builtin_rules.tsv $F/asserted.tsv $F/good.tsv
+{"ok":true,"verdict":"entailed","theorem":"OOCert.entails_of_builtin_horn",
+ "means":"every conclusion is true in every model of the asserted graph"}
+
+$ lake exe oo-horn check $F/builtin_rules.tsv $F/asserted.tsv $F/bad_conclusion.tsv
+{"ok":false}                        # one IRI in the conclusion changed. exit 1.
+
+$ lake exe oo-horn check $F/user_rules.tsv $F/asserted.tsv $F/good.tsv
+{"ok":true,"verdict":"entailed_under_supplied_rules","theorem":"OOCert.horn_certificate_sound"}
 ```
+
+The third line is the one that matters. Same inference, but one of the rules was written by you,
+so it is an assumption the certificate carries and not a fact it establishes. The verdict word
+changes, and a test fails if it ever stops changing.
+
+```mermaid
+flowchart LR
+  E["Untrusted engine<br/>Rust, or the pure-Python one"] -->|certificate| C["Verified checker<br/>core Lean 4"]
+  I["Isabelle/HOL<br/>independent second kernel"] -.->|same bytes| C
+  C -->|built-in rules| A["entailed"]
+  C -->|your rules| B["entailed_under_supplied_rules"]
+  C -->|forged| X["refused, exit 1"]
+```
+
+**What this discipline has caught, in one week of running it against this engine.** Five
+description-logic false cleans, each an inconsistent ontology reported consistent with full
+confidence. A rule that could conclude a triple no serialiser can write, reachable from ordinary
+OWL, which left the store non-deterministic: three runs of one input kept 40, 9 and 24 inferences.
+And two independently verified kernels disagreeing on 47 of 1,718 certificates, all in the safe
+direction, tracing to a gap in the certificate format that neither proof could see. Every one of
+those had passed every test that existed before.
 
 ## What is actually proved
 
@@ -64,11 +90,8 @@ is a proxy that rises as the slice grows, so a retriever tuned on it learns to f
 than the right thing. Entailment preservation is the property, it is decidable here, and it
 carries a certificate per claim. See [decision 0007](docs/decisions/0007-a-slice-preserves-a-conclusion-or-it-does-not.md).
 
-The Lean is not the only checker. An independent formalisation of the same certificate checker
-in Isabelle/HOL, written from the W3C specifications with the Lean deliberately unread, lives in
-[isabelle/](isabelle/) and is run over the same bytes. On its first run it disagreed with the Lean
-on 47 of 1,718 certificates, all in the safe direction, and the cause was a gap in the certificate
-format that neither proof could see. A second kernel exists to catch what one cannot, and it did.
+The second kernel is in [isabelle/](isabelle/), written from the W3C specifications with the Lean
+deliberately unread, and it is run over the same bytes on every differential run.
 
 The discipline matters more than the machinery, and it runs through all of it.
 
