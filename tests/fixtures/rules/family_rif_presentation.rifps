@@ -1,0 +1,11 @@
+(* The presentation syntax, which this importer does NOT read. It is a
+   different grammar, and a half-written parser for it would mis-read rules
+   rather than refuse them. *)
+Document(
+  Prefix(fam <http://example.org/family#>)
+  Group(
+    Forall ?x ?y ?z (
+      ?x[fam:hasUncle -> ?z] :- And( ?x[fam:hasParent -> ?y] ?y[fam:hasBrother -> ?z] )
+    )
+  )
+)

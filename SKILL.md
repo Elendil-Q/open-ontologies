@@ -2,7 +2,7 @@
 name: open-ontologies
 version: "0.5.1"
 description: >
-  AI-native ontology engineering using 109 MCP tools backed by an in-memory Oxigraph triple store.
+  AI-native ontology engineering using 110 MCP tools backed by an in-memory Oxigraph triple store.
   Build, validate, query, and govern RDF/OWL ontologies with a generate-validate-iterate loop.
   Use when building ontologies, knowledge graphs, RDF data, SPARQL queries, BORO/4D modeling,
   SHACL validation, clinical terminology mapping, ingesting from CSV/JSON/Parquet/XLSX or

@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  A rule whose conclusion is not a permitted form: an Equal in the `then`.
+
+  Deriving an equality would require every later step to substitute equals for
+  equals. The Horn checker matches RDF terms and has no congruence, so a table
+  cannot hold it. The second rule is representable, so a partial import has
+  something to keep.
+-->
+<Document xmlns="http://www.w3.org/2007/rif#">
+  <payload>
+    <Group>
+
+      <sentence>
+        <Forall>
+          <declare><Var>x</Var></declare>
+          <formula>
+            <Implies>
+              <id><Const type="http://www.w3.org/2007/rif#iri">http://example.org/family#one-true-supplier</Const></id>
+              <if>
+                <Member>
+                  <instance><Var>x</Var></instance>
+                  <class><Const type="http://www.w3.org/2007/rif#iri">http://example.org/family#Supplier</Const></class>
+                </Member>
+              </if>
+              <then>
+                <Equal>
+                  <left><Var>x</Var></left>
+                  <right><Const type="http://www.w3.org/2007/rif#iri">http://example.org/family#acme</Const></right>
+                </Equal>
+              </then>
+            </Implies>
+          </formula>
+        </Forall>
+      </sentence>
+
+      <sentence>
+        <Forall>
+          <declare><Var>x</Var></declare>
+          <formula>
+            <Implies>
+              <id><Const type="http://www.w3.org/2007/rif#iri">http://example.org/family#supplier</Const></id>
+              <if>
+                <Member>
+                  <instance><Var>x</Var></instance>
+                  <class><Const type="http://www.w3.org/2007/rif#iri">http://example.org/family#Supplier</Const></class>
+                </Member>
+              </if>
+              <then>
+                <Member>
+                  <instance><Var>x</Var></instance>
+                  <class><Const type="http://www.w3.org/2007/rif#iri">http://example.org/family#Compliant</Const></class>
+                </Member>
+              </then>
+            </Implies>
+          </formula>
+        </Forall>
+      </sentence>
+
+    </Group>
+  </payload>
+</Document>

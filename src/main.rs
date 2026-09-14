@@ -483,6 +483,39 @@ enum Commands {
         #[arg(long, default_value_t = 0)]
         goals_skip_columns: usize,
     },
+
+    /// Read rules written in a STANDARD rule syntax into the `rules.tsv` table
+    /// `reason --rules` evaluates and `oo-horn check` verifies.
+    ///
+    /// Every rule imported is a rule you wrote, so a certificate over the table
+    /// this produces can only ever earn `entailed_under_supplied_rules`: true in
+    /// every model of the asserted graph THAT ALSO SATISFIES YOUR RULES. The
+    /// rules are assumed and never checked.
+    RulesImport {
+        /// `swrl` for SWRL rules encoded in RDF, `rif` for RIF Core in its XML
+        /// syntax. Only part of each language is representable as Horn rules
+        /// over triple patterns; the response states the exact fragment and
+        /// names every rule it refused.
+        #[arg(long)]
+        from: String,
+        /// The document to read. Required for `rif`. Optional for `swrl`:
+        /// without it the LOADED graph is read; with it the file is parsed into
+        /// a store of its own, so importing rules never changes what is loaded.
+        #[arg(long)]
+        file: Option<String>,
+        /// Where to write the table. Without it nothing is written and the
+        /// table comes back in the response under `rules_tsv`.
+        #[arg(long)]
+        out: Option<String>,
+        /// Import the rules that CAN be represented even though others cannot.
+        /// Off by default, and deliberately: a table that quietly lost a rule
+        /// still reaches a fixpoint and still produces a certificate that
+        /// checks green, which is a sound proof about a rule set nobody wrote.
+        /// With this flag the import succeeds, the result carries
+        /// `certifies_a_weaker_rule_set: true`, and every lost rule is named.
+        #[arg(long)]
+        allow_partial: bool,
+    },
     /// Full pipeline: ingest → SHACL → reason
     Extend {
         data_path: String,
@@ -703,6 +736,25 @@ impl Commands {
                     a.push(goals_skip_columns.to_string());
                 }
                 cmd("fol", a)
+            }
+
+            Commands::RulesImport { from, file, out, allow_partial } => {
+                // Proxied because `--from swrl` with no `--file` reads the
+                // LOADED graph, which lives in the daemon. Running it locally
+                // would read a different store and import a different rule set.
+                let mut a = vec!["--from".into(), from.clone()];
+                if let Some(f) = file {
+                    a.push("--file".into());
+                    a.push(absolutize(f));
+                }
+                if let Some(o) = out {
+                    a.push("--out".into());
+                    a.push(absolutize(o));
+                }
+                if *allow_partial {
+                    a.push("--allow-partial".into());
+                }
+                cmd("rules-import", a)
             }
             Commands::Shacl { shapes } => cmd("shacl", vec![absolutize(shapes)]),
             Commands::Status => cmd("status", vec![]),
@@ -2433,6 +2485,21 @@ async fn async_main() -> anyhow::Result<()> {
                 .unwrap_or_else(|e| serde_json::json!({"error": e.to_string()}).to_string()),
                 Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
             };
+            output_result_checked(&result, cli.pretty);
+        }
+
+        Commands::RulesImport { from, file, out, allow_partial } => {
+            let (_db, graph) = setup(&cli.data_dir)?;
+            let result = open_ontologies::rulesyntax::run_import(
+                &graph,
+                &from,
+                file.as_deref().map(std::path::Path::new),
+                out.as_deref().map(std::path::Path::new),
+                allow_partial,
+            )
+            .unwrap_or_else(|e| serde_json::json!({"error": e.to_string()}).to_string());
+            // A refused rule puts `error` in the response, so an import that
+            // lost anything exits non-zero and a script cannot walk past it.
             output_result_checked(&result, cli.pretty);
         }
         Commands::Extend {

@@ -64,6 +64,9 @@ pub mod plugins;
 pub mod poincare;
 pub mod reason;
 pub mod reason_incremental;
+/// Standard rule syntaxes (SWRL, RIF Core) into the Horn rule table
+/// `reason::run_horn` evaluates and `lean/`'s `oo-horn` checks.
+pub mod rulesyntax;
 pub mod registry;
 pub mod repo;
 pub mod runtime;

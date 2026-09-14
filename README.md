@@ -40,7 +40,7 @@
 
 ---
 
-Open Ontologies is a **Rust MCP server** and **desktop Studio** for AI-native ontology engineering. It exposes **109 tools** that let Claude build, validate, query, diff, lint, version, reason over, align, plan, certify, and govern RDF/OWL ontologies using an in-memory Oxigraph triple store, alongside a three-layer Dynamics → Causal → Planner architecture, a marketplace of 33 standard ontologies, clinical crosswalks, semantic embeddings, and a lineage audit trail. A default build advertises all 109 tools. Eight of them need an optional Cargo feature and return an error without it: four need `embeddings`, two need `plugins`, and two need `postgres` or `duckdb`. The published binaries and the GHCR image are built with the default feature set, so they do not carry those eight. Build from source with `cargo build --release --features embeddings,plugins,sql` to get them.
+Open Ontologies is a **Rust MCP server** and **desktop Studio** for AI-native ontology engineering. It exposes **110 tools** that let Claude build, validate, query, diff, lint, version, reason over, align, plan, certify, and govern RDF/OWL ontologies using an in-memory Oxigraph triple store, alongside a three-layer Dynamics → Causal → Planner architecture, a marketplace of 33 standard ontologies, clinical crosswalks, semantic embeddings, and a lineage audit trail. A default build advertises all 110 tools. Eight of them need an optional Cargo feature and return an error without it: four need `embeddings`, two need `plugins`, and two need `postgres` or `duckdb`. The published binaries and the GHCR image are built with the default feature set, so they do not carry those eight. Build from source with `cargo build --release --features embeddings,plugins,sql` to get them.
 
 The **Studio** wraps the engine in a visual desktop environment: virtualized ontology tree with hierarchy lines, breadcrumb navigation, and connection explorer; AI chat panel with `/build` (IES-level deep) and `/sketch` (quick prototype) commands; Protégé-style property inspector; and lineage viewer.
 
@@ -878,7 +878,7 @@ The same tool, applied to any ontology, produces the same kind of improvement. T
 
 ## Tools
 
-109 tools organized by function, available as MCP tools (prefixed `onto_`) and CLI subcommands. A default build advertises all 109. Eight require an optional Cargo feature at call time: `embed`, `search`, `similarity` and `hnsw_build` need `embeddings`; `plugin_list` and `plugin_call` need `plugins`; `import-schema` and `sql-ingest` need `postgres` or `duckdb`.
+110 tools organized by function, available as MCP tools (prefixed `onto_`) and CLI subcommands. A default build advertises all 110. Eight require an optional Cargo feature at call time: `embed`, `search`, `similarity` and `hnsw_build` need `embeddings`; `plugin_list` and `plugin_call` need `plugins`; `import-schema` and `sql-ingest` need `postgres` or `duckdb`.
 
 | Category | Tools | Purpose |
 | --- | --- | --- |
@@ -947,7 +947,7 @@ flowchart TD
             REST["REST API\n/api/query · /api/update\n/api/save · /api/load · /api/lineage"]
         end
 
-        subgraph ToolGroups["109 Tools"]
+        subgraph ToolGroups["110 Tools"]
             direction LR
             Core["Core\nvalidate · load · save · clear\nstats · query · diff · lint\nconvert · status"]
             DataPipe["Data Pipeline\nmap · ingest · shacl\nreason · extend · import-schema"]
@@ -1018,6 +1018,29 @@ the checker cannot judge would be a certificate-shaped object that certifies
 nothing. `cax-dw` needs an individual in two disjoint classes, so a TBox that is
 unsatisfiable with no individual asserted is invisible to the rule-based route:
 the `owl-dl` tableau sees that case and its answer carries no certificate.
+### Rules you wrote
+
+`reason --rules TABLE --certificate DIR` evaluates a rule table you supply and
+writes a certificate `lake exe oo-horn check` verifies against
+`OOCert.horn_certificate_sound`, one theorem proved for every rule table at
+once. `rules-import --from swrl` reads SWRL rules out of a loaded ontology and
+`--from rif` reads RIF Core out of its XML syntax, so the table need not be
+hand-written.
+
+Only a FRAGMENT of each language is a Horn table over triple patterns. SWRL
+built-in atoms, same-individual and different-individual atoms and data ranges
+are refused; RIF equality, `External`, `Expr`, `rif:local` constants, list terms
+and the presentation syntax are refused. Each refusal is named and counted, and
+by default one refusal fails the whole import: a rule set that quietly lost half
+its rules still reaches a fixpoint and its certificate still checks green, which
+is a sound proof about a rule set nobody wrote.
+
+A rule you supply is an assumption nobody checked, so a certificate over it
+earns `entailed_under_supplied_rules` — true in every model of the asserted
+graph **that also satisfies your rules** — and never the `entailed` that only
+the built-in table earns. Details in
+[docs/rule-syntax-front-ends.md](docs/rule-syntax-front-ends.md) and
+[decision 0003](docs/decisions/0003-a-rule-is-data-and-an-assumption-is-not-a-fact.md).
 
 ### Studio
 
@@ -1104,6 +1127,7 @@ flowchart TD
 | Schema Alignment | [docs/alignment.md](docs/alignment.md) |
 | SHIQ Reasoning | [docs/reasoning.md](docs/reasoning.md) |
 | Derivation certificates, Lean checker | [docs/lean-certificates.md](docs/lean-certificates.md) |
+| SWRL and RIF Core rule front ends | [docs/rule-syntax-front-ends.md](docs/rule-syntax-front-ends.md) |
 | Semantic Embeddings | [docs/embeddings.md](docs/embeddings.md) |
 | Clinical Crosswalks | [docs/clinical.md](docs/clinical.md) |
 | IES Ecosystem | [docs/ies-ecosystem.md](docs/ies-ecosystem.md) |

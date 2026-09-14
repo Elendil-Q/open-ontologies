@@ -99,6 +99,7 @@ impl BatchRunner {
             "lint" => self.exec_lint(&cmd.args),
             "reason" => self.exec_reason(&cmd.args),
             "fol" => self.exec_fol(&cmd.args),
+            "rules-import" | "rules_import" => self.exec_rules_import(&cmd.args),
             "shacl" => self.exec_shacl(&cmd.args),
             // The CLI subcommand is spelled with a hyphen and this arm accepted
             // only the underscore, so every documented invocation was rejected
@@ -300,6 +301,29 @@ impl BatchRunner {
             syntax,
             goals.as_deref().map(std::path::Path::new),
             skip,
+        )
+        .unwrap_or_else(|e| json!({"error": e.to_string()}).to_string());
+        serde_json::from_str(&result).unwrap_or(json!({"raw": result}))
+    }
+
+    /// `--from swrl` with no `--file` reads the loaded graph, which is why
+    /// this command is proxied to the daemon rather than run locally.
+    fn exec_rules_import(&self, args: &[String]) -> Value {
+        let Some(from) = Self::flag_value(args, "--from") else {
+            return json!({
+                "error": "rules-import needs --from: 'swrl' (SWRL rules encoded in RDF) or 'rif' \
+                          (RIF Core, XML syntax)"
+            });
+        };
+        let file = Self::flag_value(args, "--file");
+        let out = Self::flag_value(args, "--out");
+        let allow_partial = args.iter().any(|a| a == "--allow-partial");
+        let result = crate::rulesyntax::run_import(
+            &self.graph,
+            &from,
+            file.as_deref().map(std::path::Path::new),
+            out.as_deref().map(std::path::Path::new),
+            allow_partial,
         )
         .unwrap_or_else(|e| json!({"error": e.to_string()}).to_string());
         serde_json::from_str(&result).unwrap_or(json!({"raw": result}))

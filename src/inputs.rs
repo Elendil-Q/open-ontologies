@@ -251,6 +251,28 @@ pub struct OntoVocabCheckInput {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct OntoRulesImportInput {
+    /// Source rule syntax: `swrl` for SWRL rules encoded in RDF, `rif` (or
+    /// `rif-core`) for RIF Core in its normative XML syntax. The presentation
+    /// syntax is not read.
+    pub from: String,
+    /// Document to read. Required for `rif`. Optional for `swrl`: without it
+    /// the LOADED graph is read; with it the file is parsed into a store of its
+    /// own, so importing rules never changes what is loaded.
+    pub file: Option<String>,
+    /// Where to write the `rules.tsv`. Without it nothing is written and the
+    /// table is returned under `rules_tsv`.
+    pub out: Option<String>,
+    /// Import the rules that CAN be represented even though others cannot.
+    /// Default false, and deliberately: a table that quietly lost a rule still
+    /// reaches a fixpoint and still produces a certificate that checks green,
+    /// which is a sound proof about a rule set nobody wrote. Set true and the
+    /// import succeeds, `certifies_a_weaker_rule_set` is true, and every rule
+    /// that went is named with the construct that stopped it.
+    pub allow_partial: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct OntoReasonInput {
     /// Reasoning profile: rdfs (default), owl-rl
     pub profile: Option<String>,
