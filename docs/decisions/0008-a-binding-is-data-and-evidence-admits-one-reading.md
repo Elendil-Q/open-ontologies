@@ -3,14 +3,18 @@
 - **Status**: implemented · `lean/OOCert/Horn.lean`, where `bindingWellFormed` is a conjunct of
   `checkHornStep`, and `wellFormed_determines_instantiation` is the theorem that says what it
   buys · `horn_certificate_sound`, `horn_certificate_sound_fo` and `SatRuleFO.to_SatRule` are
-  unchanged in statement and in axiom footprint · `isabelle/OO_Check.thy` is UNTOUCHED, because
-  it was written independently and that independence is the whole value · the refusal can fail
-  in Lean
+  unchanged in statement and in axiom footprint, and the new material adds no axiom to either:
+  it is free of `Classical.choice`, which `horn_certificate_sound` uses · nothing under
+  `isabelle/` except its README is touched, and `OO_Check.thy` in particular is UNTOUCHED,
+  because it was written independently and that independence is the whole value · the refusal
+  can fail in Lean
   (`rejects_duplicate_binding_key`, `rejects_binding_that_omits_a_rule_variable` in
   `HornWitness.lean`) and on the real bytes
-  (`tests/cross_kernel_differential_test.rs::resolved_d1_*`, `::resolved_d2*`) · the producer is
-  proved unable to emit either shape by
-  `tests/reason_horn_emit_test.rs::no_emitted_binding_is_one_the_format_now_refuses`
+  (`tests/cross_kernel_differential_test.rs::resolved_d1_*`, `::resolved_d2*`) · the producer
+  structurally cannot emit either shape, argued from `run_horn`'s construction and checked against
+  the emitted bytes by
+  `tests/reason_horn_emit_test.rs::no_emitted_binding_is_one_the_format_now_refuses` and
+  `::a_head_variable_the_body_never_binds_never_reaches_the_evaluator`
 - **Written**: 2026-09-14
 - **Related**: decision 0003 (a rule is data, and an assumption is not a fact), whose format this
   amends; decision 0002 (an inference carries a certificate)
@@ -65,29 +69,63 @@ repaired.** `checkHornStep` now requires, of the binding and the rule it cites:
 
 Both refusals are strictness with no soundness content, and that is the point. What they buy is a
 sentence a soundness theorem cannot say: the certificate means ONE thing.
-`wellFormed_determines_instantiation` states it and the kernel checks it. Once the binding is well
-formed for the cited rule, every total substitution that extends it instantiates that rule the same
-way, so a checker carrying the binding as a partial map and one carrying it as a total function with
-a default are reading the same certificate.
+`wellFormed_determines_instantiation` states it and the kernel checks it.
+
+The statement is worth reading carefully, because it is EXISTENCE AND UNIQUENESS and the two halves
+are what the two refusals separately buy. Read a binding list as what it looks like: a set of
+demands, "`v` is `t`", one per written pair. The membership reading, `(v, t) ∈ l → σ v = t`, is
+deliberately not a statement about `List.lookup`, so it speaks about a checker carrying a partial
+map, a checker carrying a total function with a default, and a checker nobody has written yet. Then
+once the binding is well formed for the cited rule:
+
+- **something meets those demands**, and `substOf` is it. This is what DISTINCT KEYS buy, and it is
+  `substOf_extends_of_keysDistinct`.
+- **everything that meets them instantiates the rule identically.** This is what COVERAGE buys, and
+  it is `instantiation_unique_of_covers`.
+
+Neither conjunct of `bindingWellFormed` is decorative, and `HornWitness.lean` refutes each half with
+its own hypothesis dropped: `no_substitution_extends_a_duplicate_key` and
+`two_extensions_of_an_uncovered_binding_disagree`.
 
 ### Why refusing, rather than writing the permissive reading into the format
 
-Both questions had a permissive answer available, and both were rejected on the same ground: the
-permissive reading costs nothing to give up and buys a second meaning.
+Both questions had a permissive answer available, and both were rejected, though not on the same
+ground. The repeated key turns out to be the easier of the two.
 
 On the **repeated key**, the alternative was to make first-wins normative. One sentence would have
-made the format determinate, so this is a real option and not a straw man. It is the wrong one.
-First-wins is not "the natural implementation", because there is no such thing. Of the four
-association-list primitives an implementer is most likely to reach for, two are first-wins
-(`List.lookup` in Lean, `map_of` in Isabelle) and two are last-wins (`dict(pairs)` in Python,
-`HashMap::from_iter` in Rust, both of which insert in order and let the later value win). A
-normative first-wins rule would therefore be broken by half the primitives on that short list, and
-broken SILENTLY, by accepting a certificate that means something else. `distinct` has no such
-split: every language has it, and getting it wrong is loud. Against that, a duplicate key carries no
-information a producer needs, since there is no certificate writable with one that is not writable
-without one, so refusing costs exactly nothing.
+made the format determinate, so this is a real option and not a straw man. It is the wrong one, and
+the reason is sharper than a preference between library conventions.
 
-On the **incomplete binding**, the argument is sharper, because on the question of ENTAILMENT the
+**A repeated key with two different values makes the certificate's own demands unsatisfiable.** The
+pair `("x", a)` says `x` is `a` and the pair `("x", b)` says `x` is `b`, and no total substitution
+does both. That is `no_substitution_extends_a_duplicate_key`, and it holds for every checker at
+once rather than for this one. So first-wins and last-wins are not two readings of such a
+certificate. There is no reading of it. They are two conventions for ignoring half of what it says,
+and a normative first-wins rule would be a rule about which half to discard. A format should not
+have one.
+
+That argument covers a repeated key whose two values DIFFER, which is the case the fixture and the
+corpus are made of, and it does not cover a key repeated with the SAME value. `keysDistinct` refuses
+that too, and it is worth being honest that the refusal is a different kind there: the demands are
+satisfiable, there is exactly one reading, and refusing is tidiness rather than determinacy. It is
+still right, for two reasons that are not the one above. The decisive one is that Isabelle's
+`distinct (map fst b)` refuses it, so a Lean that admitted it would REINTRODUCE the divergence this
+decision exists to close, and the Isabelle is not available to be edited. The other is that
+`distinct` is one primitive every language has, while "distinct keys, or repeated keys whose values
+agree" is a rule an implementer has to get right on purpose, for a shape no producer needs to emit.
+
+The library split is then the second-order point rather than the argument, and it is why the damage
+would be silent. Of the four association-list primitives an implementer is most likely to reach
+for, two are first-wins (`List.lookup` in Lean, `map_of` in Isabelle, whose own source comment in
+`OO_Check.thy` names this) and two are last-wins (`dict(pairs)` in Python, `HashMap::from_iter` in
+Rust, both of which insert in order and let the later value win). A normative first-wins rule would
+be broken by half of that short list, and broken by ACCEPTING a certificate that means something
+else rather than by failing. `distinct` has no such split: every language has it, and getting it
+wrong is loud. Against that, a duplicate key carries no information a producer needs, since there
+is no certificate writable with one that is not writable without one, so refusing costs exactly
+nothing.
+
+On the **incomplete binding**, the argument is harder, because on the question of ENTAILMENT the
 permissive reading was right and Isabelle was the incomplete one. `EntailsR` quantifies over every
 total substitution, so a step whose body instantiates into known triples under SOME total
 substitution really does entail its conclusion. The refusal is therefore a deliberate choice of
@@ -106,6 +144,32 @@ conclusion already shows, and the rewritten step is accepted by both kernels.
 cannot make a step mean two things, and there is no second reading to remove. Refusing it would be a
 tidiness rule dressed as a determinacy one. Both kernels already agreed here
 (`probe_extrabind`, exit 0 on both) and they still do.
+
+### Can this engine emit what is now refused?
+
+No, and structurally rather than by care, which matters because a producer that could write
+certificates its own checker rejects would make the refusal a bug report against ourselves.
+`run_horn` in `src/reason.rs` builds a step's binding as `rule.vars.iter().enumerate().map(...)`,
+one pair per entry, so the binding is exactly `rule.vars` and the two questions become questions
+about that one list.
+
+- **No repeated key.** `rule.vars` is accumulated with `!vars.iter().any(|x| x == v)` guarding every
+  push, so it is deduplicated before a single binding is written and a repeat has no way in.
+- **No omitted variable.** The same loop runs over `r.atoms()`, which is
+  `body.iter().chain(once(&head))`. So `rule.vars` is collected from body AND head, which is exactly
+  the set `RulePattern.varList` gives the checker, and coverage holds by construction.
+- **And the `expect` between them cannot fire.** `env[i].expect(..)` would panic on a rule variable
+  the body never bound. `parse_rules` refuses any table whose head carries a variable that "does not occur
+  in the body" before it reaches the evaluator, so that input never arrives.
+  `a_head_variable_the_body_never_binds_never_reaches_the_evaluator` runs that refusal through both
+  doors, `parse_rules` directly and `Reasoner::run_horn`.
+
+That is the argument. `no_emitted_binding_is_one_the_format_now_refuses` is the check against the
+bytes: it re-parses every table the engine wrote, re-derives the wanted variable set the way
+`bindsCover` reads it, and asserts distinctness and coverage on every emitted step across three rule
+tables and two graphs, with a floor so that a corpus that collapsed to nothing would fail rather
+than pass. A structural argument nobody checks against the bytes is how a structural argument goes
+stale.
 
 ## What this does not claim
 
@@ -158,7 +222,14 @@ The 47 moved into rejected-by-both and nowhere else: 857 plus 47 is 904, and the
 unparseable counts did not move. The 286 is larger than 47 because most rows carrying a malformed
 binding were already rejected by both kernels for some other reason; the gate runs on every row
 rather than only on the ones that disagree, because a check that ran only on divergences could be
-satisfied by silence.
+satisfied by silence. It splits 89 D1 and 197 D2.
+
+One detail worth stating rather than rounding off: **all 47 corpus divergences were D1.** D2's
+three certificates are committed probes with their own tests and are not members of the generated
+corpus, so the corpus never counted them, and the before-run's classification prints only D1 rows.
+That does not make D2 the weaker half of this decision. D2b is the case where the silent default
+put a term nobody wrote into a conclusion, and D2c was found BY the fuzzer inside this same corpus
+machinery before it was committed as a probe.
 
 ## Since written
 

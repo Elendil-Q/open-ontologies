@@ -183,14 +183,17 @@ def substOf (l : List (Var × Term)) : Subst := fun v => (List.lookup v l).getD 
 Decision 0008. A binding list is DATA before it is a substitution, and a
 certificate whose binding is malformed is refused rather than repaired.
 
-Two shapes are refused, and both were found by running this checker and the
-independent Isabelle/HOL one over 1,718 certificates and comparing:
+Read a binding list as what it looks like: a set of demands, "`v` is `t`", one
+per written pair. Two shapes are refused, and both were found by running this
+checker and the independent Isabelle/HOL one over 1,718 certificates and
+comparing:
 
-* a REPEATED KEY, because the value of the variable would then be decided by
-  the tie-break inside whatever lookup function a checker happens to use.
-  `List.lookup` here is first-wins, while `dict()` and `HashMap::from_iter`
-  elsewhere are last-wins, and a certificate whose meaning depends on that is
-  not evidence of anything;
+* a REPEATED KEY, because two demands on one variable are met by NO total
+  substitution, so there is nothing for a checker to read. `List.lookup` here
+  is first-wins and `dict()` and `HashMap::from_iter` elsewhere are last-wins,
+  but those are two conventions for discarding half of what the certificate
+  says rather than two readings of it. See
+  `no_substitution_extends_a_duplicate_key` in `HornWitness.lean`;
 * an INCOMPLETE BINDING, because `substOf`'s default would otherwise mint a
   term out of a variable's NAME in the rule file and put it in the conclusion.
 
@@ -239,7 +242,7 @@ theorem lookup_eq_of_mem_of_keysDistinct :
       ∀ {v : Var} {t : Term}, (v, t) ∈ l → List.lookup v l = some t := by
   intro l
   induction l with
-  | nil => intro _ v t hm; simp at hm
+  | nil => intro _ v t hm; cases hm
   | cons p rest ih =>
     obtain ⟨w, u⟩ := p
     intro hd v t hm
@@ -249,18 +252,64 @@ theorem lookup_eq_of_mem_of_keysDistinct :
     · have hv : v = w := congrArg Prod.fst heq
       have ht : t = u := congrArg Prod.snd heq
       subst hv; subst ht
-      simp [List.lookup]
+      -- `cases` on `v == v` rather than `beq_self_eq_true`: the reflexivity lemma
+      -- reaches `ReflBEq String` through `Std.LawfulBEqOrd`, which drags
+      -- `Classical.choice` into a file that otherwise needs none.
+      rw [List.lookup_cons]
+      cases hb : v == v with
+      | true => rfl
+      | false => exact absurd rfl (beq_eq_false_iff_ne.mp hb)
     · have hvw : ¬ v = w := by
         intro h
         subst h
-        have := List.all_eq_true.mp hne (v, t) hmem
-        simp at this
+        have hx := List.all_eq_true.mp hne (v, t) hmem
+        rw [bne_self_eq_false] at hx
+        exact Bool.noConfusion hx
       have hbeq : (v == w) = false := by
         cases hb : v == w with
         | false => rfl
         | true => exact absurd (eq_of_beq hb) hvw
-      simp only [List.lookup, hbeq]
+      rw [List.lookup_cons, hbeq]
       exact ih hrest hmem
+
+/-- The converse direction, and it needs no hypothesis at all: whatever
+`List.lookup` returns, it returns a pair that is really in the list. This is what
+makes the membership reading below the WEAKER commitment of the two, so a checker
+that satisfies it has committed to less than one that mirrors `List.lookup`. -/
+theorem mem_of_lookup_eq_some :
+    ∀ {l : List (Var × Term)} {v : Var} {t : Term},
+      List.lookup v l = some t → (v, t) ∈ l := by
+  intro l
+  induction l with
+  | nil => intro v t h; simp [List.lookup] at h
+  | cons p rest ih =>
+    obtain ⟨w, u⟩ := p
+    intro v t h
+    cases hbeq : v == w with
+    | true =>
+      have hv : v = w := eq_of_beq hbeq
+      subst hv
+      simp only [List.lookup, hbeq, Option.some.injEq] at h
+      subst h
+      exact List.Mem.head _
+    | false =>
+      simp only [List.lookup, hbeq] at h
+      exact List.Mem.tail _ (ih h)
+
+/-- **Distinct keys make the certificate's own constraints satisfiable.** Read a
+binding list the way a reader does, as a set of demands "`v` is `t`" one per
+written pair, and `substOf` satisfies every one of them. That is what a repeated
+key destroys, and destroys for every checker at once rather than for this one:
+see `no_substitution_extends_a_duplicate_key` in `HornWitness.lean`, where the
+demands of a twice-bound variable cannot all be met by ANY total substitution.
+So the refusal is not a preference for `List.lookup`'s tie-break over some other
+library's. It is a refusal of a certificate that asks for two things at once. -/
+theorem substOf_extends_of_keysDistinct {l : List (Var × Term)}
+    (h : keysDistinct l = true) : ∀ v t, (v, t) ∈ l → substOf l v = t := by
+  intro v t hm
+  unfold substOf
+  rw [lookup_eq_of_mem_of_keysDistinct h hm]
+  rfl
 
 /-- On every variable the rule mentions, the total substitution's value is the
 value the binding list actually supplies. The default is never reached, so
@@ -296,26 +345,55 @@ theorem mem_varList_of_mem_head {r : RulePattern} {v : Var} (hv : v ∈ r.head.v
     v ∈ r.varList :=
   List.mem_append_right _ hv
 
-/-- **The format decision, as a theorem.** Once the binding list is well formed
-for the cited rule, EVERY total substitution that extends it instantiates that
-rule the same way. So a checker that carries the binding as a partial map and
-one that carries it as a total function with a default are reading the same
-certificate, and the certificate has one meaning rather than one per checker.
-Nothing below depends on this: it is the statement the differential could not
-make for itself. -/
-theorem wellFormed_determines_instantiation {r : RulePattern} {l : List (Var × Term)}
-    (h : bindingWellFormed r l = true) {sigma : Subst}
-    (hext : ∀ v t, List.lookup v l = some t → sigma v = t) :
+/-- **Uniqueness.** Every total substitution that meets the binding's demands
+instantiates the cited rule the same way. The hypothesis is the MEMBERSHIP
+reading, `(v, t) ∈ l → sigma v = t`, deliberately and not `List.lookup`: it is
+what any reader of the pairs commits to whatever it builds them into, so this
+speaks about a checker carrying a partial map, a checker carrying a total
+function with a default, and a checker that has not been written yet.
+
+Only coverage is used, and the statement says so rather than carrying
+`bindingWellFormed` and quietly discarding half of it. Distinctness is what makes
+the hypothesis SATISFIABLE, which is the other half and a separate theorem:
+`substOf_extends_of_keysDistinct`. -/
+theorem instantiation_unique_of_covers {r : RulePattern} {l : List (Var × Term)}
+    (h : bindsCover r l = true) {sigma : Subst}
+    (hext : ∀ v t, (v, t) ∈ l → sigma v = t) :
     r.body.map (AtomPat.inst sigma) = r.body.map (AtomPat.inst (substOf l)) ∧
       AtomPat.inst sigma r.head = AtomPat.inst (substOf l) r.head := by
-  simp only [bindingWellFormed, Bool.and_eq_true] at h
   have agree : ∀ v ∈ r.varList, sigma v = substOf l v := fun v hv =>
-    hext v _ (lookup_eq_substOf_of_covers h.2 hv)
+    hext v _ (mem_of_lookup_eq_some (lookup_eq_substOf_of_covers h hv))
   refine ⟨List.map_congr_left ?_, AtomPat.inst_congr ?_⟩
   · intro a ha
     exact AtomPat.inst_congr (fun v hv => agree v (mem_varList_of_mem_body ha hv))
   · intro v hv
     exact agree v (mem_varList_of_mem_head hv)
+
+/-- **The format decision, as a theorem: existence and uniqueness.** Read the
+binding list as what it looks like, a set of demands "`v` is `t`", one per written
+pair. Once it is well formed for the cited rule:
+
+* **something meets those demands**, and `substOf` is it. This is what DISTINCT
+  KEYS buy, and it fails outright for a repeated key, where two demands on one
+  variable cannot both be met by any total substitution at all;
+* **everything that meets them agrees** on how the rule instantiates. This is
+  what COVERAGE buys, and it fails for an incomplete binding, where two readers
+  meeting every demand can still differ on a variable no demand mentions.
+
+Both conjuncts of `bindingWellFormed` are therefore load-bearing, one in each
+half, and `HornWitness.lean` carries a counterexample to each half with its
+hypothesis dropped. Together they are the sentence the differential could not
+make for itself: the certificate means one thing rather than one thing per
+checker. Nothing below depends on this. -/
+theorem wellFormed_determines_instantiation {r : RulePattern} {l : List (Var × Term)}
+    (h : bindingWellFormed r l = true) :
+    (∀ v t, (v, t) ∈ l → substOf l v = t) ∧
+      ∀ sigma : Subst, (∀ v t, (v, t) ∈ l → sigma v = t) →
+        r.body.map (AtomPat.inst sigma) = r.body.map (AtomPat.inst (substOf l)) ∧
+          AtomPat.inst sigma r.head = AtomPat.inst (substOf l) r.head := by
+  simp only [bindingWellFormed, Bool.and_eq_true] at h
+  exact ⟨substOf_extends_of_keysDistinct h.1, fun _ hext =>
+    instantiation_unique_of_covers h.2 hext⟩
 
 /-- Check one Horn step. Three things are contracted, not two.
 
@@ -453,13 +531,28 @@ theorem horn_certificate_sound_fo (G : List Triple) (R : List RulePattern) (step
 #guard_msgs in
 #print axioms SatRuleFO.to_SatRule
 
+/-! The decision-0008 material adds NO axiom to this file, and in fact sits inside
+what was already here: every theorem below is free of `Classical.choice`, which
+`horn_certificate_sound` uses. Keeping it that way took one deliberate step, and
+the comment in `lookup_eq_of_mem_of_keysDistinct` records it: `beq_self_eq_true`
+resolves `ReflBEq String` through `Std.LawfulBEqOrd` and drags choice in, so the
+reflexive case is done by `cases` on `v == v` instead. -/
+
 /-- info: 'OOCert.wellFormed_determines_instantiation' depends on axioms: [propext, Quot.sound] -/
 #guard_msgs in
 #print axioms wellFormed_determines_instantiation
 
-/-- info: 'OOCert.lookup_eq_of_mem_of_keysDistinct' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+/-- info: 'OOCert.lookup_eq_of_mem_of_keysDistinct' depends on axioms: [propext, Quot.sound] -/
 #guard_msgs in
 #print axioms lookup_eq_of_mem_of_keysDistinct
+
+/-- info: 'OOCert.substOf_extends_of_keysDistinct' depends on axioms: [propext, Quot.sound] -/
+#guard_msgs in
+#print axioms substOf_extends_of_keysDistinct
+
+/-- info: 'OOCert.instantiation_unique_of_covers' depends on axioms: [propext, Quot.sound] -/
+#guard_msgs in
+#print axioms instantiation_unique_of_covers
 
 /-- info: 'OOCert.horn_certificate_sound' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in

@@ -306,7 +306,7 @@ Two shapes are refused, on both checkers:
 
 | shape | example | why |
 |---|---|---|
-| a key bound twice | `x <http://ex.org/a> x <http://ex.org/zzz>` | the variable's value would be decided by the tie-break inside whichever lookup function a checker uses: first-wins in Lean's `List.lookup` and Isabelle's `map_of`, last-wins in Python's `dict()` and Rust's `HashMap::from_iter` |
+| a key bound twice | `x <http://ex.org/a> x <http://ex.org/zzz>` | the two pairs demand two different values for one variable, so NO substitution satisfies both and there is nothing for a checker to read: first-wins (Lean's `List.lookup`, Isabelle's `map_of`) and last-wins (Python's `dict()`, Rust's `HashMap::from_iter`) are two conventions for discarding half the certificate, not two readings of it |
 | a variable of the cited rule with no binding | binding `s`, `o` for the rule `?s <p> ?o -> ?s <q> ?z` | the checker would otherwise have to invent a value, and the only one available is the variable's NAME, so the conclusion would carry a term nobody wrote |
 
 A binding for a variable the cited rule never mentions **is accepted**: it is never consulted, so it
@@ -314,8 +314,10 @@ cannot make a certificate mean two things.
 
 Both refusals are strictness and neither carries soundness content. What they buy is that a
 certificate has ONE meaning, which `OOCert.wellFormed_determines_instantiation` states and the Lean
-kernel checks: once the binding is well formed for the cited rule, every total substitution that
-extends it instantiates that rule the same way. The defect they close was found by running this
+kernel checks. Read the binding as a set of demands, "this variable is that term", one per written
+pair. Distinct keys make those demands SATISFIABLE and coverage makes every substitution satisfying
+them instantiate the cited rule the SAME WAY, so one refusal buys existence and the other buys
+uniqueness. The defect they close was found by running this
 checker and the independent Isabelle/HOL one in `isabelle/` over 1,718 certificates: 47 rows
 disagreed, all from this one cause. See
 [decision 0008](decisions/0008-a-binding-is-data-and-evidence-admits-one-reading.md).

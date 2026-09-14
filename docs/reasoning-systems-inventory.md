@@ -95,7 +95,7 @@ refused. The defect was in the FORMAT, which never said what a repeated key mean
 incomplete binding means, and only a second implementation could have surfaced it.
 
 That gap is now CLOSED. `docs/decisions/0008-a-binding-is-data-and-evidence-admits-one-reading.md`
-refuses both shapes, the Lean moved and the Isabelle was not touched, and the same corpus now
+refuses both shapes, the Lean moved and no Isabelle theory was touched, and the same corpus now
 reports zero divergent rows: 349 accepted by both, 904 rejected by both, 465 unparseable on both.
 The 47 moved into rejected-by-both and nowhere else.
 

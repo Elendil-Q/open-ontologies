@@ -19,11 +19,18 @@ All notable changes to Open Ontologies are documented here.
   binding, so the analysis that used to excuse a disagreement is a gate that can fail. The
   refusals are strictness with
   no soundness content: `horn_certificate_sound`, `horn_certificate_sound_fo` and
-  `SatRuleFO.to_SatRule` are unchanged in statement and in axiom footprint, and what the checks
-  buy is stated as `OOCert.wellFormed_determines_instantiation` instead. Every total
-  substitution extending a well-formed binding instantiates the cited rule the same way, so the
-  certificate has one meaning rather than one per checker. **A binding for a variable the rule
-  never mentions is still accepted.** The Isabelle is untouched, because it was written from the
+  `SatRuleFO.to_SatRule` are unchanged in statement and in axiom footprint, and the new material
+  adds no axiom to either, being free of the `Classical.choice` that `horn_certificate_sound`
+  uses. What the checks buy is stated as `OOCert.wellFormed_determines_instantiation` instead,
+  and it is existence AND uniqueness, one half per refusal. Read the binding as a set of demands,
+  "this variable is that term", one per written pair: distinct keys make those demands
+  SATISFIABLE, and coverage makes every substitution satisfying them instantiate the rule the
+  SAME WAY. So the certificate has one meaning rather than one per checker. The existence half is
+  why a repeated key is refused rather than resolved by a normative tie-break: two demands on one
+  variable are met by no total substitution at all, so first-wins and last-wins are not two
+  readings of such a certificate but two ways of discarding half of it
+  (`no_substitution_extends_a_duplicate_key`). **A binding for a variable the rule
+  never mentions is still accepted.** No Isabelle theory is touched, because it was written from the
   W3C sources without reading the Lean and is worth nothing once it is edited to agree.
   `reason --rules` structurally cannot emit either refused shape, and
   `no_emitted_binding_is_one_the_format_now_refuses` checks that against the bytes. See

@@ -68,9 +68,15 @@ loudly (`common::skip_unless`) when either proof assistant is missing, and
 
 ## What the differential found, and what it changed
 
-1,718 certificates: 61 base, 1,291 mutated, 366 fuzzed. **Forty-seven rows disagreed, in two
-classes.** Nothing was adjusted on either side to make them go away; the FORMAT was changed
-instead, and the divergence is now zero.
+1,718 certificates: 61 base, 1,291 mutated, 366 fuzzed. **Forty-seven rows disagreed.** Nothing
+was adjusted on either side to make them go away; the FORMAT was changed instead, and the
+divergence is now zero.
+
+Those 47 corpus rows were ALL of class D1 below, which is worth stating precisely rather than
+rounding to "two classes": D2's three certificates are committed probes with their own tests and
+are not members of the generated corpus, so the corpus never counted them. The classification the
+corpus test prints says so directly, and D2 is not the weaker finding for it: D2c was found BY the
+fuzzer, inside the corpus machinery, before it was committed as a probe.
 
 Both classes had ONE root cause: **Isabelle validates the binding list as a data structure
 and Lean did not.** `check_step` requires `distinct (map fst b)` and `binding_covers b r`
@@ -146,7 +152,13 @@ disagree: a check that ran only on divergences could be satisfied by silence.
 
 A binding for a variable the cited rule never mentions is still ACCEPTED on both sides
 (`probe_extrabind`). It is never consulted, so there was no second reading to remove.
-### What agreement on the other 1,671 rows is evidence of
+
+### What agreement on all 1,718 rows is evidence of
+
+It was 1,671 rows before decision 0008 and it is all 1,718 after, and the increase is worth
+exactly nothing on its own: it was bought by making one checker refuse more, which is the
+cheapest way there is to buy agreement. What the number is worth is fixed by the floor the
+corpus test asserts, that at least twenty certificates are ACCEPTED by both.
 
 Checking a Horn certificate is purely syntactic. Neither kernel consults its semantics, so
 two checkers built on contradictory model theories agree on every certificate and every
