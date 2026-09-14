@@ -5,7 +5,9 @@
   checker in `lean/` with `OOCert.certificate_sound` machine-checked, axioms pinned by
   `#guard_msgs` · every shipped ontology certified in CI (`tests/lean_certificate_test.rs`) ·
   **opt-in, default unchanged** · the `owl-dl` tableaux path refuses the flag rather than
-  pretending · not covered: SHACL, the tableaux reasoner, the parsers
+  pretending · the SHIQ tableaux reasoner now certifies its POSITIVE answers
+  (`Dl.satisfiable_of_checkModel`, decision 0004); its negative answers and the
+  parsers remain uncovered
 - **Written**: 2026-09-13
 - **Related**: decision 0001 (an inference is not an assertion); issues #131 and #132, fixed the
   same day; `tests/reason_rl_ext_soundness_test.rs`, the first thing the layer caught
@@ -64,5 +66,9 @@ on the engine's author having thought of the bug.
 It does not make ontologies "correct". It makes every OWL-RL inference the engine reports
 independently checkable against a formal semantics with a proved checker. Whether an ontology says
 what its author meant is a different question and no proof answers it. The SHACL validator, the
-SHIQ tableaux reasoner and the RDF parsers are outside the theorem; the differential oracle
+RDF parsers are outside the theorem. The SHIQ tableaux reasoner is partly inside it now: when it
+answers that a class is satisfiable or an ontology consistent it has built a completion graph, that
+graph is a model, and `Dl.checkModel` verifies it. When it answers unsatisfiable or inconsistent it
+still carries no certificate, because that needs a refutation rather than a model, and the report
+says so rather than leaving the reader to assume symmetry. The differential oracle
 against pyshacl (`tools/shacl_differential.py`) remains the gate for SHACL.

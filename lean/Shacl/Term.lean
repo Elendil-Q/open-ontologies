@@ -187,7 +187,7 @@ def NodeKind.admits : NodeKind → Kind → Bool
   | .iriOrLiteral, .lit => true
   | _, _ => false
 
-/-! ## Lexical spaces, for the five datatypes this module is willing to judge -/
+/-! ## Lexical spaces, for the datatypes this module is willing to judge -/
 
 def isDigits (cs : List Char) : Bool := !cs.isEmpty && cs.all Char.isDigit
 

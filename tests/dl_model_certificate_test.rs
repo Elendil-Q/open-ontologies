@@ -606,3 +606,42 @@ fn a_shipped_ontology_certifies_class_by_class() {
     );
     assert_eq!(certified, accepted);
 }
+
+/// An ontology using constructs the certificate layer does not model gets a
+/// perfectly valid certificate about a WEAKER axiom set than it states, and the
+/// report has to say so next to the verdict rather than in a source comment.
+/// A reader who is not told will draw a stronger conclusion than the proof
+/// supports, which is the failure this whole layer exists to avoid.
+#[test]
+fn a_certificate_over_a_weaker_axiom_set_says_so() {
+    let dir = std::env::temp_dir().join(format!("oo-dl-weaker-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let ttl = r#"
+        @prefix : <http://ex.org/> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        :Person a owl:Class .
+        :alice a :Person .
+        :alice owl:sameAs :alicia .
+        :grandparentOf owl:propertyChainAxiom ( :parentOf :parentOf ) .
+    "#;
+    let store = std::sync::Arc::new(open_ontologies::graph::GraphStore::new());
+    store.load_turtle(ttl, None).unwrap();
+
+    let dropped = open_ontologies::tableaux::DlReasoner::unmodelled_constructs(&store);
+    let names: Vec<&str> = dropped.iter().map(|(k, _)| k.as_str()).collect();
+    assert!(
+        names.contains(&"owl:sameAs") && names.contains(&"owl:propertyChainAxiom"),
+        "both unmodelled constructs must be named, got {names:?}"
+    );
+
+    // And the other direction, so the disclosure cannot be a constant.
+    let plain = std::sync::Arc::new(open_ontologies::graph::GraphStore::new());
+    plain
+        .load_turtle("@prefix : <http://ex.org/> . :Person a <http://www.w3.org/2002/07/owl#Class> .", None)
+        .unwrap();
+    assert!(
+        open_ontologies::tableaux::DlReasoner::unmodelled_constructs(&plain).is_empty(),
+        "an ontology using nothing unmodelled must report nothing dropped"
+    );
+}

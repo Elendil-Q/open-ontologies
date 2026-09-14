@@ -196,8 +196,9 @@ theorem validate_spec {G : Graph} :
 
 /-! ## Axioms, pinned
 
-The same three the derivation checker in `lean/OOCert/` depends on. A `sorry` or a
-`native_decide` anywhere under these theorems changes this list and fails the
+The same three the derivation checker in `lean/OOCert/` depends on, except where a
+theorem genuinely needs fewer, in which case the pin says so. A `sorry` or a
+`native_decide` anywhere under these theorems changes the list and fails the
 build. -/
 
 /-- info: 'Shacl.eval_conforms_iff' depends on axioms: [propext, Classical.choice, Quot.sound] -/
@@ -215,5 +216,22 @@ build. -/
 /-- info: 'Shacl.mem_focusNodes' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
 #print axioms mem_focusNodes
+
+-- The path semantics: the enumeration and the specification are the same set.
+-- `sh:minCount` and everything else that counts value nodes rests on this one.
+/-- info: 'Shacl.mem_valueNodes' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms mem_valueNodes
+
+-- The pattern matcher decides the pattern relation. A strict SUBSET of the
+-- footprint above, pinned at what it actually is: the matcher and its proof never
+-- reach `Classical.choice`.
+/-- info: 'Shacl.regexMatchB_iff' depends on axioms: [propext, Quot.sound] -/
+#guard_msgs in
+#print axioms regexMatchB_iff
+
+/-- info: 'Shacl.mem_qualifyingNodes' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms mem_qualifyingNodes
 
 end Shacl

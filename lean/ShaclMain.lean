@@ -11,10 +11,11 @@ Exit codes, chosen so that a harness cannot mistake one answer for another:
 * `0` a verdict was reached. `"conforms"` is `true` or `false`.
 * `2` a file could not be read or parsed. No verdict.
 * `3` UNDETERMINED. The shapes graph uses something this development does not
-  implement, or the evaluator declined to judge a literal. No verdict, and the
-  reason is printed. This is the code that matters: it is the difference between
-  "everything conforms" and "I did not check everything", and collapsing the two
-  is the failure this whole layer exists to avoid.
+  implement, or the evaluator declined to judge a literal, to order two terms, or to
+  count the characters of an escaped spelling. No verdict, and the reason is printed.
+  This is the code that matters: it is the difference between "everything conforms"
+  and "I did not check everything", and collapsing the two is the failure this whole
+  layer exists to avoid.
 
 The verdict and the results carry `"theorem": "Shacl.validate_spec"`, which is the
 machine-checked statement they are covered by: the report is empty exactly when

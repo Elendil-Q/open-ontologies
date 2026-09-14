@@ -2723,12 +2723,36 @@ impl DlReasoner {
                 Ok(o) => o.describe(),
                 Err(e) => format!("no certificate: {e}"),
             };
+            // Per class as well as per ontology. TBox consistency is honestly
+            // witnessed by a single point with empty extensions, which really
+            // is what consistency means and is a weak-looking artefact; the
+            // per-class certificates are the informative ones, and the sweep
+            // that validated this layer used them.
+            let mut classes = serde_json::Map::new();
+            for (i, class) in reasoner.named_class_names().iter().enumerate() {
+                let sub = root.join("classes").join(i.to_string());
+                classes.insert(
+                    class.clone(),
+                    serde_json::json!(describe(reasoner.certify_class_satisfiable(class, &sub))),
+                );
+            }
+            let unmodelled = DlReasoner::unmodelled_constructs(graph);
             output["model_certificate"] = serde_json::json!({
                 "dir": root.display().to_string(),
                 "tbox": describe(reasoner.certify_tbox_consistent(&root.join("tbox"))),
                 "abox": describe(reasoner.certify_abox_consistent(&root.join("abox"))),
+                "classes": classes,
                 "checker": "oo-dlmodel",
                 "theorem": "Dl.satisfiable_of_checkModel",
+                // The constructs below are IN THE GRAPH and NOT in the axioms
+                // the certificate is about, so where this list is non-empty the
+                // certificate describes a weaker axiom set than the ontology
+                // states. Read the verdict against this list, not on its own.
+                "certifies_a_weaker_axiom_set": !unmodelled.is_empty(),
+                "constructs_not_modelled": unmodelled
+                    .iter()
+                    .map(|(k, n)| serde_json::json!({"construct": k, "occurrences": n}))
+                    .collect::<Vec<_>>(),
                 "not_covered": "unsatisfiability and inconsistency carry no certificate",
             });
         }
@@ -3747,6 +3771,60 @@ impl DlReasoner {
     /// No `nonempty` line is needed: `Dl.WellFormed` already requires the domain
     /// to be non-empty, so a model of the axiom set alone is exactly what TBox
     /// consistency asserts.
+    /// The named classes, in the interner's order, so a caller can certify each
+    /// one. `run` uses it because TBox consistency alone is witnessed by a
+    /// single point with empty extensions, which is honest and uninformative.
+    pub fn named_class_names(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .named_classes
+            .iter()
+            .map(|id| self.interner.resolve(*id).to_string())
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// The OWL constructs present in the graph that this certificate layer does
+    /// not model, with a count of each.
+    ///
+    /// This matters more than it looks. The emitter certifies that a finite
+    /// interpretation satisfies THE AXIOMS IT EMITTED, and a construct the
+    /// parser does not recognise is absent from both sides. So an ontology
+    /// leaning on nominals, role chains, `owl:sameAs` or datatypes gets a
+    /// perfectly valid certificate about a WEAKER axiom set than the one it
+    /// actually states, and a reader who is not told that will draw a stronger
+    /// conclusion than the proof supports. Naming them in a source comment is
+    /// not enough: it has to be in the report, next to the verdict.
+    pub fn unmodelled_constructs(graph: &Arc<GraphStore>) -> Vec<(String, u64)> {
+        const NOT_MODELLED: [(&str, &str); 8] = [
+            ("owl:sameAs", "http://www.w3.org/2002/07/owl#sameAs"),
+            ("owl:differentFrom", "http://www.w3.org/2002/07/owl#differentFrom"),
+            ("owl:oneOf", "http://www.w3.org/2002/07/owl#oneOf"),
+            ("owl:hasValue", "http://www.w3.org/2002/07/owl#hasValue"),
+            ("owl:propertyChainAxiom", "http://www.w3.org/2002/07/owl#propertyChainAxiom"),
+            ("owl:hasKey", "http://www.w3.org/2002/07/owl#hasKey"),
+            ("owl:ReflexiveProperty", "http://www.w3.org/2002/07/owl#ReflexiveProperty"),
+            ("owl:IrreflexiveProperty", "http://www.w3.org/2002/07/owl#IrreflexiveProperty"),
+        ];
+        let mut found = Vec::new();
+        for (label, iri) in NOT_MODELLED {
+            let q = format!(
+                "SELECT (COUNT(*) AS ?n) WHERE {{ {{ ?s <{iri}> ?o }} UNION {{ ?s ?p <{iri}> }} }}"
+            );
+            let Ok(raw) = graph.sparql_select_union(&q) else { continue };
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else { continue };
+            let n = v["results"][0]["n"]
+                .as_str()
+                .and_then(|s| s.trim_matches('"').split('"').next())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
+            if n > 0 {
+                found.push((label.to_string(), n));
+            }
+        }
+        found
+    }
+
     pub fn certify_tbox_consistent(&self, dir: &Path) -> anyhow::Result<ModelOutcome> {
         let mut tableau = Tableau::with_deadline(Arc::clone(&self.tbox), self.deadline);
         tableau.capture = true;

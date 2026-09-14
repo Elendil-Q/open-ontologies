@@ -18,6 +18,22 @@ Both are conditional on `eval` having returned `.ok`. When it refuses there is
 nothing to be sound about, and the refusal is reported rather than rounded into a
 verdict.
 
+## This has been seen to fail
+
+Replacing the refusal in `evalCompare` with `.ok []`, so that a comparison the term
+model cannot make is reported as CONFORMING rather than declined, does not compile:
+
+```text
+error: Shacl/Agreement.lean:319:49: unsolved goals
+  hc : cmpTerms c f = none
+  h : Except.ok [] = Except.ok rs
+  ⊢ ¬rs = []
+```
+
+That is the whole point of the exercise. `Conf` says a node whose comparison is
+unknown does not conform, so an evaluator that answers `conforms` there cannot be
+proved to agree with it, and the build stops. An evaluator that refuses can.
+
 ## What is NOT claimed
 
 * Nothing here says the specification in `Spec.lean` IS the W3C Recommendation.
@@ -31,11 +47,17 @@ verdict.
   the licensing theorem. It pins `blamed` and `blamedNode`, which are what make a
   result true or false; the other fields are presentation.
 * **Completeness is claimed for the VERDICT, not for the result list.** `sh:and`,
-  `sh:or`, `sh:not` and `sh:node` each report ONE result for a whole failing
-  subtree, which is what the Recommendation asks for, so "one result per failing
-  atomic constraint" is neither claimed nor true. What is claimed is that the report
-  is empty exactly when the node conforms, which is the property a consumer of
+  `sh:or`, `sh:not`, `sh:node` and `sh:xone` each report ONE result for a whole
+  failing subtree, which is what the Recommendation asks for, so "one result per
+  failing atomic constraint" is neither claimed nor true. What is claimed is that the
+  report is empty exactly when the node conforms, which is the property a consumer of
   `sh:conforms` relies on.
+* **The property-pair constraints report one result per focus node, where the
+  Recommendation asks for one per offending value.** `sh:equals`, `sh:disjoint`,
+  `sh:lessThan` and `sh:lessThanOrEquals` are the four; see `violationPair` in
+  `Shacl/Eval.lean`. The verdict is unaffected and every result produced is licensed,
+  but a consumer counting results will count fewer than a fully conforming validator
+  would. `sh:closed` does report one per offending triple.
 -/
 namespace Shacl
 
@@ -69,9 +91,9 @@ theorem check_spec {b : Bool} {r : Result} {rs : List Result} (h : check b r = .
 
 /-- The shape every leaf constraint takes: a decision whose truth is exactly the
 specification's condition, and, when it is false, one result blaming that very
-constraint at that very node. Stating it once keeps eleven cases of the induction
-below to three lines each, and keeps the licensing argument from being retyped
-eleven times with a chance to drift. -/
+constraint at that very node. Stating it once keeps most cases of the induction
+below to three lines each, and keeps the licensing argument from being retyped once
+per constraint with a chance to drift. -/
 theorem leafCase {G : Graph} {b : Bool} {r : Result} {rs : List Result} {s : Shape} {f : Term}
     (h : check b r = .ok rs) (hb : b = true ↔ Conf G s f)
     (hbl : r.blamed = s) (hbn : r.blamedNode = f) :

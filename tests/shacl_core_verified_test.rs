@@ -20,19 +20,36 @@
 //! evaluator over the same 120 tests, under the same comparison, in the same four
 //! buckets, and prints the number.
 //!
-//! # The number is allowed to be small, and it is
+//! # A zero in the FAIL column is the claim, not the size of the PASS column
 //!
-//! The Lean development covers eleven constraint components, four target forms and
-//! two path forms. Everything else is REFUSED by the compiler in
-//! `lean/Shacl/Compile.lean`, which lands in UNDETERMINED. A low PASS count with a
-//! zero FAIL count is the shape this should have: it means the coverage is narrow
-//! and nothing inside it is wrong. A FAIL is the serious bucket, because a FAIL is
-//! the verified evaluator giving an answer that disagrees with the Working Group.
+//! The Lean development covers every SHACL Core constraint component, all four
+//! target forms, and four of the six path forms. Everything else is REFUSED by the
+//! compiler in `lean/Shacl/Compile.lean`, which lands in UNDETERMINED. A zero FAIL
+//! count is the shape this must have: a FAIL is the verified evaluator giving an
+//! answer that disagrees with the Working Group, which means either the
+//! specification in `lean/Shacl/Spec.lean` misreads the Recommendation or the
+//! compiler misreads a shapes graph.
+//!
+//! What is still refused, and why, each named where it lives:
+//!
+//! * `sh:sparql` and user-defined constraint components, 22 of the 120 tests. That
+//!   is the SHACL extension mechanism and it needs a SPARQL evaluator. Avoiding
+//!   SPARQL is the entire reason this development can exist, so these are out of
+//!   scope rather than unfinished.
+//! * `sh:zeroOrMorePath` and `sh:oneOrMorePath`, 4 tests. Every other path form is
+//!   decided by a recursion over the path itself; these two are transitive closures
+//!   over the DATA graph. See the `Path` type in `lean/Shacl/Shape.lean`.
+//! * A path node carrying two path forms at once, 2 tests. Deliberate: SHACL allows
+//!   exactly one, the shapes graph is ill formed, and no reading of it is chosen.
+//! * A `sh:pattern` whose lexical form carries a backslash, 1 test. Nothing in this
+//!   development decodes an N-Triples escape, so it cannot tell a literal backslash
+//!   from an escape sequence.
 //!
 //! The Rust engine's own number, under its own harness at the same suite commit, is
 //! PASS 36 / FAIL 24 / UNDETERMINED 60 of 120. That is the comparison to hold this
-//! against, and it is not an apples-to-apples one: the Rust engine answers many more
-//! tests and gets 24 of them wrong.
+//! against, and it is not an apples-to-apples one: the two answer different SETS of
+//! tests. What is comparable is that the SPARQL-backed engine answers 60 of the 120
+//! and is wrong on 24 of them, and this one answers 91 and is wrong on none.
 //!
 //! # The comparison, which is the same one the other harness uses
 //!
@@ -54,8 +71,8 @@
 //!              `sht:Failure` and the bridge reported an error.
 //! FAIL         the evaluator answered and the answer is wrong.
 //! UNDETERMINED exit 3: the compiler refused the shapes graph, or the evaluator
-//!              declined to judge a literal. Not a pass and not a failure. NOT
-//!              credit.
+//!              declined to judge a literal, to order two terms, or to read an
+//!              escaped spelling. Not a pass and not a failure. NOT credit.
 //! ERROR        exit 2, or a graph that would not load or re-serialise.
 //!
 //! # The gate
@@ -64,10 +81,10 @@
 //! PASS may not drop, FAIL may not rise, and no named PASS may regress. Re-cut with
 //! `OO_SHACL_CORE_UPDATE_BASELINE=1 cargo test --test shacl_core_verified_test`.
 //!
-//! `the_bridge_refuses_what_it_cannot_check` feeds the bridge four shapes graphs it
+//! `the_bridge_refuses_what_it_cannot_check` feeds the bridge six shapes graphs it
 //! must refuse and three data graphs whose verdicts must differ, and requires the
 //! exact exit code and a reason that names the thing refused. Its own docstring
-//! records the run in which it was seen to fail.
+//! records the runs in which it was seen to fail.
 
 mod common;
 
@@ -581,6 +598,12 @@ fn run_case(tc: &TestCase, idx: usize) -> (Outcome, Option<u64>) {
         return (Outcome::Error(format!("cannot write scratch shapes graph: {e}")), None);
     }
 
+    // `OO_SHACL_DUMP=core/property/uniqueLang-002 cargo test --test
+    // shacl_core_verified_test -- --nocapture` prints the exact N-Triples the
+    // validator was handed for one test. It is here because a disagreement is as
+    // likely to be the conversion above distorting a term as it is to be the
+    // evaluator, and reading the actual input is the only way to tell which. It
+    // found the `GraphStore` round trip documented on `to_ntriples`.
     if std::env::var("OO_SHACL_DUMP").as_deref() == Ok(tc.name.as_str()) {
         eprintln!("---- {} data ----\n{data_nt}\n---- shapes ----\n{shapes_nt}", tc.name);
     }
@@ -691,6 +714,20 @@ fn refusal_class(detail: &str) -> String {
     }
     if detail.contains("lexical space") {
         return "datatype lexical space not implemented".to_string();
+    }
+    if detail.contains("value comparison") {
+        return "value comparison: no rule orders these two terms".to_string();
+    }
+    if detail.contains("string length") {
+        return "string length: the spelling carries a backslash escape".to_string();
+    }
+    if detail.contains("carries a backslash") {
+        return "sh:pattern: the pattern carries a backslash escape".to_string();
+    }
+    if detail.contains("regular-expression construct") {
+        let i = detail.find('\'').map(|i| i + 1).unwrap_or(0);
+        let c = detail[i..].chars().next().unwrap_or('?');
+        return format!("sh:pattern: the regular-expression construct '{c}' is not implemented");
     }
     if detail.contains("is not implemented") {
         let i = detail.rfind(": ").map(|i| i + 2).unwrap_or(0);
@@ -864,6 +901,20 @@ fn pct(n: usize, d: usize) -> f64 {
 ///
 /// That is the failure mode this whole layer exists to catch: a validator reporting
 /// `conforms` about constraints it never evaluated. Both gates caught it.
+///
+/// It was seen to fail a second time, without anyone arranging it. `sh:pattern` was
+/// implemented, `unsupported-shapes.nt` had used `sh:pattern "^A"` as its example of
+/// something the compiler could not read, and the fixture stopped being refused:
+///
+/// ```text
+/// test the_bridge_refuses_what_it_cannot_check ... FAILED
+///   unsupported-shapes.nt: expected exit 3 (undetermined), got 0.
+///   {"status":"verdict","conforms":true,"shapes":1,"data_triples":2,"results":[]}
+/// ```
+///
+/// The fixture now uses `sh:prefixes`, and two more were added beside it, one per
+/// remaining way to decline: an unimplemented path form and a regular expression
+/// outside the proved subset.
 #[test]
 fn the_bridge_refuses_what_it_cannot_check() {
     if skip() {
@@ -1006,7 +1057,10 @@ fn the_verified_conformance_report() {
     );
     eprintln!(
         "\n  for comparison, the SPARQL-backed Rust engine under its own harness at the same\n  \
-         suite commit: PASS 36 / FAIL 24 / UNDETERMINED 60. It answers more and is wrong more."
+         suite commit: PASS 36 / FAIL 24 / UNDETERMINED 60. It ANSWERS {} of the 120 and gets\n  \
+         24 of those wrong; this one answers {} and gets none wrong.",
+        36 + 24,
+        c.pass + c.fail
     );
 
     // Where the undetermined tests went, clustered, with every test named under
@@ -1059,6 +1113,25 @@ fn the_verified_conformance_report() {
 }
 
 /// The ratchet. PASS may not drop, FAIL may not rise, no named PASS may regress.
+///
+/// Seen to fail. `langMatches` in `lean/Shacl/Term.lean` implements BCP 47 basic
+/// filtering, under which the range `en` matches the tag `en-NZ`. Dropping the
+/// subtag-boundary half of it, so that only an exact tag matches, compiles, proves,
+/// and passes every witness, because nothing in the Lean development pins that
+/// behaviour. This gate is what caught it:
+///
+/// ```text
+/// test the_verified_evaluator_does_not_regress ... FAILED
+///   the verified SHACL evaluator regressed against .../baseline.json:
+///     PASS dropped from 91 to 90
+///     FAIL rose from 0 to 1
+///     1 test(s) that passed in the baseline no longer pass: core/property/languageIn-001
+/// ```
+///
+/// That is the division of labour this file exists for. A proof cannot tell you that
+/// `Shacl/Spec.lean` misreads the Recommendation, because the proof is about the
+/// agreement between the specification and the evaluator, not about the prose. The
+/// Working Group's suite is the only thing that can, and it did.
 #[test]
 fn the_verified_evaluator_does_not_regress() {
     if skip() {

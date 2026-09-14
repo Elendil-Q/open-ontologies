@@ -10,25 +10,31 @@ with `Shacl/Spec.lean`.
 ## The third answer
 
 `eval` returns `Except Refusal (List Result)`, and the error side is not a crash.
-It is the evaluator declining to decide, in the two places where deciding would
+It is the evaluator declining to decide, in the four places where deciding would
 mean guessing:
 
 * a literal carries the datatype a `sh:datatype` constraint asks for, and this
   development does not know that datatype's lexical space, so it cannot say whether
   the literal is well formed;
+* a value-range or property-pair constraint has to order two terms and `cmpTerms`
+  knows no rule that orders them. Note that this is NOT the case where SPARQL's `<`
+  raises a type error: that one is a verdict and produces a violation;
+* a length or pattern constraint has to read the string a spelling denotes and the
+  spelling carries a backslash escape, which nothing here decodes;
 * the `rdfs:subClassOf` closure did not reach a fixpoint inside the iteration
   budget, so the set of superclasses computed is not known to be complete.
 
-Both are reported by name. A refusal propagates: one undecidable constraint makes
-the whole run undetermined rather than letting the rest of the report imply a
+All four are reported by name. A refusal propagates: one undecidable constraint
+makes the whole run undetermined rather than letting the rest of the report imply a
 verdict the undecided part could have overturned. The alternative, answering
 `conforms` because the hard constraint was skipped, is the failure mode this
 repository exists to catch.
 
-The second refusal has never been observed to fire: `subIter` runs `|G| + 1`
+The last refusal has never been observed to fire: `subIter` runs `|G| + 1`
 rounds and the closure of a subclass graph with `|G|` edges settles in at most
 `|G|`. It is a guard against an argument, not against a measurement, and the guard
-is cheap enough to keep.
+is cheap enough to keep. The first three all fire against the W3C suite or against
+the fixtures in `tests/fixtures/shaclcore/`.
 
 ## Performance
 

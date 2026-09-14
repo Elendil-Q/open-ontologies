@@ -30,6 +30,22 @@ derivation checker.
 | `a_sequence_path_does_not_stop_halfway` | and the intermediate node is not a value node |
 | `zero_or_one_admits_the_focus_node` | `sh:zeroOrOnePath` gives a bare focus node one value node |
 
+## These have been seen to fail
+
+Changing `strRep` so that a blank node reports `chars []` rather than `noString`,
+which is the natural mistake (a blank node has no string, so treat it as the empty
+one), leaves the whole development compiling and the agreement theorem true, because
+the specification and the evaluator both read `strRep`. This file is what stops it:
+
+```text
+error: Shacl/Witness.lean:284:62: Tactic `decide` proved that the proposition
+  ¬Conf [] (Shape.minLength 0) "_:b"
+is false
+```
+
+A witness pins a reading of the Recommendation that no proof about internal
+agreement can pin. That is why they are here and why each one comes in a pair.
+
 The two counting theorems are the ones worth reading. SHACL counts distinct value
 nodes, so a triple asserted twice must not make a `sh:maxCount 1` fail. An engine
 that counts SPARQL solutions rather than value nodes gets that wrong, and the
@@ -223,7 +239,7 @@ theorem the_refused_literal_does_not_conform :
   subst this
   exact absurd hok (by decide)
 
-/-! ## The parameters added after the first eleven
+/-! ## The parameters added after the first eleven components
 
 Each one below exhibits a model and something the semantics does NOT entail, the
 same discipline the two counting theorems follow. A one-sided witness would leave

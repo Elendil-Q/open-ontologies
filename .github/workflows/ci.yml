@@ -326,6 +326,10 @@ jobs:
         # forces every target into the default set and this step measures the
         # verified evaluator, so both halves of that failure are closed.
         run: OO_REQUIRE_FIXTURES=1 cargo test --test shacl_core_verified_test -- --nocapture
+      - name: Check the description-logic model certificates
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test dl_model_certificate_test -- --nocapture
+      - name: Check the refutation certificates
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test lean_refutation_test -- --nocapture
       - name: Check the mixed certificate layer
         run: OO_REQUIRE_FIXTURES=1 cargo test --test lean_mixed_certificate_test -- --nocapture
       - name: Check the generic Horn-rule layer, and that a user rule cannot earn the absolute verdict
