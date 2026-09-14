@@ -26,35 +26,43 @@
 //! accept and reject the same files, the certificate format has one meaning rather than
 //! two. Where they do not, it has two, and that is the interesting part.
 //!
-//! # The disagreements
+//! # The disagreements, and what closed them
 //!
-//! Four were found, in two classes, and none is papered over. They are pinned by
-//! `divergence_d1_*`, `divergence_d2_*`, `divergence_d2b_*` and `divergence_d2c_*` below,
-//! their certificates are committed under `isabelle/fixtures-differential/`, and the
-//! corpus test classifies each disagreement BY ITS CAUSE and fails on any it cannot
-//! account for. Read those tests: the analysis is there, not here.
+//! Four were found, in two classes, and none was papered over. They are pinned by
+//! `resolved_d1_*`, `resolved_d2_*`, `resolved_d2b_*` and `resolved_d2c_*` below, their
+//! certificates are committed under `isabelle/fixtures-differential/` and
+//! `isabelle/fixtures-added/`, and the corpus test now requires ZERO divergence and fails
+//! on any row at all. Read those tests: the analysis is there, not here.
 //!
 //! Three were designed after reading both checkers. The fourth was found by the fuzzer,
 //! in a rule file one character away from a probe written for something else, which is
-//! why `binding_defect` classifies by cause rather than by which edit produced the row: a
-//! quarantine keyed on the edit would have hidden it.
+//! why `binding_defect` works from the cause rather than from which edit produced the row:
+//! a quarantine keyed on the edit would have hidden it.
 //!
-//! All three have ONE root cause. **Isabelle validates the binding list as a data
-//! structure and Lean does not.** `check_step` requires `distinct (map fst b)` and
+//! All four had ONE root cause. **Isabelle validated the binding list as a data structure
+//! and Lean did not.** `check_step` requires `distinct (map fst b)` and
 //! `binding_covers b r` before it instantiates anything; Lean's `substOf` is
 //! `fun v => (List.lookup v l).getD v`, which turns any binding list into a total
-//! function with a silent default and never inspects it. D1 is the duplicate key, D2 the
-//! missing one.
+//! function with a silent default and used to be applied without the list being inspected
+//! at all. D1 is the duplicate key, D2 the missing one.
 //!
-//! Neither checker is unsound. In all three Lean accepts and Isabelle rejects, and Lean's
-//! acceptance holds in Lean's own theorem, because `EntailsR` quantifies over every total
-//! substitution and the one Lean used is a real one; Isabelle's rejections are false
-//! alarms, which is the harmless direction. What is defective is the FORMAT: it does not
-//! say whether a binding must have distinct keys or must cover the cited rule's
-//! variables, so Lean's answer to the first is whatever `List.lookup` happens to do, and
-//! its answer to the second fabricates a term out of a variable's name and puts it in the
-//! conclusion. Until the format says, a certificate's validity depends on which verified
-//! checker reads it.
+//! Neither checker was unsound. In all four Lean accepted and Isabelle rejected, and
+//! Lean's acceptance held in Lean's own theorem, because `EntailsR` quantifies over every
+//! total substitution and the one Lean used is a real one; Isabelle's rejections were
+//! false alarms, which is the harmless direction. What was defective is the FORMAT: it did
+//! not say whether a binding must have distinct keys or must cover the cited rule's
+//! variables, so Lean's answer to the first was whatever `List.lookup` happens to do, and
+//! its answer to the second fabricated a term out of a variable's name and put it in the
+//! conclusion. A certificate's validity depended on which verified checker read it.
+//!
+//! **`docs/decisions/0008-a-binding-is-data-and-evidence-admits-one-reading.md` settles
+//! it: both shapes are refused.** The LEAN moved, and `bindingWellFormed` is now a conjunct
+//! of `checkHornStep`, because the Isabelle was written from the W3C sources without reading
+//! the Lean and is worth nothing once it is edited to agree. 47 rows of the corpus diverged
+//! before it and none does after, and the 47 moved into rejected-by-both and nowhere else.
+//! `the_two_kernels_agree_on_the_whole_corpus` now requires BOTH kernels to refuse every row
+//! carrying a malformed binding, which is 286 of them and not only the 47, so the analysis
+//! that used to excuse a disagreement is a gate that can fail.
 
 mod common;
 
@@ -370,7 +378,8 @@ fn mutations() -> Vec<Mutation> {
         }),
         // D1. The key is duplicated with a WRONG second value. Whether this is a
         // rejection depends entirely on how a duplicate key is resolved, which is the
-        // thing the format does not say. See `divergence_d1_duplicate_binding_key`.
+        // thing the format did not say until decision 0008. See
+        // `resolved_d1_a_duplicate_binding_key_is_refused_by_both`.
         ("duplicate_binding_key", |t| {
             let mut c = parse_cert(t)?;
             if c.first()?.binds.is_empty() {
@@ -658,7 +667,7 @@ fn fixture_cases() -> Vec<Case> {
         ("fx-bad-order", horn_fixture("builtin_rules.tsv"), horn_fixture("asserted.tsv"), added("bad_order.tsv")),
         // The D1 certificate is in the corpus like every other committed fixture, and
         // not held back because it is the one that disagrees. `binding_defect` classifies
-        // it, `divergence_d1_duplicate_binding_key` pins it, and its mutants are checked
+        // it, `resolved_d1_a_duplicate_binding_key_is_refused_by_both` pins it, and its mutants are checked
         // like anything else.
         ("fx-bad-dup-key", horn_fixture("builtin_rules.tsv"), horn_fixture("asserted.tsv"), added("bad_dup_key.tsv")),
         ("fx-generalized", horn_fixture("builtin_rules.tsv"), added("asserted_gen.tsv"), added("generalized.tsv")),
@@ -791,20 +800,20 @@ fn parse_rule_line(line: &str) -> Option<Rule> {
     Some(Rule { vars })
 }
 
-/// Why the two kernels differ on these files, if the reason is the one known root cause:
-/// **Isabelle validates the binding list as a data structure and Lean does not.**
+/// Whether the binding list is malformed in one of the two ways decision 0008 refuses:
+/// a repeated key (D1), or a variable of the cited rule with no binding (D2).
 ///
-/// Isabelle's `check_step` runs `distinct (map fst b)` and then `binding_covers b r`
-/// before instantiating anything. Lean's `substOf` is `fun v => (List.lookup v l).getD v`
-/// — a total function with a silent default, built without looking at the list at all. So
-/// a binding with a repeated key (D1) or with a variable missing (D2) is rejected by one
-/// and silently resolved by the other.
+/// It used to EXCUSE a divergence. It no longer can, because there is nothing left to
+/// excuse: `bindingWellFormed` is a conjunct of Lean's `checkHornStep` and the two
+/// kernels now agree on every one of these rows. It survives, pointed the other way, as
+/// the POSITIVE gate inside `the_two_kernels_agree_on_the_whole_corpus`: a file this says is
+/// malformed must be accepted by NEITHER checker. That is a stronger use of the same
+/// analysis: as an excuse it could only ever be satisfied by a disagreement, and as a
+/// gate it is checked against all 1,718 rows whether they diverge or not.
 ///
-/// This is a POSITIVE test of that diagnosis, and that is the point. Excusing a
-/// divergence because of the EDIT that produced it would hide a second, unrelated
-/// divergence arriving through the same edit — and would have hidden the one the fuzzer
-/// found through a one-character change to a rule file. Excusing it because the binding
-/// list really is malformed, in a specific way, at the step in question, cannot.
+/// It is not a third checker. If it is wrong in the permissive direction a row simply
+/// goes ungated; if it is wrong in the strict direction the gate fails, which is the
+/// safe way round.
 fn binding_defect(rules_path: &Path, cert_path: &Path) -> Option<&'static str> {
     let rules_text = std::fs::read_to_string(rules_path).ok()?;
     let rules: Vec<Rule> =
@@ -819,39 +828,23 @@ fn binding_defect(rules_path: &Path, cert_path: &Path) -> Option<&'static str> {
         for (k, _) in &step.binds {
             if seen.contains(&k.as_str()) {
                 return Some(
-                    "D1: the binding list repeats a key. Isabelle rejects it as malformed \
-                     (R_binding_dup_key); Lean resolves it with List.lookup, which is \
-                     first-wins, and accepts.",
+                    "D1: the binding list repeats a key. Decision 0008 refuses it. Isabelle \
+                     has always said R_binding_dup_key; Lean used to resolve it with \
+                     List.lookup, which is first-wins, and accept.",
                 );
             }
             seen.push(k);
         }
         if rule.vars.iter().any(|v| !seen.contains(&v.as_str())) {
             return Some(
-                "D2: the binding does not cover every variable of the cited rule. Isabelle \
-                 rejects (R_binding_incomplete); Lean's substOf sends the unbound variable \
-                 to its own NAME and carries on, so the step checks whenever that name is \
-                 the term the certificate used.",
+                "D2: the binding does not cover every variable of the cited rule. Decision \
+                 0008 refuses it. Isabelle has always said R_binding_incomplete; Lean's \
+                 substOf used to send the unbound variable to its own NAME and carry on, so \
+                 the step checked whenever that name was the term the certificate used.",
             );
         }
     }
     None
-}
-
-/// A divergence is excused only when Lean ACCEPTED, Isabelle REJECTED, and the binding
-/// list really is malformed in one of the two known ways. Every other shape — Isabelle
-/// accepting where Lean rejects, a divergence on an exit code of 2, a divergence over a
-/// well-formed binding — is unexplained and fails the corpus test.
-fn known_divergence(
-    rules: &Path,
-    cert: &Path,
-    lean: &Outcome,
-    isabelle: &Outcome,
-) -> Option<&'static str> {
-    if lean.exit != 0 || isabelle.exit != 1 {
-        return None;
-    }
-    binding_defect(rules, cert)
 }
 
 // ── a seeded fuzzer over the file format ────────────────────────────────────
@@ -865,7 +858,7 @@ fn known_divergence(
 /// Seeded, so a run is reproducible. It is NOT stable across changes to the corpus: one
 /// stream feeds every base in order, so adding a base shifts every draw after it and a
 /// given row stops being generated. That is why a row the fuzzer finds interesting gets
-/// COMMITTED as a fixture with its own test — `divergence_d2c_*` is one it found and
+/// COMMITTED as a fixture with its own test. `resolved_d2c_*` is one it found and
 /// this configuration no longer reaches. The fuzzer is a search, and the fixtures are
 /// what the search found.
 struct Rng(u64);
@@ -1097,12 +1090,40 @@ fn the_two_kernels_agree_on_the_whole_corpus() {
     let mut agree_accept = 0usize;
     let mut agree_reject = 0usize;
     let mut agree_unreadable = 0usize;
-    let mut classified: BTreeMap<String, usize> = BTreeMap::new();
-    let mut unexplained: Vec<String> = Vec::new();
+    // Rows whose binding is malformed under decision 0008, by which shape and by the edit
+    // that produced them. Counted rather than excused. The 47 rows that used to DIVERGE are
+    // among these; most of the rest were already rejected by both kernels for some other
+    // reason, which is why the gate below runs on all of them and not only on divergences.
+    let mut refused: BTreeMap<String, usize> = BTreeMap::new();
+    let mut accepted_malformed: Vec<String> = Vec::new();
+    let mut divergent: Vec<String> = Vec::new();
 
     for case in bases.iter().chain(mutants.iter()).chain(fuzzed.iter()) {
         let l = run_lean(&case.rules, &case.asserted, &case.cert);
         let i = run_isabelle(&case.rules, &case.asserted, &case.cert);
+
+        // The positive gate. A binding decision 0008 refuses must be accepted by NEITHER
+        // kernel, whatever the two of them say about each other. Checked on every row, not
+        // only on the ones that disagree, so it cannot be satisfied by silence.
+        if let Some(why) = binding_defect(&case.rules, &case.cert) {
+            let class = if why.starts_with("D1") { "D1 duplicate key" } else { "D2 uncovered" };
+            *refused.entry(format!("{class} [{}]", case.kind)).or_default() += 1;
+            if l.exit == 0 || i.exit == 0 {
+                accepted_malformed.push(format!(
+                    "{}\n    {why}\n    lean:     exit {} verdict {:?}\n    isabelle: exit {} \
+                     verdict {:?}\n    rules={} asserted={} cert={}",
+                    case.name,
+                    l.exit,
+                    l.verdict,
+                    i.exit,
+                    i.verdict,
+                    case.rules.display(),
+                    case.asserted.display(),
+                    case.cert.display()
+                ));
+            }
+        }
+
         if l == i {
             match l.exit {
                 0 => agree_accept += 1,
@@ -1111,51 +1132,69 @@ fn the_two_kernels_agree_on_the_whole_corpus() {
             }
             continue;
         }
-        match known_divergence(&case.rules, &case.cert, &l, &i) {
-            Some(why) => {
-                let class = if why.starts_with("D1") { "D1 duplicate key" } else { "D2 missing" };
-                *classified.entry(format!("{class} [{}]", case.kind)).or_default() += 1;
-            }
-            None => unexplained.push(format!(
-                "{}\n    lean:     exit {} verdict {:?}\n    isabelle: exit {} verdict {:?}\n    \
-                 rules={} asserted={} cert={}",
-                case.name,
-                l.exit,
-                l.verdict,
-                i.exit,
-                i.verdict,
-                case.rules.display(),
-                case.asserted.display(),
-                case.cert.display()
-            )),
-        }
+        divergent.push(format!(
+            "{}\n    lean:     exit {} verdict {:?}\n    isabelle: exit {} verdict {:?}\n    \
+             rules={} asserted={} cert={}",
+            case.name,
+            l.exit,
+            l.verdict,
+            i.exit,
+            i.verdict,
+            case.rules.display(),
+            case.asserted.display(),
+            case.cert.display()
+        ));
     }
 
-    let known: usize = classified.values().sum();
+    let refused_total: usize = refused.values().sum();
     println!(
         "cross-kernel differential\n  \
          certificates:     {total} ({} base, {} mutated, {} fuzzed, seed {FUZZ_SEED:#x})\n  \
          both accept:      {agree_accept}\n  \
          both reject:      {agree_reject}\n  \
          both exit 2:      {agree_unreadable}\n  \
-         known divergence: {known}\n  \
-         unexplained:      {}",
+         divergent:        {}\n  \
+         malformed binding, refused by both (decision 0008): {refused_total}",
         bases.len(),
         mutants.len(),
         fuzzed.len(),
-        unexplained.len()
+        divergent.len()
     );
-    for (kind, n) in &classified {
+    for (kind, n) in &refused {
         println!("  {kind}: {n} rows");
     }
 
     assert!(
-        unexplained.is_empty(),
-        "THE TWO KERNELS DISAGREE, and not in a way this file has an account of. A \
-         disagreement is the headline result of this test, not a nuisance: do not adjust \
-         either checker to make it go away, and do not add it to `known_divergence` \
-         without first deciding from the specification which side is wrong.\n\n{}",
-        unexplained.join("\n\n")
+        accepted_malformed.is_empty(),
+        "A CERTIFICATE WITH A MALFORMED BINDING WAS ACCEPTED. Decision 0008 says a repeated \
+         key and a binding that does not cover the cited rule's variables are both refused, \
+         and `bindingWellFormed` is a conjunct of `checkHornStep` for that reason. A row \
+         here means the gate is not doing what the decision record says it does.\n\n{}",
+        accepted_malformed.join("\n\n")
+    );
+
+    assert!(
+        divergent.is_empty(),
+        "THE TWO KERNELS DISAGREE. This was 47 rows before decision 0008 and it is zero \
+         after; a row reappearing here is a NEW finding and the headline result of this \
+         test, not a nuisance. Do not adjust either checker to make it go away, and in \
+         particular do not adjust the Isabelle, which was written from the specifications \
+         without reading the Lean and is worth nothing once it is edited to agree. Decide \
+         from the specification which side is wrong, write the decision down, and move the \
+         side the decision says moves.\n\n{}",
+        divergent.join("\n\n")
+    );
+
+    // The gate above is worthless if the corpus stopped containing the shapes it refuses.
+    // The floor is 47 because that is how many rows DIVERGED on this corpus and seed before
+    // decision 0008, so every one of them must still be generated and must still be caught.
+    // The actual count is higher and is printed rather than asserted, because pinning it
+    // would make an unrelated fixture addition look like a regression.
+    assert!(
+        refused_total >= 47,
+        "only {refused_total} rows carry a binding decision 0008 refuses, and there were 47 \
+         before it. The corpus has stopped generating the shape the gate is about, so the \
+         gate is passing over nothing"
     );
 
     // A corpus that is all rejections would prove only that both sides can say no.
@@ -1166,38 +1205,33 @@ fn the_two_kernels_agree_on_the_whole_corpus() {
     let _ = std::fs::remove_dir_all(&scratch);
 }
 
-/// **Divergence D1.** A binding list with a repeated key.
+/// **D1, resolved by decision 0008.** A binding list with a repeated key.
 ///
 /// `isabelle/fixtures-added/bad_dup_key.tsv` binds `x` twice: first to `<http://ex.org/a>`,
 /// which is the value that makes the step check, then to `<http://ex.org/zzz>`, which
 /// does not.
 ///
-/// * Isabelle: `check_step` tests `distinct (map fst b)` first and returns
-///   `R_binding_dup_key`. Decision M25 records this as a deliberate STRICTNESS and
-///   uncertainty U10 records it as a coin-flip between two honest authors.
-/// * Lean: `substOf` is `fun v => (List.lookup v l).getD v`, and `List.lookup` returns
-///   the FIRST match. `x` resolves to `<http://ex.org/a>`, the step checks, and the run
-///   earns the ABSOLUTE verdict.
+/// It used to diverge. Isabelle's `check_step` tested `distinct (map fst b)` first and
+/// returned `R_binding_dup_key`; Lean's `substOf` was `fun v => (List.lookup v l).getD v`,
+/// `List.lookup` returns the FIRST match, so `x` resolved to `<http://ex.org/a>`, the step
+/// checked, and the run earned the ABSOLUTE verdict `entailed`. Neither was unsound, because
+/// `checkHornStep_sound` quantifies over `substOf st.binds`, a perfectly good total
+/// substitution whichever value it picks, and that is exactly why the divergence was a
+/// FORMAT defect rather than a bug in either checker. Whether this certificate was valid
+/// turned on a tie-break inside a standard-library function.
 ///
-/// Which is wrong? Neither, on soundness. `checkHornStep_sound` quantifies over the
-/// substitution `substOf st.binds`, which is a perfectly good total substitution
-/// whichever value it picks, so Lean's acceptance is sound in Lean's own theorem, and
-/// Isabelle's rejection is a false alarm rather than a missed forgery.
+/// **How it was resolved.** Decision 0008 refuses a repeated key, and the LEAN moved:
+/// `bindingWellFormed` is now a conjunct of `checkHornStep`. The Isabelle is untouched,
+/// because it was written from the W3C sources without reading the Lean and is worth
+/// nothing once it is edited to agree.
 ///
-/// The defect is in the FORMAT, and it is real. `docs/lean-certificates.md` and decision
-/// 0003 do not say what a repeated binding key means, so Lean's answer is whatever
-/// `List.lookup` happens to do. That is a tie-break inside a standard-library function
-/// standing in for a rule about the file format, and it decides whether a certificate is
-/// valid. Isabelle's `binding_covers` comment predicted exactly this and named `map_of`'s
-/// first-wins behaviour as the reason not to rely on it; the Lean side has no comment on
-/// duplicate keys at all — `substOf`'s docstring discusses MISSING bindings only.
-///
-/// The repair belongs on the Lean side (reject a repeated key, or write the first-wins
-/// rule into the format as normative), and it is not made here: the instruction for this
-/// exercise is that a disagreement is the result, and a disagreement quietly fixed is a
-/// disagreement hidden.
+/// Refusing rather than making first-wins normative is argued in the decision record. The
+/// short form: `List.lookup` and `map_of` are first-wins while `dict()` and
+/// `HashMap::from_iter` are last-wins, so a normative first-wins rule is one that half of
+/// all unthinking implementations would break silently, and a duplicate key carries no
+/// information any producer needs.
 #[test]
-fn divergence_d1_duplicate_binding_key() {
+fn resolved_d1_a_duplicate_binding_key_is_refused_by_both() {
     if skip() {
         return;
     }
@@ -1207,22 +1241,61 @@ fn divergence_d1_duplicate_binding_key() {
     }
     let rules = horn_fixture("builtin_rules.tsv");
     let asserted = horn_fixture("asserted.tsv");
+
+    // The fixture still has the shape the test is about. Without this, a fixture edited
+    // into a well-formed certificate would make the agreement below mean nothing.
+    let text = std::fs::read_to_string(&cert).unwrap();
+    let step = parse_step(text.lines().next().unwrap()).expect("the fixture must parse");
+    let keys: Vec<&str> = step.binds.iter().map(|(k, _)| k.as_str()).collect();
+    assert!(
+        keys.iter().enumerate().any(|(n, k)| keys[..n].contains(k)),
+        "bad_dup_key.tsv must still repeat a binding key: {keys:?}"
+    );
+
     let lean = run_lean(&rules, &asserted, &cert);
     let isa = run_isabelle(&rules, &asserted, &cert);
-
-    assert_eq!(lean.exit, 0, "Lean accepts a duplicate binding key, first-wins");
-    assert_eq!(
-        lean.verdict.as_deref(),
-        Some("entailed"),
-        "and it accepts with the ABSOLUTE verdict, which is what makes the divergence \
-         worth reporting rather than filing"
-    );
-    assert_eq!(isa.exit, 1, "Isabelle rejects it as malformed");
-    assert_ne!(lean, isa, "if these ever agree, D1 has been resolved and this test should say how");
+    assert_eq!(lean.exit, 1, "Lean must now refuse a repeated key rather than resolve it");
+    assert_eq!(lean.verdict, None, "and it must award no verdict at all, absolute or relativised");
+    assert_eq!(isa.exit, 1, "Isabelle rejects it as malformed, as it always did");
+    assert_eq!(lean, isa, "D1 is resolved: the two kernels now read these bytes the same way");
 }
 
-/// **Divergence D2.** A binding that does not cover every variable of the rule, where
-/// the missing variable's NAME is itself a term in the graph.
+/// The control for D1, and the reason the test above is not just a checker that says no.
+/// Drop the repeated pair and the certificate is the ordinary one both kernels accept
+/// with the absolute verdict, over the same rule table and the same graph.
+#[test]
+fn resolved_d1_the_same_certificate_without_the_repeat_is_accepted() {
+    if skip() {
+        return;
+    }
+    let rules = horn_fixture("builtin_rules.tsv");
+    let asserted = horn_fixture("asserted.tsv");
+    let good = horn_fixture("good.tsv");
+    let dup = isabelle_dir().join("fixtures-added").join("bad_dup_key.tsv");
+    if common::skip_unless(dup.exists() && good.exists(), "the D1 pair", "they are committed") {
+        return;
+    }
+
+    // `bad_dup_key.tsv` IS `good.tsv` with one binding pair inserted: same rule index, same
+    // conclusion, same premises. So the only difference the kernels can be reacting to is
+    // the repeated key.
+    let a = parse_step(std::fs::read_to_string(&good).unwrap().lines().next().unwrap()).unwrap();
+    let b = parse_step(std::fs::read_to_string(&dup).unwrap().lines().next().unwrap()).unwrap();
+    assert_eq!(a.idx, b.idx);
+    assert_eq!(a.concl, b.concl);
+    assert_eq!(a.prems, b.prems);
+    assert_eq!(b.binds.len(), a.binds.len() + 1, "one pair apart, and that pair is the repeat");
+
+    let lean = run_lean(&rules, &asserted, &good);
+    let isa = run_isabelle(&rules, &asserted, &good);
+    assert_eq!(lean.exit, 0, "the well-formed certificate must still be accepted by Lean");
+    assert_eq!(lean.verdict.as_deref(), Some("entailed"), "with the absolute verdict");
+    assert_eq!(isa.exit, 0, "and by Isabelle");
+    assert_eq!(lean, isa);
+}
+
+/// **D2, resolved by decision 0008.** A binding that does not cover every variable of the
+/// rule, where the missing variable's NAME is itself a term in the graph.
 ///
 /// The certificate in `isabelle/fixtures-differential/` cites a one-atom rule
 /// `?s <p> ?o -> ?s <q> ?o` over a graph whose only triple is `s <p> <b>` — note the
@@ -1232,12 +1305,12 @@ fn divergence_d1_duplicate_binding_key() {
 /// * Isabelle: `binding_covers` requires every variable of the rule to have a binding,
 ///   and returns `R_binding_incomplete`. Its instantiation `iptriple` is PARTIAL, so an
 ///   unbound variable has no value at all and there is nothing to fall through to.
-/// * Lean: `substOf` is total by construction — `(List.lookup v l).getD v` — so an
-///   unbound variable takes its own NAME as its value. `s` becomes the term `s`, the
-///   body instantiates to the asserted triple, the head instantiates to the claimed
-///   conclusion, and the step checks.
+/// * Lean, before decision 0008: `substOf` was total by construction,
+///   `(List.lookup v l).getD v`, so an unbound variable took its own NAME as its value.
+///   `s` became the term `s`, the body instantiated to the asserted triple, the head
+///   instantiated to the claimed conclusion, and the step checked.
 ///
-/// Which side is wrong depends on which question is being asked, and the two questions
+/// Which side was wrong depended on which question was being asked, and the two questions
 /// have opposite answers. That is worth saying plainly rather than picking a winner.
 ///
 /// On "is the conclusion entailed under this rule table?", LEAN IS RIGHT. `EntailsR`
@@ -1247,10 +1320,10 @@ fn divergence_d1_duplicate_binding_key() {
 /// false alarm is the harmless direction.
 ///
 /// On "is this a well-formed certificate?", ISABELLE IS RIGHT, and
-/// `divergence_d2b_unsafe_rule_head` is why: Lean's default does not merely admit more
-/// certificates, it FABRICATES a term out of a variable's name and puts it in the
-/// conclusion. A certificate can therefore be accepted whose conclusion is not a writable
-/// RDF triple at all.
+/// `resolved_d2b_an_unsafe_rule_head_is_refused_by_both` is why: Lean's default did not
+/// merely admit more certificates, it FABRICATED a term out of a variable's name and put
+/// it in the conclusion. A certificate could therefore be accepted whose conclusion is not
+/// a writable RDF triple at all.
 ///
 /// This also contradicts, ACROSS the two checkers, a claim proved inside one of them.
 /// Isabelle's `coverage_implied` says removing the coverage check cannot change its
@@ -1260,11 +1333,17 @@ fn divergence_d1_duplicate_binding_key() {
 /// property proved of one formalisation's checker is not a property of the format, and
 /// this is what that looks like when it bites.
 ///
-/// Neither side is adjusted. What the pair needs is a sentence in the format saying
-/// whether a binding must be total over the rule's variables; until there is one, a
-/// certificate's validity depends on which verified checker reads it.
+/// **How it was resolved.** Decision 0008 refuses an incomplete binding, and the LEAN
+/// moved: `bindsCover` requires every variable of the cited rule, body AND head, to have
+/// a binding before anything is instantiated.
+///
+/// That is a deliberate choice of well-formedness over completeness, and the decision
+/// record says so rather than pretending Lean was wrong on entailment. It is free because
+/// it loses no certificate anybody meant: the control below, and
+/// `the_refusal_costs_no_certificate_anybody_meant`, show the same claim written with the
+/// variable bound is accepted by both.
 #[test]
-fn divergence_d2_binding_omits_a_variable_named_like_a_term() {
+fn resolved_d2_a_binding_that_omits_a_rule_variable_is_refused_by_both() {
     if skip() {
         return;
     }
@@ -1281,25 +1360,78 @@ fn divergence_d2_binding_omits_a_variable_named_like_a_term() {
 
     let lean = run_lean(&rules, &asserted, &cert);
     let isa = run_isabelle(&rules, &asserted, &cert);
-    assert_eq!(lean.exit, 0, "Lean accepts: the omitted variable takes its own name, which matches");
     assert_eq!(
-        lean.verdict.as_deref(),
-        Some("entailed_under_supplied_rules"),
-        "relativised, because this is a user table and nothing discharges it"
+        lean.exit, 1,
+        "Lean must now refuse the incomplete binding rather than send the omitted variable \
+         to its own name"
     );
-    assert_eq!(isa.exit, 1, "Isabelle rejects: binding_incomplete");
-    assert_ne!(lean, isa, "if these ever agree, D2 has been resolved and this test should say how");
+    assert_eq!(lean.verdict, None);
+    assert_eq!(isa.exit, 1, "Isabelle rejects: binding_incomplete, as it always did");
+    assert_eq!(lean, isa, "D2 is resolved: the two kernels now read these bytes the same way");
 
-    // The control. Bind `s` as well and both accept, so the divergence is about the
-    // MISSING binding and not about anything else in these three files.
+    // The control, and it is load-bearing: bind `s` as well and BOTH accept. Without it
+    // the assertions above would be satisfied by a checker that had simply stopped
+    // accepting anything over this rule table.
     let full = differential_fixture("varname_bound_cert.tsv");
-    if full.exists() {
-        let lean = run_lean(&rules, &asserted, &full);
-        let isa = run_isabelle(&rules, &asserted, &full);
-        assert_eq!(lean.exit, 0, "the fully bound certificate must be accepted by Lean");
-        assert_eq!(isa.exit, 0, "and by Isabelle");
-        assert_eq!(lean, isa, "with the same verdict");
+    assert!(full.exists(), "the control certificate must be committed");
+    let lean = run_lean(&rules, &asserted, &full);
+    let isa = run_isabelle(&rules, &asserted, &full);
+    assert_eq!(lean.exit, 0, "the fully bound certificate must still be accepted by Lean");
+    assert_eq!(lean.verdict.as_deref(), Some("entailed_under_supplied_rules"));
+    assert_eq!(isa.exit, 0, "and by Isabelle");
+    assert_eq!(lean, isa, "with the same verdict");
+}
+
+/// **What decision 0008 costs, measured rather than asserted.**
+///
+/// The claim in the decision record is that refusing an incomplete binding loses no
+/// certificate anybody meant, because the omitted variable can always be bound to the
+/// term the conclusion already shows. This runs that repair on the sharp case, D2b, whose
+/// rule head carries a variable the body never binds.
+///
+/// It also fixes the BOUNDARY of the decision in a test, which matters more than the
+/// reassurance. The repaired certificate still concludes `<a> <q> z`, whose object is the
+/// bare term `z`, which is not an IRI, not a blank node, not a literal and not writable RDF, and
+/// BOTH kernels accept it. Decision 0008 requires the term to be WRITTEN by the
+/// certificate's author; it does not require it to be writable RDF, and nothing here
+/// should be read as saying it does.
+#[test]
+fn the_refusal_costs_no_certificate_anybody_meant() {
+    if skip() {
+        return;
     }
+    let rules = differential_fixture("unsafehead_rules.tsv");
+    let asserted = differential_fixture("unsafehead_asserted.tsv");
+    let cert = differential_fixture("unsafehead_cert.tsv");
+    if common::skip_unless(
+        rules.exists() && asserted.exists() && cert.exists(),
+        "isabelle/fixtures-differential/unsafehead_*.tsv",
+        "they are committed",
+    ) {
+        return;
+    }
+
+    let text = std::fs::read_to_string(&cert).unwrap();
+    let mut step = parse_step(text.lines().next().unwrap()).expect("the probe must parse");
+    assert_eq!(step.concl[2], "z", "the claimed conclusion must carry the bare term `z`");
+    assert!(!step.binds.iter().any(|(k, _)| k == "z"), "and `z` must start out unbound");
+
+    // The repair, and it is the only one available: bind `z` to what the conclusion says.
+    step.binds.push(("z".to_string(), "z".to_string()));
+    let repaired = std::env::temp_dir().join(format!("oo-d2b-repaired-{}.tsv", std::process::id()));
+    std::fs::write(&repaired, render_step(&step) + "\n").unwrap();
+
+    let lean = run_lean(&rules, &asserted, &repaired);
+    let isa = run_isabelle(&rules, &asserted, &repaired);
+    assert_eq!(
+        lean.exit, 0,
+        "the repaired certificate must be accepted, or decision 0008 costs more than it \
+         claims: it would be refusing the inference rather than the omission"
+    );
+    assert_eq!(lean.verdict.as_deref(), Some("entailed_under_supplied_rules"));
+    assert_eq!(isa.exit, 0, "and both kernels must accept it, or the format still has two readings");
+    assert_eq!(lean, isa);
+    let _ = std::fs::remove_file(&repaired);
 }
 
 /// **Divergence D2c: the same hole, found by the fuzzer rather than designed.**
@@ -1314,11 +1446,13 @@ fn divergence_d2_binding_omits_a_variable_named_like_a_term() {
 ///
 /// It is worth its own test because of where it came from. D2a needed a graph whose
 /// subject was spelled like a variable, and the obvious objection is that nobody writes
-/// such a graph. This one needed a single character to change in a rule file. The hole is
-/// reachable by a typo, and `substOf`'s silent default is what turns a typo into an
-/// accepted certificate rather than an error.
+/// such a graph. This one needed a single character to change in a rule file. The hole was
+/// reachable by a typo, and `substOf`'s silent default was what turned a typo into an
+/// accepted certificate rather than an error. That is the case that decided decision 0008
+/// against making the permissive reading normative: a default nobody would write down,
+/// reached by a keystroke.
 #[test]
-fn divergence_d2c_fuzzer_found_the_same_hole_through_a_typo() {
+fn resolved_d2c_the_hole_the_fuzzer_found_through_a_typo_is_closed() {
     if skip() {
         return;
     }
@@ -1343,54 +1477,68 @@ fn divergence_d2c_fuzzer_found_the_same_hole_through_a_typo() {
     assert_eq!(differing.len(), 1, "exactly one field differs: {a:?} vs {b:?}");
     assert_eq!(b[differing[0]], "?", "and the one that differs is a bare question mark");
 
-    assert_eq!(
-        binding_defect(&rules, &cert),
-        Some(
-            "D2: the binding does not cover every variable of the cited rule. Isabelle \
-             rejects (R_binding_incomplete); Lean's substOf sends the unbound variable \
-             to its own NAME and carries on, so the step checks whenever that name is \
-             the term the certificate used."
-        ),
-        "this must be classified as D2 and not as something new"
+    assert!(
+        binding_defect(&rules, &cert).is_some_and(|w| w.starts_with("D2")),
+        "this must still be classified as D2 and not as something new"
     );
 
     let lean = run_lean(&rules, &asserted, &cert);
     let isa = run_isabelle(&rules, &asserted, &cert);
-    assert_eq!(lean.exit, 0, "Lean accepts: the empty-named variable takes the empty term");
-    assert_eq!(isa.exit, 1, "Isabelle rejects: binding_incomplete");
-    assert_ne!(lean, isa);
+    assert_eq!(
+        lean.exit, 1,
+        "Lean must now refuse the empty-named variable rather than send it to the empty term"
+    );
+    assert_eq!(isa.exit, 1, "Isabelle rejects: binding_incomplete, as it always did");
+    assert_eq!(lean, isa, "D2c is resolved: the two kernels now read these bytes the same way");
+
+    // The control, over the probe the fuzzer started from. Its `?o` is intact and its
+    // binding covers the rule, and both kernels accept it, so the refusal above is about
+    // the typo and not about anything else in this family of files.
+    let ok_rules = differential_fixture("probe_degen2_rules.tsv");
+    let ok_asserted = differential_fixture("probe_degen2_asserted.tsv");
+    let ok_cert = differential_fixture("probe_degen2_cert.tsv");
+    let lean = run_lean(&ok_rules, &ok_asserted, &ok_cert);
+    let isa = run_isabelle(&ok_rules, &ok_asserted, &ok_cert);
+    assert_eq!(lean.exit, 0, "the un-fuzzed probe must still be accepted by Lean");
+    assert_eq!(isa.exit, 0, "and by Isabelle");
+    assert_eq!(lean, isa);
 }
 
-/// **Divergence D2b, the sharp form of D2.** A rule whose HEAD carries a variable its
-/// body never binds, and a certificate that does not bind it either.
+/// **D2b, the sharp form of D2, resolved by decision 0008.** A rule whose HEAD carries a
+/// variable its body never binds, and a certificate that does not bind it either.
 ///
 /// The rule is `?s <p> ?o -> ?s <q> ?z`. The graph is one ordinary triple of IRIs,
 /// `<a> <p> <b>`; nothing about it is contrived. The certificate binds `s` and `o`, omits
 /// `z`, and claims the conclusion `<a> <q> z`.
 ///
-/// Lean accepts it. `substOf` sends the unbound `z` to the string `"z"`, the head
-/// instantiates to exactly the claimed conclusion, and the run reports
-/// `entailed_under_supplied_rules`. Isabelle rejects it, `R_binding_incomplete`.
+/// Lean used to accept it. `substOf` sent the unbound `z` to the string `"z"`, the head
+/// instantiated to exactly the claimed conclusion, and the run reported
+/// `entailed_under_supplied_rules`. Isabelle rejected it, `R_binding_incomplete`.
 ///
-/// This is the same hole as D2 and a worse consequence. The accepted conclusion contains
+/// This was the same hole as D2 and a worse consequence. The accepted conclusion contained
 /// the term `z`, which is not an IRI, not a blank node and not a literal: it is not RDF,
 /// and no serialiser can write it. Lean's term type is an opaque string, so nothing in
-/// the checker notices. The term was never written by the certificate's author; it was
+/// the checker noticed. The term was never written by the certificate's author; it was
 /// minted out of a VARIABLE NAME in the rule file.
 ///
-/// It is still not unsoundness. `EntailsR` is a statement about `Interp`, whose `ι` is
+/// It was still not unsoundness. `EntailsR` is a statement about `Interp`, whose `ι` is
 /// total over terms, so `<a> <q> z` genuinely holds in every interpretation that models
-/// the graph and satisfies the rule. The theorem is true. What is false is the thing a
+/// the graph and satisfies the rule. The theorem was true. What was false is the thing a
 /// reader takes the theorem to be about.
 ///
-/// The engine already refuses to EVALUATE such a rule: `parse_rules` in `src/reason.rs`
+/// The engine already refused to EVALUATE such a rule: `parse_rules` in `src/reason.rs`
 /// rejects "a head variable the body never binds", and `reason_horn_emit_test.rs` gates
-/// it. That guard is in the PRODUCER only. `oo-horn` is a checker anyone may point at any
-/// rule file, and it has no such guard, so the guarantee evaporates exactly when the
+/// it. That guard was in the PRODUCER only. `oo-horn` is a checker anyone may point at any
+/// rule file, and it had no such guard, so the guarantee evaporated exactly when the
 /// certificate did not come from this engine — which is the only case in which an
-/// independent checker is worth having.
+/// independent checker is worth having. Decision 0008 puts the guard in the CHECKER, which
+/// is where a guard about what a certificate means has to live.
+///
+/// What it does NOT do is make the conclusion writable RDF. Bind `z` explicitly and both
+/// kernels accept `<a> <q> z`. See `the_refusal_costs_no_certificate_anybody_meant`, which
+/// is where that boundary is pinned so nobody reads this test as closing it.
 #[test]
-fn divergence_d2b_unsafe_rule_head() {
+fn resolved_d2b_an_unsafe_rule_head_is_refused_by_both() {
     if skip() {
         return;
     }
@@ -1418,12 +1566,13 @@ fn divergence_d2b_unsafe_rule_head() {
     let lean = run_lean(&rules, &asserted, &cert);
     let isa = run_isabelle(&rules, &asserted, &cert);
     assert_eq!(
-        lean.exit, 0,
-        "Lean accepts a conclusion containing a term minted from a variable's name"
+        lean.exit, 1,
+        "Lean must no longer accept a conclusion containing a term minted from a variable's \
+         name"
     );
-    assert_eq!(lean.verdict.as_deref(), Some("entailed_under_supplied_rules"));
-    assert_eq!(isa.exit, 1, "Isabelle rejects: binding_incomplete");
-    assert_ne!(lean, isa, "if these ever agree, D2b has been resolved and this test should say how");
+    assert_eq!(lean.verdict, None);
+    assert_eq!(isa.exit, 1, "Isabelle rejects: binding_incomplete, as it always did");
+    assert_eq!(lean, isa, "D2b is resolved: the two kernels now read these bytes the same way");
 }
 
 /// The corners of the term format that no generated certificate reaches. Both

@@ -66,42 +66,47 @@ repository ships, mutates and fuzzes them, and runs both kernels over the lot. I
 loudly (`common::skip_unless`) when either proof assistant is missing, and
 `OO_REQUIRE_FIXTURES=1` turns that skip into a failure.
 
-## What the differential found
+## What the differential found, and what it changed
 
-1,718 certificates: 61 base, 1,291 mutated, 366 fuzzed. Both kernels accept 349, reject
-857, and refuse 465 as unparseable. **Forty-seven rows disagree, in two classes.** Nothing
-was adjusted on either side to make them go away.
+1,718 certificates: 61 base, 1,291 mutated, 366 fuzzed. **Forty-seven rows disagreed.** Nothing
+was adjusted on either side to make them go away; the FORMAT was changed instead, and the
+divergence is now zero.
 
-Both classes have ONE root cause: **Isabelle validates the binding list as a data
-structure and Lean does not.** `check_step` requires `distinct (map fst b)` and
-`binding_covers b r` before it instantiates anything; Lean's `substOf` is
-`fun v => (List.lookup v l).getD v`, which turns any binding list into a total function
-with a silent default and never inspects it.
+Those 47 corpus rows were ALL of class D1 below, which is worth stating precisely rather than
+rounding to "two classes": D2's three certificates are committed probes with their own tests and
+are not members of the generated corpus, so the corpus never counted them. The classification the
+corpus test prints says so directly, and D2 is not the weaker finding for it: D2c was found BY the
+fuzzer, inside the corpus machinery, before it was committed as a probe.
 
-| | certificate | Lean | Isabelle |
+Both classes had ONE root cause: **Isabelle validates the binding list as a data structure
+and Lean did not.** `check_step` requires `distinct (map fst b)` and `binding_covers b r`
+before it instantiates anything; Lean's `substOf` is `fun v => (List.lookup v l).getD v`,
+which turns any binding list into a total function with a silent default and used to be
+applied without the list being inspected at all.
+
+| | certificate | Lean, before | Isabelle |
 |---|---|---|---|
-| **D1** duplicate binding key | `fixtures-added/bad_dup_key.tsv` | accepts, `entailed` | rejects, `binding_dup_key` |
-| **D2a** binding omits a variable whose NAME is a term in the graph | `fixtures-differential/varname_unbound_cert.tsv` | accepts | rejects, `binding_incomplete` |
-| **D2b** binding omits a variable the rule's HEAD needs | `fixtures-differential/unsafehead_cert.tsv` | accepts | rejects, `binding_incomplete` |
-| **D2c** the same, **found by the fuzzer** in a rule file one character from a probe written for something else | `fixtures-differential/d2c_fuzzfound_*.tsv` | accepts | rejects, `binding_incomplete` |
+| **D1** duplicate binding key | `fixtures-added/bad_dup_key.tsv` | accepted, `entailed` | rejects, `binding_dup_key` |
+| **D2a** binding omits a variable whose NAME is a term in the graph | `fixtures-differential/varname_unbound_cert.tsv` | accepted | rejects, `binding_incomplete` |
+| **D2b** binding omits a variable the rule's HEAD needs | `fixtures-differential/unsafehead_cert.tsv` | accepted | rejects, `binding_incomplete` |
+| **D2c** the same, **found by the fuzzer** in a rule file one character from a probe written for something else | `fixtures-differential/d2c_fuzzfound_*.tsv` | accepted | rejects, `binding_incomplete` |
 
-Neither checker is unsound. Lean's acceptances are all sound in Lean's own theorem,
-because `EntailsR` quantifies over every total substitution and the substitution Lean used
-is a real one; Isabelle's rejections are false alarms, which is the harmless direction.
-What the pair shows is that the FORMAT is underspecified in two places, and that a
-certificate's validity therefore depends on which verified checker reads it.
+Neither checker was unsound. Lean's acceptances were all sound in Lean's own theorem, because
+`EntailsR` quantifies over every total substitution and the substitution Lean used is a real
+one; Isabelle's rejections were false alarms, which is the harmless direction. What the pair
+showed is that the FORMAT was underspecified in two places, and that a certificate's validity
+therefore depended on which verified checker read it.
 
-D1's resolution rests on `List.lookup` being first-wins. That is a tie-break inside a
-standard-library function standing in for a rule about a file format, and it decides
+D1's resolution rested on `List.lookup` being first-wins. That is a tie-break inside a
+standard-library function standing in for a rule about a file format, and it decided
 whether a certificate is valid. DECISION M25 in `OO_Check.thy` predicted exactly this and
-named `map_of`'s first-wins behaviour as the reason not to rely on it; `substOf`'s
-docstring on the Lean side discusses missing bindings only and says nothing about repeated
-ones.
+named `map_of`'s first-wins behaviour as the reason not to rely on it; `substOf`'s docstring
+on the Lean side discussed missing bindings only and said nothing about repeated ones.
 
 D2b is the sharp one. The rule is `?s <p> ?o -> ?s <q> ?z`, the graph is one ordinary
-triple of IRIs, and the certificate omits `z`. Lean accepts a conclusion whose object is
-the bare term `z` — not an IRI, not a blank node, not a literal, not writable RDF — minted
-out of a variable's NAME in the rule file. The engine refuses to evaluate such a rule
+triple of IRIs, and the certificate omits `z`. Lean accepted a conclusion whose object is
+the bare term `z`, which is not an IRI, not a blank node, not a literal and not writable RDF,
+minted out of a variable's NAME in the rule file. The engine refuses to evaluate such a rule
 (`parse_rules` in `src/reason.rs` rejects "a head variable the body never binds"), but
 that guard is in the PRODUCER, and the checker is the thing you point at a certificate
 someone else wrote.
@@ -110,19 +115,50 @@ D2c is the one that settles the obvious objection to D2a, which is that nobody w
 graph whose subject is spelled like a variable. Nobody designed D2c either: the seeded
 fuzzer replaced one field of a probe's rule file, `?o` became a bare `?`, and both parsers
 read that as a variable whose NAME IS THE EMPTY STRING. The graph's object is an empty
-field, so Lean's default sends the unbound variable `""` to the term `""` and the step
-checks. The hole is reachable by a typo. This is also why the corpus test classifies a
-divergence by its CAUSE rather than by the edit that produced it — a quarantine keyed on
+field, so Lean's default sent the unbound variable `""` to the term `""` and the step
+checked. The hole was reachable by a typo. This is also why the corpus test works from the
+CAUSE of a divergence rather than from the edit that produced it: a quarantine keyed on
 the edit would have hidden exactly this row.
 
-D2 also falsifies, across the two checkers, something proved inside one of them.
+D2 also falsified, across the two checkers, something proved inside one of them.
 `coverage_implied` says removing Isabelle's coverage check cannot change its accept/reject
 bit, and that is true of Isabelle, whose instantiation is partial. It does not transfer:
 Lean's instantiation is total, so the same check is load-bearing there and in the opposite
 direction. A property proved of one formalisation's checker is not a property of the
 format.
 
-### What agreement on the other 1,671 rows is evidence of
+### How it was closed, and which side moved
+
+`docs/decisions/0008-a-binding-is-data-and-evidence-admits-one-reading.md` refuses both
+shapes, and **the LEAN moved**. `bindingWellFormed` is now a conjunct of `checkHornStep`, so
+Lean rejects a repeated key and an incomplete binding exactly where Isabelle already did, and
+`OOCert.wellFormed_determines_instantiation` is the Lean-side theorem that a well-formed
+binding leaves nothing for a checker's choice of representation to decide.
+
+**Nothing under `isabelle/` was edited to produce that agreement**, and nothing should be.
+These theories were written from the W3C sources without reading the Lean, and a formalisation
+edited to agree with the one it is checking is worth nothing. If the two disagree again
+somewhere else, that is a new finding and it belongs in a report before it belongs in a patch.
+
+The corpus is now 349 accepted by both, 904 rejected by both, 465 unparseable on both, and
+ZERO divergent. The 47 that diverged moved into the rejected column and nowhere else: 857 plus
+47 is 904, and the accepted and unparseable counts did not move at all.
+
+The analysis that used to excuse a disagreement is now a gate that can fail. 286 rows of the
+corpus carry a binding malformed in one of the two ways, the 47 among them, and the corpus test
+requires BOTH kernels to refuse every one. The other 239 were already rejected by both for some
+other reason, which is why the gate is checked on every row rather than only on the ones that
+disagree: a check that ran only on divergences could be satisfied by silence.
+
+A binding for a variable the cited rule never mentions is still ACCEPTED on both sides
+(`probe_extrabind`). It is never consulted, so there was no second reading to remove.
+
+### What agreement on all 1,718 rows is evidence of
+
+It was 1,671 rows before decision 0008 and it is all 1,718 after, and the increase is worth
+exactly nothing on its own: it was bought by making one checker refuse more, which is the
+cheapest way there is to buy agreement. What the number is worth is fixed by the floor the
+corpus test asserts, that at least twenty certificates are ACCEPTED by both.
 
 Checking a Horn certificate is purely syntactic. Neither kernel consults its semantics, so
 two checkers built on contradictory model theories agree on every certificate and every

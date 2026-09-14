@@ -91,9 +91,13 @@ same direction, with none unexplained, and the cause was neither proof. Isabelle
 binding list as a data structure; Lean turned any binding list into a total function with a
 silent default. On a certificate that binds one variable twice, first to a value that makes the
 step check and then to one that does not, Lean returned the absolute verdict and Isabelle
-refused. The defect was in the FORMAT, which never said what a repeated key means, and only a
-second implementation could have surfaced it. That gap is being closed by making the Lean refuse
-the shape, not by editing the Isabelle, since its independence is the asset.
+refused. The defect was in the FORMAT, which never said what a repeated key means or what an
+incomplete binding means, and only a second implementation could have surfaced it.
+
+That gap is now CLOSED. `docs/decisions/0008-a-binding-is-data-and-evidence-admits-one-reading.md`
+refuses both shapes, the Lean moved and no Isabelle theory was touched, and the same corpus now
+reports zero divergent rows: 349 accepted by both, 904 rejected by both, 465 unparseable on both.
+The 47 moved into rejected-by-both and nowhere else.
 
 The adversarial review of that comparison established four things about the Lean layer that the
 Lean's own build could never have shown, and they are the current work rather than a footnote:

@@ -57,7 +57,7 @@ theorem demo_conclusion_entailed : EntailsR demoG demoR ⟨uA, uGp, uC⟩ :=
 
 /-! ## The gate can fail
 
-Four ways to be wrong, each rejected. Without these the acceptance above would
+Six ways to be wrong, each rejected. Without these the acceptance above would
 be evidence of nothing. -/
 
 def badConclusion : HornStep := { demoStep with conclusion := ⟨uA, uGp, uB⟩ }
@@ -79,6 +79,136 @@ theorem rejects_unknown_rule_index :
     checkHornStep demoR (fun t => decide (t ∈ demoG)) badIndex = false := by decide
 theorem rejects_unknown_premise :
     checkHornStep demoR (fun t => decide (t ∈ demoG)) badUnknown = false := by decide
+
+/-! ### The two shapes decision 0008 refuses
+
+Both would have been ACCEPTED before it, and neither acceptance was unsound.
+That is the point: these are refusals about what a certificate MEANS, not about
+what it proves, so the evidence they can fail has to be written down here rather
+than inferred from a soundness theorem that never mentions them. -/
+
+/-- `x` is bound twice: first to the value that makes the step check, then to
+one that does not. Whether this checked used to depend on `List.lookup` being
+first-wins: a tie-break inside a standard-library function deciding whether a
+certificate is valid. -/
+def dupKey : HornStep :=
+  { demoStep with binds := [("x", uA), ("y", uB), ("z", uC), ("x", uB)] }
+
+/-- `z` is dropped. `substOf`'s default used to send it to the term `"z"`, which
+is not an IRI, not a blank node and not a literal, and the conclusion below
+carries exactly that fabricated term. -/
+def uncovered : HornStep :=
+  { rule := 0
+    binds := [("x", uA), ("y", uB)]
+    premises := [⟨uA, uP, uB⟩, ⟨uB, uP, "z"⟩]
+    conclusion := ⟨uA, uGp, "z"⟩ }
+
+theorem rejects_duplicate_binding_key :
+    checkHornStep demoR (fun t => decide (t ∈ demoG)) dupKey = false := by decide
+theorem rejects_binding_that_omits_a_rule_variable :
+    checkHornStep demoR (fun t => decide (t ∈ demoG)) uncovered = false := by decide
+
+/-- A binding for a variable the rule never mentions is NOT refused. The rule is
+that the binding must DETERMINE the step, not that it must be minimal, and an
+unconsulted pair cannot make a certificate mean two things. -/
+def extraBind : HornStep :=
+  { demoStep with binds := [("x", uA), ("y", uB), ("z", uC), ("nowhere", uP)] }
+
+theorem accepts_a_binding_for_a_variable_the_rule_never_mentions :
+    checkHornStep demoR (fun t => decide (t ∈ demoG)) extraBind = true := by decide
+
+/-- And the refusal costs no certificate anyone meant. Binding `z` to the term
+the conclusion already shows turns `uncovered` into a step BOTH kernels accept:
+what decision 0008 requires is that the term be WRITTEN, not that it be
+writable RDF. The second question is a separate one and this gate does not
+answer it. -/
+def uncoveredRepaired : HornStep :=
+  { uncovered with binds := [("x", uA), ("y", uB), ("z", "z")] }
+
+theorem the_repair_is_accepted :
+    checkHornStep demoR (fun t => decide (t ∈ ⟨uB, uP, "z"⟩ :: demoG)) uncoveredRepaired
+      = true := by decide
+
+/-! ### Both halves of `wellFormed_determines_instantiation` are load-bearing
+
+That theorem has two conjuncts and `bindingWellFormed` has two, and the pairing is
+exact: distinct keys buy EXISTENCE and coverage buys UNIQUENESS. A theorem whose
+conclusion held with its hypothesis dropped would be worth nothing, so each half is
+refuted below with the matching half of the hypothesis removed.
+
+Read a binding list as what it looks like: a set of demands, "`v` is `t`", one per
+written pair. -/
+
+/-! #### Drop distinctness and NOTHING meets the demands
+
+This is the argument for refusing a repeated key, and it is stronger than the one
+about tie-breaks. A variable bound twice to different values demands two
+incompatible things, so no total substitution meets the certificate's own demands.
+Not a substitution other than the one `List.lookup` picks: none at all. First-wins
+and last-wins are therefore not two readings of this certificate. They are two
+ways of ignoring half of it. -/
+
+/-- The binding of `dupKey` above, named on its own so the two facts below can be
+stated about the list rather than about the step. -/
+def dupBind : List (Var × Term) := [("x", uA), ("y", uB), ("z", uC), ("x", uB)]
+
+theorem dupBind_is_dupKey_binds : dupKey.binds = dupBind := rfl
+
+/-- It COVERS `gpRule`, so the refusal below is distinctness alone and not
+coverage wearing its coat. The mirror of `partialBind_keys_are_distinct`. -/
+theorem dupBind_covers_the_rule : bindsCover gpRule dupBind = true := by decide
+
+theorem dupBind_is_not_wellFormed : bindingWellFormed gpRule dupBind = false := by decide
+
+theorem no_substitution_extends_a_duplicate_key :
+    ¬ ∃ sigma : Subst, ∀ v t, (v, t) ∈ dupBind → sigma v = t := by
+  rintro ⟨sigma, h⟩
+  have h1 : sigma "x" = uA := h "x" uA (by simp [dupBind])
+  have h2 : sigma "x" = uB := h "x" uB (by simp [dupBind])
+  rw [h1] at h2
+  exact absurd h2 (by decide)
+
+/-- And with the keys distinct, `substOf` meets them, so the existence half is not
+vacuously true of a hypothesis nothing satisfies. -/
+theorem substOf_meets_the_demands_of_a_distinct_binding :
+    ∀ v t, (v, t) ∈ demoStep.binds → substOf demoStep.binds v = t :=
+  substOf_extends_of_keysDistinct (by decide)
+
+/-! #### Drop coverage and TWO things meet the demands, disagreeing
+
+One binding list, two total substitutions that both meet every demand it makes, and
+two different conclusions. This is exactly what the two kernels used to disagree
+about. -/
+
+def partialBind : List (Var × Term) := [("x", uA), ("y", uB)]
+
+/-- A second way to make `partialBind` total. It is no worse a choice than
+`substOf`'s: both invent a value for `z`, and neither has any claim on the
+other. -/
+def otherExt : Subst := fun v => (List.lookup v partialBind).getD uC
+
+theorem partialBind_is_not_wellFormed :
+    bindingWellFormed gpRule partialBind = false := by decide
+
+/-- `partialBind` has distinct keys, so the failure below is coverage ALONE. -/
+theorem partialBind_keys_are_distinct : keysDistinct partialBind = true := by decide
+
+theorem otherExt_meets_the_demands :
+    ∀ v t, (v, t) ∈ partialBind → otherExt v = t := by
+  intro v t h
+  simp only [partialBind, List.mem_cons, List.not_mem_nil, or_false, Prod.mk.injEq] at h
+  rcases h with ⟨hv, ht⟩ | ⟨hv, ht⟩ <;> subst hv <;> subst ht <;> rfl
+
+theorem substOf_meets_the_demands :
+    ∀ v t, (v, t) ∈ partialBind → substOf partialBind v = t :=
+  substOf_extends_of_keysDistinct partialBind_keys_are_distinct
+
+/-- Two substitutions meeting the same demands, two conclusions. The uniqueness
+half of `wellFormed_determines_instantiation` rules this out, and only because its
+coverage hypothesis is not free. -/
+theorem two_extensions_of_an_uncovered_binding_disagree :
+    AtomPat.inst otherExt gpRule.head ≠ AtomPat.inst (substOf partialBind) gpRule.head := by
+  decide
 
 /-! ## The rule layer does not derive everything
 

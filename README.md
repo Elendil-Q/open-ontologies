@@ -69,8 +69,13 @@ description-logic false cleans, each an inconsistent ontology reported consisten
 confidence. A rule that could conclude a triple no serialiser can write, reachable from ordinary
 OWL, which left the store non-deterministic: three runs of one input kept 40, 9 and 24 inferences.
 And two independently verified kernels disagreeing on 47 of 1,718 certificates, all in the safe
-direction, tracing to a gap in the certificate format that neither proof could see. Every one of
-those had passed every test that existed before.
+direction, tracing to a gap in the certificate format that neither proof could see: the format did
+not say what a repeated binding key meant, or what an incomplete binding meant, so one kernel
+refused those shapes and the other answered from whatever its lookup function happened to do. That
+gap is closed by
+[decision 0008](docs/decisions/0008-a-binding-is-data-and-evidence-admits-one-reading.md), which
+refuses both shapes, and the differential now reports zero divergent rows. Every one of those had
+passed every test that existed before.
 
 ## What is actually proved
 
