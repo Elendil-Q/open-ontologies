@@ -7,6 +7,17 @@
 //!
 //! Regenerate with:
 //!   java -cp ".:lib/*" CompileOntology /tmp/pizza_real.owl /tmp/pizza_compiled.json
+//!
+//! The skip goes through `common::skip_unless`, like every other skip in this
+//! suite. It used to be a bare `eprintln!("SKIP: …")`, which printed a marker
+//! the `build` job's skip COUNTER does not match and which `OO_REQUIRE_FIXTURES=1`
+//! could not promote to a failure — so this file was the one skip in the Rust
+//! suite that was invisible to both halves of the convention. Nothing in CI
+//! provides the Java compile step today (only `benchmark.yml` installs a JDK,
+//! and it is `workflow_dispatch` only and does not produce this file), so it
+//! still skips everywhere; it now says so in the shape everything else uses.
+
+mod common;
 
 use std::path::Path;
 
@@ -21,8 +32,12 @@ fn iri(l: &str) -> String {
 }
 
 fn load() -> Option<CompiledOntology> {
-    if !Path::new(COMPILED).exists() {
-        eprintln!("SKIP: {COMPILED} not present; run CompileOntology first");
+    if common::skip_unless(
+        Path::new(COMPILED).exists(),
+        COMPILED,
+        "regenerate it with `java -cp \".:lib/*\" CompileOntology /tmp/pizza_real.owl \
+         /tmp/pizza_compiled.json` from benchmark/reasoner.",
+    ) {
         return None;
     }
     let v: Value = serde_json::from_str(&std::fs::read_to_string(COMPILED).ok()?).ok()?;

@@ -87,6 +87,14 @@ fn apply_reasoner(r: &ReasonerConfig) {
     TABLEAUX_MAX_DEPTH.store(depth, Ordering::Relaxed);
     TABLEAUX_MAX_NODES.store(nodes, Ordering::Relaxed);
     REASONER_MAX_ITER.store(iters, Ordering::Relaxed);
+    // Stored VERBATIM, with no `if x == 0 { DEFAULT }` rewrite, because for a
+    // clock zero is a configuration and not an omission: `0` means no limit, and
+    // both accessors read it that way. An omitted key does not arrive here as 0
+    // — `#[serde(default)]` fills it from `ReasonerConfig::default`, which is
+    // 10 000 and 180 000 — so the two cases are distinguishable, which is
+    // exactly what the three caps above cannot do.
+    TABLEAUX_TEST_TIMEOUT_MS.store(r.tableaux_test_timeout_ms, Ordering::Relaxed);
+    CLASSIFY_TIMEOUT_MS.store(r.classify_timeout_ms, Ordering::Relaxed);
 }
 
 fn apply_cache(hash_prefix: usize) {
@@ -135,19 +143,39 @@ pub fn tableaux_test_timeout_ms() -> Option<u64> {
     }
 }
 
-/// Override the per-test timeout. Used by the CLI `--reason-timeout-ms` flag
-/// and by tests.
+/// Override the per-phase timeout, for tests.
+///
+/// This used to say "used by the CLI `--reason-timeout-ms` flag and by tests".
+/// There is no such flag anywhere in `src/`; grep for it and the only hit is
+/// the sentence that claimed it. With `[reasoner] tableaux_test_timeout_ms`
+/// also absent from `ReasonerConfig` until it was added beside
+/// `classify_timeout_ms`, neither reasoner clock had ANY user-reachable
+/// setting at all, and both were documented as though they did.
 pub fn set_tableaux_test_timeout_ms(ms: usize) {
     TABLEAUX_TEST_TIMEOUT_MS.store(ms, Ordering::Relaxed);
 }
 
-/// Wall-clock cut-off for an ENTIRE classification run, in milliseconds.
-/// `None` (value 0) means no limit.
+/// Wall-clock CEILING for an entire reasoning run, in milliseconds. `None`
+/// (value 0) means no ceiling.
 ///
 /// Distinct from the per-test timeout, which bounds one satisfiability check.
 /// Classification performs one check per class plus one per ordered pair, so
-/// the per-test budget multiplied by the pair count is the real worst case and
-/// it is enormous. This is the budget that actually bounds the run.
+/// the per-test budget multiplied by the pair count is the enormous number this
+/// exists to cut off.
+///
+/// READ THIS BEFORE QUOTING IT AS THE BOUND. It is a ceiling over every phase of
+/// a run — consistency, satisfiability, subsumption, ABox, explanation — and it
+/// is enforced: `DlReasoner::phase_deadline_within` intersects it with each
+/// phase's own deadline, so no phase can outlive it. At the SHIPPED DEFAULTS it
+/// nonetheless cannot be the bound that fires, because those five phases each
+/// open a `tableaux_test_timeout_ms` budget of 10 000 ms and five times ten is
+/// fifty, which is less than a hundred and eighty. Making it the binding bound
+/// means minting a deadline per tableau rather than per phase, which was
+/// measured: a 20-ontology corpus went from 67s to over 600s with no verdict
+/// changing. The engine therefore reports, in `budget.binding_bound` and
+/// `budget.note` on every `owl-dl` run, which of the two bounds actually stops
+/// the run — including "neither" — rather than leaving a reader to do this
+/// arithmetic from two settings and a phase count.
 ///
 /// Default matches the ORE competition convention of 180s.
 pub fn classify_timeout_ms() -> Option<u64> {

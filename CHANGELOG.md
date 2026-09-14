@@ -648,15 +648,73 @@ All notable changes to Open Ontologies are documented here.
   wall clock goes from ~10s to 30-40s, since four tableau phases now each get the
   configured per-test budget instead of four sharing one already-expired instant.
   No verdict changed on any of the twenty.
+- **`classify_timeout_ms` had never bounded a real run, and now bounds one or
+  says it does not.** It defaults to 180 000 ms and its own documentation called
+  it "the budget that actually bounds the run". Two separate reasons it was
+  neither. It COULD NOT FIRE: five phases — consistency, satisfiability,
+  subsumption, ABox, explanation — each open a `tableaux_test_timeout_ms` budget
+  of 10 000 ms, and five times ten is fifty, which is less than a hundred and
+  eighty, so the ceiling was dead arithmetic. And it DID NOT COVER THE RUN: the
+  setting was read inside `classify_parallel` and nowhere else, so the three
+  phases around classification each opened a fresh budget outside it and a run
+  could exceed its own ceiling by three further phase budgets. The explanation
+  loop had no wall clock at all — `Tableau::new_with_tracing` leaves
+  `Budget::deadline` at `None` — and `run` performs one such tableau per
+  unsatisfiable class, in a loop, straight after a classification that may have
+  just been cut short for want of exactly that budget.
+  The ceiling is now enforced over every phase, by intersecting it with each
+  phase's own deadline rather than by minting a fifth budget beside them. That
+  costs nothing measurable: a tableau already checks one deadline inside its
+  expansion loop, and it is now handed the earlier of the two. Minting a deadline
+  per TABLEAU is what would make 180 000 ms the bound that fires, and it is what
+  took the corpus from 67s to over 600s with no verdict changing; it is still not
+  done. What is done instead is the part that was missing, which is SAYING SO:
+  every `owl-dl` run now carries a `budget` block naming both settings, the five
+  phases, the worst case the phase budgets permit, which of the two bounds
+  actually stops the run — `global`, `phase`, or `none` — and a sentence of prose
+  saying why. A knob that reads as a safety limit may not enforce nothing; where
+  it cannot be the binding one, the output says that in words rather than leaving
+  a reader to do the arithmetic from two settings and a phase count.
+  And the knob is now a knob. Neither budget appeared in `ReasonerConfig`, so
+  neither could be set from `config.toml` at all — `apply_reasoner` wrote the
+  depth cap, the node cap and the iteration cap and touched neither clock —
+  while three comments in `src/tableaux.rs` referred to
+  "`[reasoner] classify_timeout_ms`" as though it were a setting. The only way
+  to move either was a setter that exists for tests: `set_tableaux_test_timeout_ms`
+  was documented as "used by the CLI `--reason-timeout-ms` flag", and there is no
+  such flag anywhere in `src/` — grep for it and the only hit is the sentence
+  claiming it. Neither reasoner clock had a user-reachable setting of any kind,
+  and both were documented as though they did. A ceiling nobody can lower is the
+  strongest form of a limit that enforces nothing, and the note this now prints
+  tells a reader to lower it. `[reasoner] classify_timeout_ms` and
+  `[reasoner] tableaux_test_timeout_ms` are real keys; `0` means OFF for both,
+  not "use the default", which is the opposite of the three caps beside them and
+  is documented where they are declared.
+  Corpus cost, measured with the new and reproducible
+  `tests/reasoner_budget_corpus_bench.rs` over two corpora, the two builds run
+  back to back under the same machine load: the twenty case-study ontologies,
+  none of which reaches a budget, 0.10s before and 0.10s after; ten from
+  `benchmark/` that do, two of them exhausting one, 64.53s before and 63.84s
+  after. Unchanged, and it has to be, because at the shipped settings the
+  intersection produces the same instant the phase budget alone did. Pinned by
+  `tests/reasoner_global_budget_test.rs`.
+- **Definition realization skipped every individual without a named
+  `rdf:type`.** `realize_definitions` iterated `individual_types`, so an
+  individual with no `rdf:type` at all — named only by its own role assertions —
+  and an individual typed ONLY by an anonymous class expression were never
+  realized into a defined class, however completely they met the definition.
+  `build_abox_tableau` has given both a node for some time, because `rdfs:domain`
+  binds them and a disjointness axiom can refute them: the consistency check saw
+  them and the realizer did not. A false NEGATIVE rather than a false clean,
+  which is why it survived. Realization now runs over the same individual
+  universe the ABox tableau is built from, so the two cannot drift, and a
+  conjunct of an anonymous `rdf:type` discharges the definition conjunct it is
+  spelled the same as, because `x : C ⊓ D` entails `x : C`. Widening the universe
+  cannot widen what matches: `satisfies` declines everything outside its
+  fragment, so an empty named-type set can only fail. Pinned by three tests in
+  `tests/abox_realization_test.rs`, one of them a negative control.
 
 ### Known defects
-- **`classify_timeout_ms` has never bounded a real run.** It defaults to 180s,
-  but until the phase-budget fix above, the single shared per-test deadline
-  expired 10s into the run and made every later tableau bail on entry, so the
-  180s budget never governed anything. It still does not: phase budgets are
-  scoped per phase, which keeps the cost of the fix at 3-4x rather than the 18x
-  measured when each tableau was given its own. The setting is therefore still
-  not the bound it claims to be, and reconciling the two budgets is open.
 - **`owl:AsymmetricProperty` is not modelled.** It is now DECLARED, in
   `unmodelled_constructs`, alongside `owl:ReflexiveProperty` and
   `owl:IrreflexiveProperty`. Asymmetry constrains a PAIR of edges rather than a

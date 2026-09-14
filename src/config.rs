@@ -476,6 +476,32 @@ pub struct ReasonerConfig {
     /// RDFS / OWL-RL fixpoint guard. Maximum number of expansion iterations
     /// before the reasoner returns the partial closure. Default 64.
     pub max_iterations: usize,
+    /// Tableaux DL reasoner: wall-clock budget for one PHASE of a run, in
+    /// milliseconds. Default 10 000. **`0` means no limit**, unlike the three
+    /// caps above, where 0 means "unset, use the default": a depth cap of zero
+    /// is not a configuration anybody wants and a timeout of zero is.
+    ///
+    /// This is the budget that actually expires on a hard ontology. A run has
+    /// five phases — consistency, satisfiability, subsumption, ABox, explanation
+    /// — and each opens one of these, so the worst case for a run is five times
+    /// this number or `classify_timeout_ms`, whichever is smaller.
+    pub tableaux_test_timeout_ms: usize,
+    /// Tableaux DL reasoner: wall-clock CEILING for a whole run, in
+    /// milliseconds. Default 180 000, the ORE competition convention. **`0`
+    /// means no ceiling.**
+    ///
+    /// Enforced over every phase, and at the default it cannot be the bound that
+    /// fires, because five phases at 10 000 ms cap a run at 50 000 ms first. Set
+    /// it below that to make it the binding one. Every `owl-dl` run reports which
+    /// of the two is binding in its `budget` block, so this does not have to be
+    /// worked out from these two numbers.
+    ///
+    /// NEITHER of these two existed here until the budget was audited. They were
+    /// process-wide statics with setters for tests and, for the phase budget, one
+    /// CLI flag; three comments in `src/tableaux.rs` referred to
+    /// "`[reasoner] classify_timeout_ms`" as though it were a setting. A ceiling
+    /// nobody can lower is the strongest form of a limit that enforces nothing.
+    pub classify_timeout_ms: usize,
 }
 impl Default for ReasonerConfig {
     fn default() -> Self {
@@ -483,6 +509,8 @@ impl Default for ReasonerConfig {
             tableaux_max_depth: 100,
             tableaux_max_nodes: 10_000,
             max_iterations: 64,
+            tableaux_test_timeout_ms: 10_000,
+            classify_timeout_ms: 180_000,
         }
     }
 }

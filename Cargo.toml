@@ -106,6 +106,11 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 [dev-dependencies]
 tempfile = "3"
 wat = "1.256.0"
+# Already a normal dependency; repeated here so a test can assert that a
+# `config.toml` section really does carry the key it claims to. A setting that
+# only a setter can move is not a setting, and two reasoner budgets were in that
+# position. No new crate enters the tree.
+toml = "0.8"
 # Property testing for the certificate boundary (docs/trusted-computing-base.md).
 # The Lean proofs are conditional on the Rust writing down the truth, and that
 # boundary is a tab-separated format carrying arbitrary RDF terms: exactly the

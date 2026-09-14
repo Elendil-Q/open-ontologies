@@ -127,3 +127,92 @@ fn a_subclass_typed_individual_satisfies_a_superclass_conjunct() {
         "asserted subclass must satisfy a superclass conjunct"
     );
 }
+
+// ── Individuals the realizer never looked at ────────────────────────────────
+//
+// `realize_definitions` iterated `individual_types`, which is keyed by
+// individuals carrying at least one NAMED `rdf:type`. Two kinds of individual
+// have no entry there and were therefore never realized into any defined class,
+// however completely they met the definition:
+//
+//   1. an individual with no `rdf:type` at all, named only by its own role
+//      assertions — `build_abox_tableau` already gives these a node, precisely
+//      because `rdfs:domain` binds them and a disjointness axiom can refute
+//      them, so the consistency check saw them and the realizer did not;
+//   2. an individual typed ONLY by an anonymous class expression, which lands in
+//      `individual_anon_types` and never in `individual_types`.
+//
+// This is a false NEGATIVE, not a false clean, which is why it survived. It is
+// still an incompleteness with nothing behind it: `satisfies` declines anything
+// outside its fragment, so handing it an empty named-type set can only fail to
+// match, never match wrongly.
+
+const UNTYPED: &str = r#"
+@prefix : <http://ex.org/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+:Term a owl:Class .
+:Status a owl:Class .
+:Dead a owl:NamedIndividual, :Status .
+
+:status a owl:ObjectProperty .
+:usedBy a owl:ObjectProperty .
+
+# Defined by restrictions alone. Nothing in the definition asks for an
+# rdf:type, so an individual needs none to be a member.
+:Haunted a owl:Class ; owl:equivalentClass [ a owl:Class ; owl:intersectionOf (
+    [ a owl:Restriction ; owl:onProperty :status ; owl:hasValue :Dead ]
+    [ a owl:Restriction ; owl:onProperty :usedBy ; owl:someValuesFrom :Term ] ) ] .
+
+:host a owl:NamedIndividual, :Term .
+
+# No rdf:type whatsoever. Meets both conjuncts.
+:ghost :status :Dead ; :usedBy :host .
+
+# No rdf:type, and meets only one conjunct. Must NOT be realized.
+:echo :usedBy :host .
+
+# Typed ONLY by an anonymous class expression. The :status conjunct comes from
+# that expression, the :usedBy conjunct from an asserted edge.
+:wraith a [ a owl:Class ; owl:intersectionOf (
+        :Term
+        [ a owl:Restriction ; owl:onProperty :status ; owl:hasValue :Dead ] ) ] ;
+    :usedBy :host .
+"#;
+
+#[test]
+fn an_individual_with_no_rdf_type_is_realized() {
+    let v = realized(UNTYPED);
+    assert!(
+        types_of(&v, "/ghost").contains(&"Haunted".to_string()),
+        "an untyped individual meeting every conjunct must be realized; the realizer \
+         iterated individual_types, so it never saw this individual at all. got {:?} \
+         from {v}",
+        types_of(&v, "/ghost")
+    );
+}
+
+#[test]
+fn an_untyped_individual_missing_a_conjunct_is_not_realized() {
+    let v = realized(UNTYPED);
+    assert!(
+        !types_of(&v, "/echo").contains(&"Haunted".to_string()),
+        "widening the realizer to untyped individuals must not widen what counts as \
+         a match; got {:?}",
+        types_of(&v, "/echo")
+    );
+}
+
+#[test]
+fn an_individual_typed_only_by_an_anonymous_class_is_realized() {
+    let v = realized(UNTYPED);
+    assert!(
+        types_of(&v, "/wraith").contains(&"Haunted".to_string()),
+        "an anonymous rdf:type asserts a class expression, and a conjunct of that \
+         expression is entailed of the individual just as an asserted edge is; got {:?} \
+         from {v}",
+        types_of(&v, "/wraith")
+    );
+}

@@ -2253,11 +2253,12 @@ pub struct DlReasoner {
     /// that classification was what spent it.
     ///
     /// Each phase now opens its own from this duration, and no cap was raised:
-    /// the number is unchanged, `classify_timeout_ms` still bounds the whole
-    /// classification, and the node and depth caps are untouched. Which phase ran
-    /// out is reported in `budget_exhausted_in`. See `phase_deadline` for why the
-    /// unit is a phase rather than a single test, which is what the setting's own
-    /// name says.
+    /// the number is unchanged and the node and depth caps are untouched. Which
+    /// phase ran out is reported in `budget_exhausted_in`. See `phase_deadline`
+    /// for why the unit is a phase rather than a single test, which is what the
+    /// setting's own name says, and `phase_deadline_within` for how
+    /// `classify_timeout_ms` is intersected into it so that no phase can outlive
+    /// the run's ceiling.
     budget_ms: Option<u64>,
     /// The axioms as the OWL parser read them, before `ProcessedTBox` absorbed,
     /// rewrote and folded them. A model certificate is written against these, so
@@ -2371,22 +2372,59 @@ impl DlReasoner {
     /// rather than a reading of the setting's name. `tableaux_test_timeout_ms`
     /// does say "a single tableau satisfiability test", and minting it per
     /// tableau is the literal reading — but the two sweeps run one tableau per
-    /// class and one per ORDERED PAIR of classes, and they are already bounded as
-    /// a whole by `classify_timeout_ms`, which defaults to 180s. Because the old
-    /// shared instant expired 10s into the run and made every later tableau bail
-    /// on entry, that 180s budget had never actually governed anything. Minting
-    /// per tableau hands it the run for the first time, and it costs what it says
+    /// class and one per ORDERED PAIR of classes, and the shape that bounds them
+    /// as a whole is a budget per sweep rather than one per test. Minting per
+    /// tableau is also what would make `classify_timeout_ms` the bound that
+    /// fires, since with 10s per tableau a sweep runs until the 180s ceiling
+    /// stops it — and it costs what it says
     /// it costs: MEASURED on this machine, a 20-ontology corpus went from 67s to
     /// over 600s, with the five ontologies that hit the cap moving from ~10s each
     /// to ~180s each and NO change in any verdict — the same classes stayed
     /// undetermined, just after eighteen times the work. Per phase fixes the
     /// defect that was reported (the ABox check inheriting a spent clock) and
-    /// bounds the change at 3x the old worst case instead of 18x.
+    /// bounds the change at 3x the old worst case instead of 18x. The cost of
+    /// that choice is that the ceiling cannot be the bound that fires, and every
+    /// `owl-dl` run now says so in its `budget` block rather than leaving a
+    /// reader to infer it from two settings and a phase count.
     ///
-    /// That `classify_timeout_ms` has never bounded a real run is a separate
-    /// finding and is not fixed here.
+    /// `classify_timeout_ms` is now a CEILING over every phase, not a fifth
+    /// budget beside them: see `phase_deadline_within`, which is what every
+    /// phase inside a run actually calls. A bare `phase_deadline` is for a
+    /// caller running one phase on its own with no run around it.
     fn phase_deadline(&self) -> Option<Instant> {
         self.budget_ms
+            .map(|ms| Instant::now() + std::time::Duration::from_millis(ms))
+    }
+
+    /// A phase budget under a run's global ceiling: whichever expires first.
+    ///
+    /// This is the whole of the cheap half of making `classify_timeout_ms` real.
+    /// A tableau already checks ONE deadline inside its expansion loop, so
+    /// handing it the earlier of the two costs nothing at all — no second clock
+    /// read, no extra branch — while making it impossible for any phase to
+    /// outlive the global budget. The expensive half, minting a fresh budget per
+    /// TABLEAU so that the global one is what eventually stops the sweep, is what
+    /// took the corpus from 67s to over 600s and is not what this does.
+    ///
+    /// `None` on either side means "that one imposes nothing", so with the global
+    /// budget switched off this is the phase budget unchanged, and with the phase
+    /// budget switched off it is the global deadline, which is the case that used
+    /// to leave a sweep with no clock at all.
+    fn phase_deadline_within(&self, global: Option<Instant>) -> Option<Instant> {
+        match (self.phase_deadline(), global) {
+            (Some(phase), Some(global)) => Some(phase.min(global)),
+            (Some(phase), None) => Some(phase),
+            (None, global) => global,
+        }
+    }
+
+    /// The ceiling for one whole run, opened now from `classify_timeout_ms`.
+    ///
+    /// Open it ONCE per run and pass it down. Opening it per phase is what made
+    /// the setting vacuous: four phases each opening a fresh 180s meant a run
+    /// could take 720s under a budget that says 180.
+    fn global_deadline() -> Option<Instant> {
+        crate::runtime::classify_timeout_ms()
             .map(|ms| Instant::now() + std::time::Duration::from_millis(ms))
     }
 
@@ -2450,13 +2488,42 @@ impl DlReasoner {
     /// Check TBox consistency. An undecided run reports consistent, which is
     /// the safe direction: we do not condemn an ontology we failed to refute.
     pub fn is_consistent(&self) -> bool {
-        !self.decide_satisfiable(&Concept::Top).is_unsat()
+        self.is_consistent_within(Self::global_deadline())
+    }
+
+    /// `is_consistent` under a ceiling the caller already opened. This is the
+    /// first phase of a run and used to be outside the global budget entirely.
+    pub fn is_consistent_within(&self, global: Option<Instant>) -> bool {
+        !self
+            .decide_satisfiable_within(&Concept::Top, self.phase_deadline_within(global))
+            .is_unsat()
     }
 
     /// Explain why a class is unsatisfiable. Returns None if satisfiable.
     pub fn explain_unsatisfiable(&self, class_id: u32) -> Option<Vec<String>> {
+        self.explain_unsatisfiable_within(class_id, self.phase_deadline())
+    }
+
+    /// `explain_unsatisfiable` against a deadline the caller already opened.
+    ///
+    /// `Tableau::new_with_tracing` left `Budget::deadline` at `None`, so an
+    /// explanation was the one tableau in this engine that ran under no
+    /// wall-clock budget at all — and `run` performs one per unsatisfiable
+    /// class, in a loop, immediately after a classification that may have been
+    /// cut short for want of exactly that budget. The node and depth caps still
+    /// applied; nothing stopped the branching.
+    ///
+    /// An expired deadline yields `None`, which is the honest degradation: the
+    /// tableau returns `Unknown`, and `Unknown` is not a proof of
+    /// unsatisfiability, so there is no clash trace to report.
+    pub fn explain_unsatisfiable_within(
+        &self,
+        class_id: u32,
+        deadline: Option<Instant>,
+    ) -> Option<Vec<String>> {
         let concept = Concept::Atom(class_id);
         let mut tableau = Tableau::new_with_tracing(Arc::clone(&self.tbox));
+        tableau.budget.deadline = deadline;
         if !tableau.decide(&concept).is_unsat() {
             return None;
         }
@@ -2518,6 +2585,16 @@ impl DlReasoner {
     /// Phase 2 — Subsumption Agent: parallel pairwise subsumption with told-pruning.
     /// Phase 3 — Equivalence detection from mutual subsumptions.
     pub fn classify_parallel(&self) -> AgentClassificationResult {
+        self.classify_parallel_within(Self::global_deadline())
+    }
+
+    /// `classify_parallel` under a ceiling the caller already opened, so that
+    /// classification and the phases around it share ONE global budget instead
+    /// of opening one each.
+    pub fn classify_parallel_within(
+        &self,
+        global_deadline: Option<Instant>,
+    ) -> AgentClassificationResult {
         let start = Instant::now();
 
         // Sorted for the same reason as the node traversals: `named_classes` is a
@@ -2533,15 +2610,19 @@ impl DlReasoner {
             .collect();
         classes.sort_unstable();
 
-        // Global budget for the WHOLE classification.
+        // The ceiling for the whole run, opened by the caller.
         //
         // The per-test deadline bounds one satisfiability check. It does not
         // bound classification, which runs one check per class plus one per
         // ordered pair of classes. On the Pizza ontology that is ~100 classes
         // and ~10,000 pairs; at the 10s per-test budget the worst case is over
         // a day. A global deadline is what actually stops that.
-        let global_deadline = crate::runtime::classify_timeout_ms()
-            .map(|ms| Instant::now() + std::time::Duration::from_millis(ms));
+        //
+        // Checked here at the head of each task, which is the cheap place, AND
+        // folded into every tableau's own deadline below, which is the place
+        // that makes it a ceiling rather than a suggestion: without the fold, a
+        // single tableau that started inside the budget could run for a further
+        // phase-budget's worth of time past it.
         let out_of_time = || global_deadline.is_some_and(|d| Instant::now() >= d);
 
         // ── Satisfiability Agent ─────────────────────────────────────
@@ -2552,7 +2633,7 @@ impl DlReasoner {
         // constructed, so whichever phase ran first spent the clock and the ABox
         // check — which runs last and is the one a user reads for their own data
         // — routinely reported `undecided` on an ABox it decides in microseconds.
-        let sat_deadline = self.phase_deadline();
+        let sat_deadline = self.phase_deadline_within(global_deadline);
         let sat_results: Vec<(u32, Verdict)> = classes
             .par_iter()
             .map(|&cls| {
@@ -2616,7 +2697,7 @@ impl DlReasoner {
         let subsumption_cut_short = std::sync::atomic::AtomicBool::new(false);
         // This phase's own budget, opened now rather than inherited from the
         // satisfiability sweep that just finished.
-        let sub_deadline = self.phase_deadline();
+        let sub_deadline = self.phase_deadline_within(global_deadline);
         let inferred: Vec<(u32, u32)> = pairs
             .par_iter()
             .filter(|(sub, sup)| {
@@ -2738,14 +2819,94 @@ impl DlReasoner {
             by_subject.entry(a).or_default().push((r, b));
         }
 
-        for (&ind, types) in &self.individual_types {
+        // Every individual, not only the ones carrying a NAMED rdf:type.
+        //
+        // This used to iterate `individual_types`, which is keyed by exactly
+        // those. An individual with no rdf:type at all — named only by its own
+        // role assertions — and an individual typed ONLY by an anonymous class
+        // expression both have no entry there, so neither was ever realized into
+        // a defined class however completely it met the definition.
+        // `build_abox_tableau` has given both a node for some time, because a
+        // domain constraint binds them and a disjointness axiom can refute them:
+        // the consistency check saw them and the realizer did not.
+        //
+        // The universe is built the same way `build_abox_tableau` builds its
+        // node set, so the individuals realization considers and the individuals
+        // the consistency check ran on are one set rather than two that can
+        // drift. Widening it cannot widen what counts as a match: `satisfies`
+        // declines everything outside its fragment, so an empty named-type set
+        // can only fail to match.
+        let mut individuals: Vec<u32> = self.individual_types.keys().copied().collect();
+        for &ind in self.individual_anon_types.keys() {
+            if !self.individual_types.contains_key(&ind) {
+                individuals.push(ind);
+            }
+        }
+        for &(a, _, b) in &self.role_assertions {
+            individuals.push(a);
+            individuals.push(b);
+        }
+        individuals.sort_unstable();
+        individuals.dedup();
+
+        let empty: HashSet<u32> = HashSet::new();
+        for ind in individuals {
+            // Conjuncts of an anonymous rdf:type are assertions in their own
+            // right, and the atomic ones are named types this individual has
+            // exactly as if they had been written as an ordinary rdf:type.
+            let asserted = self.asserted_concepts(ind);
+            let declared = self.individual_types.get(&ind).unwrap_or(&empty);
+            // Borrowed unless an anonymous type actually contributes a named
+            // one. Widening the universe to every individual means this runs
+            // once per individual rather than once per TYPED individual, and a
+            // SKOS vocabulary is tens of thousands of individuals with no
+            // anonymous type at all; a HashSet clone each would be a real cost
+            // for nothing.
+            let types: std::borrow::Cow<'_, HashSet<u32>> =
+                if asserted.iter().any(|c| matches!(c, Concept::Atom(_))) {
+                    std::borrow::Cow::Owned(
+                        declared
+                            .iter()
+                            .copied()
+                            .chain(asserted.iter().filter_map(|c| match c {
+                                Concept::Atom(a) => Some(*a),
+                                _ => None,
+                            }))
+                            .collect(),
+                    )
+                } else {
+                    std::borrow::Cow::Borrowed(declared)
+                };
             for (&cls, def) in &self.definitions {
                 if types.contains(&cls) {
                     continue;
                 }
-                if self.satisfies(ind, types, def, &by_subject) {
+                if self.satisfies(ind, &types, &asserted, def, &by_subject) {
                     out.entry(ind).or_default().insert(cls);
                 }
+            }
+        }
+        out
+    }
+
+    /// Every concept `ind` is DIRECTLY asserted to belong to by an anonymous
+    /// `rdf:type`, flattened through conjunction.
+    ///
+    /// `x rdf:type C ⊓ D` entails `x rdf:type C` and `x rdf:type D`, so each
+    /// conjunct is an assertion on its own. Nothing else is unfolded: no axiom is
+    /// applied and no subsumption is followed here, so this stays a reading of
+    /// what the graph SAYS rather than an inference from it, which is the same
+    /// discipline the rest of this function keeps.
+    fn asserted_concepts(&self, ind: u32) -> Vec<Concept> {
+        let mut out = Vec::new();
+        let Some(anon) = self.individual_anon_types.get(&ind) else {
+            return out;
+        };
+        let mut stack: Vec<Concept> = anon.clone();
+        while let Some(c) = stack.pop() {
+            match c {
+                Concept::And(parts) => stack.extend(parts),
+                other => out.push(other),
             }
         }
         out
@@ -2754,17 +2915,31 @@ impl DlReasoner {
     /// True when the asserted facts about `ind` entail `concept`, for the accepted fragment.
     /// Returns false for anything outside it, which keeps unsupported definitions empty
     /// rather than unsound.
+    ///
+    /// `types` is the individual's named types, `asserted` the conjuncts of its
+    /// anonymous ones. Either may be empty; an individual with neither is decided
+    /// entirely on its role assertions, which is the whole point of considering it.
     fn satisfies(
         &self,
         ind: u32,
         types: &HashSet<u32>,
+        asserted: &[Concept],
         concept: &Concept,
         by_subject: &HashMap<u32, Vec<(u32, u32)>>,
     ) -> bool {
+        // An assertion discharges the conjunct it is spelled the same as. Both
+        // sides are in NNF and come from the same interner, so structural
+        // equality here is concept identity, and `x : C` entails `C` for any `C`
+        // whatever — including the shapes the match below declines.
+        if asserted.iter().any(|a| a == concept) {
+            return true;
+        }
         match concept {
             Concept::Top => true,
             Concept::Atom(c) => self.has_type(types, *c),
-            Concept::And(parts) => parts.iter().all(|p| self.satisfies(ind, types, p, by_subject)),
+            Concept::And(parts) => parts
+                .iter()
+                .all(|p| self.satisfies(ind, types, asserted, p, by_subject)),
             Concept::Exists(role, filler) => {
                 let Concept::Atom(target) = **filler else {
                     return false;
@@ -2826,14 +3001,15 @@ impl DlReasoner {
     /// role assertion is a node that a domain constraint binds and a disjointness
     /// axiom can refute, and reporting `individuals_checked: 0` for an ABox made
     /// entirely of those also suppressed the whole `abox` block from the output.
-    fn build_abox_tableau(&self) -> (Tableau, HashMap<u32, u32>, usize) {
+    fn build_abox_tableau(&self, global: Option<Instant>) -> (Tableau, HashMap<u32, u32>, usize) {
         // The ABox check builds ONE tableau containing every named individual,
         // so it is the largest single expansion the reasoner ever performs and it
         // must be under a budget, or it is an unbounded hole in one. It opens its
         // OWN, which is the point of `phase_deadline`: sharing an instant with
         // classification is what had this phase reporting `undecided` on ABoxes
         // it decides in microseconds, because classification had already spent it.
-        let mut tableau = Tableau::with_deadline(Arc::clone(&self.tbox), self.phase_deadline());
+        let mut tableau =
+            Tableau::with_deadline(Arc::clone(&self.tbox), self.phase_deadline_within(global));
         let mut ind_to_node: HashMap<u32, u32> = HashMap::new();
 
         // Create nodes for each individual carrying a named-class OR an anonymous
@@ -2941,6 +3117,16 @@ impl DlReasoner {
     }
 
     pub fn check_abox(&self) -> ABoxResult {
+        self.check_abox_within(Self::global_deadline())
+    }
+
+    /// `check_abox` under a ceiling the caller already opened.
+    ///
+    /// This phase used to be outside `classify_timeout_ms` entirely: the setting
+    /// was read inside `classify_parallel` and nowhere else, so a run that spent
+    /// the whole global budget classifying went on to open a fresh phase budget
+    /// here. A knob a run can exceed is not a ceiling.
+    pub fn check_abox_within(&self, global: Option<Instant>) -> ABoxResult {
         // "No ABox" has to mean no ABox, and a role assertion is ABox. An
         // ontology whose entire instance data is untyped individuals related by
         // a property with a domain still states something refutable, and this
@@ -2959,7 +3145,7 @@ impl DlReasoner {
             };
         }
 
-        let (mut tableau, ind_to_node, individuals_checked) = self.build_abox_tableau();
+        let (mut tableau, ind_to_node, individuals_checked) = self.build_abox_tableau(global);
 
         // Same three-valued discipline as everywhere else: exhausting the
         // budget is not a proof of inconsistency. Declaring an ABox
@@ -3005,9 +3191,19 @@ impl DlReasoner {
         let reasoner = Self::from_graph(graph)?;
         let initial_triples = graph.triple_count();
 
-        let tbox_consistent = reasoner.is_consistent();
-        let result = reasoner.classify_parallel();
-        let abox_result = reasoner.check_abox();
+        // ONE ceiling for the whole run, opened here and passed to every phase.
+        //
+        // `classify_timeout_ms` used to be read inside `classify_parallel` and
+        // nowhere else, so the three phases around it — the consistency check
+        // before, the ABox check after, the explanation loop after that — each
+        // opened a budget of their own and none of them was under it. A run
+        // could exceed the ceiling it was given by three further phase budgets,
+        // and the explanation loop had no wall clock at all.
+        let global_deadline = Self::global_deadline();
+
+        let tbox_consistent = reasoner.is_consistent_within(global_deadline);
+        let result = reasoner.classify_parallel_within(global_deadline);
+        let abox_result = reasoner.check_abox_within(global_deadline);
 
         // The headline flag answers for the whole knowledge base. Reporting the TBox alone
         // while the ABox check has PROVEN an inconsistency in the same output is a false
@@ -3015,10 +3211,12 @@ impl DlReasoner {
         // defaults to consistent inside check_abox.
         let consistent = tbox_consistent && abox_result.consistent;
 
-        // Collect explanations for unsatisfiable classes
+        // Collect explanations for unsatisfiable classes. One phase, one budget,
+        // under the same ceiling as the three before it.
+        let explain_deadline = reasoner.phase_deadline_within(global_deadline);
         let mut explanations: Vec<serde_json::Value> = Vec::new();
         for &cls in &result.unsatisfiable {
-            if let Some(steps) = reasoner.explain_unsatisfiable(cls) {
+            if let Some(steps) = reasoner.explain_unsatisfiable_within(cls, explain_deadline) {
                 explanations.push(serde_json::json!({
                     "class": reasoner.interner.resolve(cls),
                     "trace": steps,
@@ -3047,12 +3245,13 @@ impl DlReasoner {
         // WHICH phase ran out, not merely THAT something did.
         //
         // `complete: false` says the run is not a proof. It does not say which of
-        // the three phases to give more room, and they do not draw on the same
-        // settings: the satisfiability and subsumption sweeps are bounded by
-        // `[reasoner] classify_timeout_ms` across the whole classification as well
-        // as by their own `tableaux_test_timeout_ms` phase budget, while the ABox
-        // check is one tableau under that phase budget alone. A reader who is told
-        // only "incomplete" cannot act, and before each phase got its own budget
+        // the three phases to give more room. Every phase now draws on the same
+        // two settings — its own `tableaux_test_timeout_ms` budget, under the
+        // `[reasoner] classify_timeout_ms` ceiling for the whole run — and the
+        // `budget` block below says which of the two is the one that fires. The
+        // ABox check used to be under the phase budget ALONE, outside the ceiling
+        // entirely. A reader who is told only "incomplete" cannot act, and before
+        // each phase got its own budget
         // the phase that hit the wall was usually not the phase that spent the
         // time — classification would eat the clock and the ABox check would be
         // the one reporting `undecided`. Naming the phases makes that visible
@@ -3067,6 +3266,83 @@ impl DlReasoner {
         if abox_result.undecided {
             budget_exhausted_in.push("abox");
         }
+
+        // WHICH budget was in force, in words, in the output.
+        //
+        // `classify_timeout_ms` defaults to 180 000 ms and its own documentation
+        // called it "the budget that actually bounds the run". It had never
+        // bounded one. Each phase opens its own deadline from
+        // `tableaux_test_timeout_ms`, which defaults to 10 000 ms; five phases is
+        // a worst case of 50 000 ms, so the 180 000 ms ceiling is dead
+        // arithmetic and cannot fire. Handing the global budget the run instead
+        // means minting a deadline per TABLEAU, which was measured and took a
+        // 20-ontology corpus from 67s to over 600s, and was abandoned.
+        //
+        // What is left is the thing that was missing: SAYING SO. A knob that
+        // reads as a safety limit may not enforce nothing, and the arithmetic
+        // that decides whether it can fire is two settings and a phase count,
+        // which is not something a reader of the output can be expected to do.
+        // The ceiling is now genuinely enforced over every phase — see
+        // `phase_deadline_within` — and this block says which of the two bounds
+        // is the one that actually stops the run, including when the answer is
+        // neither.
+        let phase_names = ["consistency", "satisfiability", "subsumption", "abox", "explanation"];
+        let global_ms = crate::runtime::classify_timeout_ms();
+        let phase_ms = crate::runtime::tableaux_test_timeout_ms();
+        let phase_worst_case_ms = phase_ms.map(|ms| ms * phase_names.len() as u64);
+        let (binding_bound, note) = match (global_ms, phase_worst_case_ms) {
+            (None, None) => (
+                "none",
+                format!(
+                    "no wall-clock bound of any kind is in force: classify_timeout_ms and \
+                     tableaux_test_timeout_ms are both 0. The only limits left are the node \
+                     cap ({}) and the depth cap ({}), and neither bounds the number of \
+                     BRANCHES a tableau explores.",
+                    crate::runtime::tableaux_max_nodes(),
+                    crate::runtime::tableaux_max_depth()
+                ),
+            ),
+            (None, Some(worst)) => (
+                "phase",
+                format!(
+                    "no global bound is in force: classify_timeout_ms is 0. Each of the {} \
+                     phases opens its own {} ms budget, so the worst case for this run is \
+                     {worst} ms.",
+                    phase_names.len(),
+                    phase_ms.unwrap_or(0)
+                ),
+            ),
+            (Some(g), None) => (
+                "global",
+                format!(
+                    "classify_timeout_ms ({g} ms) is the only wall-clock bound: \
+                     tableaux_test_timeout_ms is 0, so no phase budget can expire before it \
+                     and every tableau runs to the global deadline."
+                ),
+            ),
+            (Some(g), Some(worst)) if g <= worst => (
+                "global",
+                format!(
+                    "classify_timeout_ms ({g} ms) is at or below the worst case the phase \
+                     budgets permit ({} phases x {} ms = {worst} ms), so it is the bound that \
+                     stops this run.",
+                    phase_names.len(),
+                    phase_ms.unwrap_or(0)
+                ),
+            ),
+            (Some(g), Some(worst)) => (
+                "phase",
+                format!(
+                    "classify_timeout_ms ({g} ms) cannot be the bound that stops this run: \
+                     {} phases at {} ms each cap it at {worst} ms. It is enforced as a ceiling \
+                     over every phase and will not fire at this setting. The bound in force is \
+                     the phase budget; lower classify_timeout_ms below {worst} to make it the \
+                     binding one.",
+                    phase_names.len(),
+                    phase_ms.unwrap_or(0)
+                ),
+            ),
+        };
 
         let mut hierarchy_json: Vec<serde_json::Value> = Vec::new();
         for (&cls, supers) in &result.hierarchy {
@@ -3147,6 +3423,14 @@ impl DlReasoner {
             "unsatisfiable_classes": unsat_names,
             "complete": complete,
             "budget_exhausted_in": budget_exhausted_in,
+            "budget": {
+                "classify_timeout_ms": global_ms,
+                "phase_timeout_ms": phase_ms,
+                "phases": phase_names,
+                "phase_worst_case_ms": phase_worst_case_ms,
+                "binding_bound": binding_bound,
+                "note": note,
+            },
             "undetermined_classes": undetermined_names,
             "subsumption_sweep_cut_short": result.subsumption_cut_short,
             "inferred_subsumptions": result.inferred_subsumptions,
@@ -4234,6 +4518,18 @@ impl DlReasoner {
     /// The named classes, in the interner's order, so a caller can certify each
     /// one. `run` uses it because TBox consistency alone is witnessed by a
     /// single point with empty extensions, which is honest and uninformative.
+    /// The internal id of a named class, by IRI, for callers that hold a name
+    /// and need the id `explain_unsatisfiable` takes. Matches the spelling
+    /// `named_class_names` returns, angle brackets and all, and also the bare
+    /// IRI, because a caller that has one rarely has the other.
+    pub fn named_class_id(&self, iri: &str) -> Option<u32> {
+        let bare = iri.trim_start_matches('<').trim_end_matches('>');
+        self.named_classes
+            .iter()
+            .copied()
+            .find(|&id| self.interner.resolve(id).trim_start_matches('<').trim_end_matches('>') == bare)
+    }
+
     pub fn named_class_names(&self) -> Vec<String> {
         let mut v: Vec<String> = self
             .named_classes
@@ -4324,7 +4620,7 @@ impl DlReasoner {
                     .to_string(),
             ));
         }
-        let (mut tableau, ind_to_node, _) = self.build_abox_tableau();
+        let (mut tableau, ind_to_node, _) = self.build_abox_tableau(Self::global_deadline());
         tableau.capture = true;
         if !tableau.expand(0) {
             return Ok(if tableau.budget.exhausted {
