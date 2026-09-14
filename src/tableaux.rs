@@ -23,7 +23,28 @@
 //! | R⁻     | inverseOf                  | ✅     |
 //! | Sym     | SymmetricProperty          | ✅     |
 //! | Fun     | FunctionalProperty         | ✅     |
+//! | InvFun | InverseFunctionalProperty  | ✅     |
 //! | ABox   | NamedIndividual            | ✅     |
+//! |        | AsymmetricProperty         | ❌     |
+//! |        | ReflexiveProperty          | ❌     |
+//! |        | IrreflexiveProperty        | ❌     |
+//!
+//! The ❌ rows are constraints on an EDGE or a pair of edges rather than on a
+//! node's concept membership, and SHIQ without nominals has no label that says
+//! them. They are reported by `DlReasoner::unmodelled_constructs`, which is how
+//! a reader learns that an answer did not take them into account. That reporting
+//! is the whole point: `owl:AsymmetricProperty` used to be in neither column, so
+//! an ontology using it got a clean verdict and no warning.
+//!
+//! A ✅ in this table is a claim about behaviour and has been wrong. `Fun` and
+//! `InvFun` carried one for a long time while the rule that enforces them could
+//! not fire: functionality is encoded as `≤1 R.⊤`, `add_label` refuses to store
+//! `⊤`, and the ≤-rule counted successors by testing whether the label set
+//! contains the filler, which for `⊤` is false on every node. Both now go
+//! through the `MaxCard` path with `Top` special-cased at the counting step, and
+//! `tests/tableaux_role_characteristics_test.rs` pins the negative — an
+//! inconsistent ontology that used to come back consistent — rather than only a
+//! positive.
 //!
 //! ## Architecture
 //!
@@ -426,6 +447,56 @@ impl OwlParser {
             sub_to_super.entry(sub_id).or_default().insert(sup_id);
         }
 
+        // Close the role hierarchy under inverses: `r ⊑ s` entails `r⁻ ⊑ s⁻`.
+        //
+        // In every model, `(x,y) ∈ r` implies `(x,y) ∈ s`, and `(y,x) ∈ r⁻` iff
+        // `(x,y) ∈ r`, so `(y,x) ∈ r⁻` implies `(y,x) ∈ s⁻`. That is the whole
+        // proof; the entailment is not subtle, it was simply never computed.
+        //
+        // What it was costing: each role's `rdfs:domain` and `rdfs:range` lists
+        // are folded over its transitive SUPER-roles once, in `ProcessedTBox::new`,
+        // and consulted per edge. A domain stated directly on `s` therefore already
+        // reached an `r` edge. A domain stated on `s⁻` did not, because `r⁻` was
+        // not known to be a sub-role of `s⁻`, so `s⁻`'s domain never folded into
+        // `r⁻`'s list and the constraint never reached the two individuals the
+        // edge actually binds. The same gap closed `successors()` off from
+        // sub-role edges reached through an inverse.
+        //
+        // ONE pass suffices, and that is not an optimisation, it is the closure.
+        // `inverse_roles` holds both directions of every `owl:inverseOf` pair and
+        // maps a symmetric role to itself, so on a well-formed ontology it is an
+        // involution: for any pair `(inv a, inv b)` this loop adds, applying the
+        // rule again yields `(inv inv a, inv inv b) = (a, b)`, already present.
+        // The result is closed after a single sweep, with no fixpoint to iterate
+        // and no chance of divergence.
+        //
+        // The map holds ONE inverse per role, so an ontology declaring two
+        // different inverses for the same property keeps only the last and the
+        // involution does not hold there. That under-closes: some entailed
+        // `r⁻ ⊑ s⁻` is missed. It never OVER-closes, because every pair added
+        // here is entailed by the pair it came from whatever else the map says,
+        // so the failure mode is a missed constraint and never a fabricated one.
+        // `onto_defects` reports that ontology shape as `inverse_not_mutual`.
+        //
+        // Transitivity is deliberately left to the existing downstream closure:
+        // it runs over this enlarged DIRECT relation, so `r ⊑ s ⊑ t` still yields
+        // `r⁻ ⊑ t⁻` through `s⁻`.
+        let inverse_subprops: Vec<(u32, u32)> = sub_to_super
+            .iter()
+            .flat_map(|(sub, sups)| sups.iter().map(move |sup| (*sub, *sup)))
+            .filter_map(|(sub, sup)| {
+                match (inverse_roles.get(&sub), inverse_roles.get(&sup)) {
+                    (Some(&sub_inv), Some(&sup_inv)) if sub_inv != sup_inv => {
+                        Some((sub_inv, sup_inv))
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+        for (sub_inv, sup_inv) in inverse_subprops {
+            sub_to_super.entry(sub_inv).or_default().insert(sup_inv);
+        }
+
         // Collect SubClassOf axioms
         let subclass_pairs: Vec<(String, String)> = self
             .index
@@ -614,7 +685,62 @@ impl OwlParser {
                 individual_subjects.push(subject.clone());
             }
         }
+
+        // A subject that makes role assertions is an individual whether or not
+        // anybody typed it.
+        //
+        // The loop above walks `subject_types`, which only has an entry for a
+        // subject carrying an `rdf:type` at all, and then keeps it only if that
+        // type is recognisable as a class. So an IRI that is never typed, or is
+        // typed only by a vocabulary this reasoner does not treat as a class (a
+        // `skos:Concept`, say), contributed NOTHING: not its edges, not itself.
+        // Now that `add_role_edge` applies `rdfs:domain` and `rdfs:range` to
+        // asserted edges, that is a false clean with a very short witness — an
+        // individual with two role assertions whose domains are disjoint classes
+        // is inconsistent on those two triples alone, and the check never saw
+        // them. The object side of exactly this hole was already closed, in
+        // `build_abox_tableau`, which builds a node for any individual named as
+        // the OBJECT of a role assertion. This is the subject side.
+        //
+        // The filter is deliberately narrow, because the cost of being wrong
+        // here is sweeping schema into the ABox:
+        //   - IRIs only, matching the rule used for class discovery. A blank node
+        //     subject is a parsed class expression, not an individual.
+        //   - Not already an individual, and not a declared class or property, so
+        //     `:p a owl:ObjectProperty` can never double as an instance.
+        //   - At least one predicate that is a DECLARED object property. That is
+        //     the only reason this individual is wanted: it is the thing that
+        //     produces an edge. A subject carrying nothing but `rdfs:label` or a
+        //     `rdfs:subClassOf` is schema and stays out.
+        // `object_properties` is complete by this point: it is filled from the
+        // explicit typing, from the four characteristic types and from both sides
+        // of every `owl:inverseOf` pair, all above.
+        let already: HashSet<&str> = individual_subjects.iter().map(|s| s.as_str()).collect();
+        let mut untyped_role_subjects: Vec<String> = Vec::new();
+        for (subject, pairs) in &self.index.by_subject {
+            if !subject.starts_with('<') || already.contains(subject.as_str()) {
+                continue;
+            }
+            let id = self.interner.intern(subject);
+            if named_classes.contains(&id) || object_properties.contains(&id) {
+                continue;
+            }
+            if subject_types
+                .get(subject)
+                .is_some_and(|ts| ts.iter().any(|t| schema_markers.contains(&t.as_str())))
+            {
+                continue;
+            }
+            let asserts_a_role = pairs.iter().any(|(p, _)| {
+                p != RDF_TYPE && object_properties.contains(&self.interner.intern(p))
+            });
+            if asserts_a_role {
+                untyped_role_subjects.push(subject.clone());
+            }
+        }
+        individual_subjects.extend(untyped_role_subjects);
         individual_subjects.sort_unstable();
+        individual_subjects.dedup();
         for ind_str in &individual_subjects {
             let ind_id = self.interner.intern(ind_str);
             let types = self.index.objects(ind_str, RDF_TYPE);
@@ -1290,6 +1416,35 @@ impl Tableau {
         true
     }
 
+    /// Does the node `s` satisfy the filler concept `filler`?
+    ///
+    /// This is the test every role-counting rule needs, and it is one function
+    /// because it was three copies of `labels.contains(&filler)` and all three
+    /// were wrong in the same way.
+    ///
+    /// `⊤` is satisfied by EVERY element of the domain. `add_label` refuses to
+    /// store `Concept::Top` — correctly, since there is nothing to propagate from
+    /// it and carrying it would bloat every label set in the tableau — so
+    /// `labels.contains(&Top)` is false on every node that will ever exist. The
+    /// ≤-rule, the ≥-rule and the ∃-rule all counted successors with a bare
+    /// `contains`, so on a `⊤` filler the ≤-rule counted ZERO matching successors
+    /// and its bound could not be violated, while the ≥- and ∃-rules also counted
+    /// zero and manufactured successors they already had.
+    ///
+    /// `owl:FunctionalProperty` is encoded as the GCI `≤1 R.⊤` and
+    /// `owl:InverseFunctionalProperty` as `≤1 R⁻.⊤`, so BOTH were completely
+    /// inert: no merge could ever fire, and an ABox with two distinct fillers of
+    /// a functional property in disjoint classes came back `consistent: true,
+    /// undecided: false`. The module documentation claimed both as supported.
+    /// `has_clash` already special-cased `⊤` when comparing two cardinality
+    /// LABELS on one node; the successor-counting sites were simply missed.
+    fn node_satisfies(&self, s: u32, filler: &Concept) -> bool {
+        match self.nodes.get(&s) {
+            Some(n) => *filler == Concept::Top || n.labels.contains(filler),
+            None => false,
+        }
+    }
+
     /// Get successors via a role, considering sub-roles and inverse relationships.
     fn successors(&self, node_id: u32, role: u32) -> HashSet<u32> {
         let node = &self.nodes[&node_id];
@@ -1566,9 +1721,7 @@ impl Tableau {
                             let filler = *filler.clone();
                             let succs = self.successors(nid, role);
                             let has_matching =
-                                succs.iter().any(|&s| {
-                                    self.nodes.get(&s).is_some_and(|n| n.labels.contains(&filler))
-                                });
+                                succs.iter().any(|&s| self.node_satisfies(s, &filler));
                             if !has_matching {
                                 self.create_successor(nid, role, filler);
                                 changed = true;
@@ -1583,9 +1736,7 @@ impl Tableau {
                             let succs = self.successors(nid, role);
                             let matching: usize = succs
                                 .iter()
-                                .filter(|&&s| {
-                                    self.nodes.get(&s).is_some_and(|n| n.labels.contains(&filler))
-                                })
+                                .filter(|&&s| self.node_satisfies(s, &filler))
                                 .count();
                             if matching < n {
                                 // Guard EVERY iteration: n comes from an owl:minCardinality
@@ -1678,11 +1829,7 @@ impl Tableau {
                 let succs = self.successors(nid, role);
                 let matching: Vec<u32> = succs
                     .iter()
-                    .filter(|&&s| {
-                        self.nodes
-                            .get(&s)
-                            .is_some_and(|node| node.labels.contains(&filler))
-                    })
+                    .filter(|&&s| self.node_satisfies(s, &filler))
                     .copied()
                     .collect();
 
@@ -1695,14 +1842,70 @@ impl Tableau {
                         n
                     ));
 
-                    // Non-deterministic merge: try each pair
-                    let mc_label = Concept::MaxCard(role, n, Box::new(filler));
-                    self.nodes
-                        .get_mut(&nid)
-                        .unwrap()
-                        .processed
-                        .insert(mc_label);
-
+                    // The bound is NOT marked processed here, and that is the
+                    // second half of making functional properties work.
+                    //
+                    // This used to insert the `MaxCard` label into `nid.processed`
+                    // before cloning, so every branch below inherited the mark and
+                    // the rule could fire at most ONCE per node. One firing is one
+                    // merge, which removes one successor. With three successors
+                    // under `≤1` that leaves two, the bound is still violated, and
+                    // the rule is already spent — so the branch completes and is
+                    // returned as a MODEL of a constraint it visibly breaks. While
+                    // `≤1 R.⊤` could never fire at all that was unreachable; the
+                    // moment functionality started firing, three fillers of a
+                    // functional property became an ordinary input.
+                    //
+                    // ── TERMINATION ──
+                    //
+                    // The measure that decreases is the recursion depth remaining,
+                    // and it decreases by one on every merge with nothing that can
+                    // give it back. Each firing of this rule performs exactly one
+                    // `merge_nodes` and then recurses as `expand(depth + 1)`;
+                    // `expand` returns `false` on entry once `depth >
+                    // tableaux_max_depth`. So a chain of merges cannot be infinite,
+                    // whatever the merges do to the graph. That is the guarantee,
+                    // and it does not depend on the argument below being right.
+                    //
+                    // The argument below is why the bound is not reached in
+                    // practice. `merge_nodes` removes a node, so each merge
+                    // strictly decreases `self.nodes.len()`; the only rule that
+                    // increases it is `create_successor`, driven by the ∃- and
+                    // ≥-rules. Those cannot form a yo-yo with this one, because
+                    // `merge_nodes` UNIONS the two label sets into the survivor: if
+                    // `∃R.C` and `∃R.D` forced the two successors that were just
+                    // identified, the survivor carries both `C` and `D`, so the
+                    // ∃-rule's `has_matching` test is satisfied for both and it
+                    // creates nothing. A new successor appears only for an
+                    // existential that is genuinely unsatisfied, and each
+                    // existential marks itself processed on its node, so it fires
+                    // at most once there.
+                    //
+                    // ── WHY BLOCKING STILL FIRES ──
+                    //
+                    // `update_blocking()` runs at the end of every pass of the
+                    // deterministic fixpoint loop, and the recursive
+                    // `expand(depth + 1)` on the merged branch re-enters that loop
+                    // from the top. So blocking is recomputed against the
+                    // POST-MERGE graph before this rule looks at the graph again,
+                    // and the `blocked` test at the head of this loop sees the
+                    // fresh answer. The condition is pairwise ancestor blocking
+                    // (Horrocks and Sattler, JAR 39), which is the variant that
+                    // stays sound with inverse roles and number restrictions
+                    // together — which is exactly the combination merging puts in
+                    // play, since an inverse-functional bound is a bound on `R⁻`.
+                    // Merging changes node labels and edges, which is precisely
+                    // what that condition is computed from, so recomputing it after
+                    // every merge is not an optimisation, it is required: a node
+                    // blocked before a merge may not be blocked after it.
+                    //
+                    // ── AND IF THE ARGUMENT IS WRONG ANYWAY ──
+                    //
+                    // Depth, node count and a wall clock are all checked, the clock
+                    // inside the inner fixpoint loop. Exhausting any of them sets
+                    // `budget.exhausted`, which callers turn into `Verdict::Unknown`
+                    // and `undecided: true`. The degraded answer is "I did not
+                    // finish", never a verdict.
                     for i in 0..matching.len() {
                         for j in (i + 1)..matching.len() {
                             let mut branch = self.clone();
@@ -1969,9 +2172,27 @@ pub struct DlReasoner {
     definitions: HashMap<u32, Concept>,
     /// Sub-class closure over asserted rdfs:subClassOf, used by realization.
     subclass_closure: HashMap<u32, HashSet<u32>>,
-    /// Wall-clock cut-off applied to each individual satisfiability test.
-    /// `None` means no time limit (the node/depth budgets still apply).
-    deadline: Option<Instant>,
+    /// How LONG a phase of the run may take, in milliseconds. `None` means no
+    /// time limit (the node/depth budgets still apply).
+    ///
+    /// A DURATION, not an instant, and the difference was a defect. This used to
+    /// hold one `Instant` computed when the reasoner was CONSTRUCTED, shared by
+    /// the satisfiability sweep, the subsumption sweep and the ABox check. One
+    /// shared instant is not a per-test budget and it is not a per-phase budget:
+    /// it is a budget for the whole run, handed out oldest-first. A
+    /// classification that used the clock up left the ABox check starting already
+    /// expired, and it reported `undecided` on an ABox it decides in
+    /// microseconds. Honest, but a loaded machine silently degraded an answer
+    /// that was there for the taking, and the output gave a reader no way to see
+    /// that classification was what spent it.
+    ///
+    /// Each phase now opens its own from this duration, and no cap was raised:
+    /// the number is unchanged, `classify_timeout_ms` still bounds the whole
+    /// classification, and the node and depth caps are untouched. Which phase ran
+    /// out is reported in `budget_exhausted_in`. See `phase_deadline` for why the
+    /// unit is a phase rather than a single test, which is what the setting's own
+    /// name says.
+    budget_ms: Option<u64>,
     /// The axioms as the OWL parser read them, before `ProcessedTBox` absorbed,
     /// rewrote and folded them. A model certificate is written against these, so
     /// that what the checker verifies is the ontology's own axioms rather than
@@ -2069,19 +2290,69 @@ impl DlReasoner {
             data_assertions: result.data_assertions,
             definitions: result.definitions,
             subclass_closure: closure,
-            deadline: crate::runtime::tableaux_test_timeout_ms()
-                .map(|ms| Instant::now() + std::time::Duration::from_millis(ms)),
+            budget_ms: crate::runtime::tableaux_test_timeout_ms(),
             source,
         })
+    }
+
+    /// A fresh cut-off for a PHASE that is about to start, counted from now.
+    ///
+    /// Call this once when a phase begins and hand the result to every tableau
+    /// in that phase. Never store it on the reasoner: storing it is exactly what
+    /// made the ABox check start on whatever the classification had left.
+    ///
+    /// A phase, not a test, and the distinction is a deliberate cost decision
+    /// rather than a reading of the setting's name. `tableaux_test_timeout_ms`
+    /// does say "a single tableau satisfiability test", and minting it per
+    /// tableau is the literal reading — but the two sweeps run one tableau per
+    /// class and one per ORDERED PAIR of classes, and they are already bounded as
+    /// a whole by `classify_timeout_ms`, which defaults to 180s. Because the old
+    /// shared instant expired 10s into the run and made every later tableau bail
+    /// on entry, that 180s budget had never actually governed anything. Minting
+    /// per tableau hands it the run for the first time, and it costs what it says
+    /// it costs: MEASURED on this machine, a 20-ontology corpus went from 67s to
+    /// over 600s, with the five ontologies that hit the cap moving from ~10s each
+    /// to ~180s each and NO change in any verdict — the same classes stayed
+    /// undetermined, just after eighteen times the work. Per phase fixes the
+    /// defect that was reported (the ABox check inheriting a spent clock) and
+    /// bounds the change at 3x the old worst case instead of 18x.
+    ///
+    /// That `classify_timeout_ms` has never bounded a real run is a separate
+    /// finding and is not fixed here.
+    fn phase_deadline(&self) -> Option<Instant> {
+        self.budget_ms
+            .map(|ms| Instant::now() + std::time::Duration::from_millis(ms))
     }
 
     /// Three-valued satisfiability test — each call creates its own Tableau.
     ///
     /// Returns `Unknown` when a resource budget was hit before a decision was
     /// reached. Callers MUST NOT read `Unknown` as either answer.
+    ///
+    /// A bare call is its own phase and gets its own budget. Inside a sweep, use
+    /// `decide_satisfiable_within` and pass the deadline the sweep opened with,
+    /// so the thousands of tableaux in one sweep share one budget rather than
+    /// taking one each.
     pub fn decide_satisfiable(&self, concept: &Concept) -> Verdict {
-        let mut tableau = Tableau::with_deadline(Arc::clone(&self.tbox), self.deadline);
+        self.decide_satisfiable_within(concept, self.phase_deadline())
+    }
+
+    /// `decide_satisfiable` against a deadline the caller already opened.
+    fn decide_satisfiable_within(&self, concept: &Concept, deadline: Option<Instant>) -> Verdict {
+        let mut tableau = Tableau::with_deadline(Arc::clone(&self.tbox), deadline);
         tableau.decide(concept)
+    }
+
+    /// `decide_subsumption` against a deadline the caller already opened.
+    fn decide_subsumption_within(
+        &self,
+        sub: &Concept,
+        sup: &Concept,
+        deadline: Option<Instant>,
+    ) -> Verdict {
+        let mut test = vec![sub.clone(), sup.negate()];
+        test.sort();
+        self.decide_satisfiable_within(&Concept::And(test), deadline)
     }
 
     /// Thread-safe satisfiability test.
@@ -2209,6 +2480,13 @@ impl DlReasoner {
 
         // ── Satisfiability Agent ─────────────────────────────────────
         let sat_start = Instant::now();
+        // One budget for this phase, opened here. The subsumption sweep below
+        // opens its own, and `check_abox` opens a third when it runs. Before
+        // that, all three drew on a single instant fixed when the reasoner was
+        // constructed, so whichever phase ran first spent the clock and the ABox
+        // check — which runs last and is the one a user reads for their own data
+        // — routinely reported `undecided` on an ABox it decides in microseconds.
+        let sat_deadline = self.phase_deadline();
         let sat_results: Vec<(u32, Verdict)> = classes
             .par_iter()
             .map(|&cls| {
@@ -2216,7 +2494,10 @@ impl DlReasoner {
                     // Budget gone: report Unknown rather than guessing.
                     return (cls, Verdict::Unknown);
                 }
-                (cls, self.decide_satisfiable(&Concept::Atom(cls)))
+                (
+                    cls,
+                    self.decide_satisfiable_within(&Concept::Atom(cls), sat_deadline),
+                )
             })
             .collect();
 
@@ -2267,6 +2548,9 @@ impl DlReasoner {
         }
 
         let subsumption_cut_short = std::sync::atomic::AtomicBool::new(false);
+        // This phase's own budget, opened now rather than inherited from the
+        // satisfiability sweep that just finished.
+        let sub_deadline = self.phase_deadline();
         let inferred: Vec<(u32, u32)> = pairs
             .par_iter()
             .filter(|(sub, sup)| {
@@ -2276,7 +2560,12 @@ impl DlReasoner {
                     subsumption_cut_short.store(true, std::sync::atomic::Ordering::Relaxed);
                     return false;
                 }
-                self.is_subsumed(&Concept::Atom(*sub), &Concept::Atom(*sup))
+                self.decide_subsumption_within(
+                    &Concept::Atom(*sub),
+                    &Concept::Atom(*sup),
+                    sub_deadline,
+                )
+                .is_unsat()
             })
             .cloned()
             .collect();
@@ -2460,14 +2749,25 @@ impl DlReasoner {
     /// certify, which is precisely the failure this whole layer exists to catch.
     ///
     /// Returns the tableau, the individual-to-node map, and the number of
-    /// individuals that carry a type (which is what `check_abox` reports, and
-    /// excludes nodes created only because a role assertion pointed at them).
+    /// individuals the check actually ran on, which is one per node in that map.
+    ///
+    /// That count USED TO BE the number of individuals carrying a type, taken
+    /// before the nodes for role-assertion endpoints were added, so it undercounted
+    /// by exactly the individuals this reasoner had the least information about. It
+    /// is a reported number a reader uses to sanity-check that the check saw their
+    /// data, and a node that can carry a label, a GCI and a clash has been checked
+    /// whatever its `rdf:type` says. It matters more now: an untyped subject of a
+    /// role assertion is a node that a domain constraint binds and a disjointness
+    /// axiom can refute, and reporting `individuals_checked: 0` for an ABox made
+    /// entirely of those also suppressed the whole `abox` block from the output.
     fn build_abox_tableau(&self) -> (Tableau, HashMap<u32, u32>, usize) {
         // The ABox check builds ONE tableau containing every named individual,
-        // so it is the largest single expansion the reasoner ever performs. It
-        // must carry the same deadline as every other test, otherwise it is an
-        // unbounded hole in the budget.
-        let mut tableau = Tableau::with_deadline(Arc::clone(&self.tbox), self.deadline);
+        // so it is the largest single expansion the reasoner ever performs and it
+        // must be under a budget, or it is an unbounded hole in one. It opens its
+        // OWN, which is the point of `phase_deadline`: sharing an instant with
+        // classification is what had this phase reporting `undecided` on ABoxes
+        // it decides in microseconds, because classification had already spent it.
+        let mut tableau = Tableau::with_deadline(Arc::clone(&self.tbox), self.phase_deadline());
         let mut ind_to_node: HashMap<u32, u32> = HashMap::new();
 
         // Create nodes for each individual carrying a named-class OR an anonymous
@@ -2481,7 +2781,7 @@ impl DlReasoner {
             }
         }
         all_individuals.sort_unstable();
-        let individuals_checked = all_individuals.len();
+        // Counted at the end, off `ind_to_node`, not here off `all_individuals`.
         for ind in all_individuals {
             let node_id = tableau.fresh_node(None, None);
             ind_to_node.insert(ind, node_id);
@@ -2508,31 +2808,41 @@ impl DlReasoner {
             }
         }
 
-        // An individual may be named only as the object of a role assertion, typed by a
+        // An individual may be named only by a role assertion, typed by a
         // vocabulary this reasoner does not treat as a class (a skos:Concept, say) and never
         // declared owl:NamedIndividual. It still has to exist as a node, or the edge that
-        // points at it leads nowhere and the restriction that depends on it silently fails.
+        // names it leads nowhere and the restriction that depends on it silently fails.
+        //
+        // BOTH endpoints, and the subject half is the newer one. The object half
+        // was here already; the subject half was unreachable, because an untyped
+        // subject's assertions were dropped during parsing and never became
+        // `role_assertions` at all. Now that they survive, the subject needs a
+        // node for the same reason the object does — and it needs one MORE than
+        // the object does, because `rdfs:domain` binds the source of the edge, so
+        // the subject is where a domain clash actually lands.
         let referenced: Vec<u32> = self
             .role_assertions
             .iter()
-            .map(|&(_, _, b)| b)
-            .filter(|b| !ind_to_node.contains_key(b))
+            .flat_map(|&(a, _, b)| [a, b])
+            .filter(|x| !ind_to_node.contains_key(x))
             .collect();
-        for b in referenced {
-            if ind_to_node.contains_key(&b) {
+        for ind in referenced {
+            // `referenced` can name the same individual twice, once as a subject
+            // and once as an object, so this is not redundant with the filter.
+            if ind_to_node.contains_key(&ind) {
                 continue;
             }
             let node_id = tableau.fresh_node(None, None);
-            ind_to_node.insert(b, node_id);
-            tableau.add_label(node_id, Concept::Atom(b));
+            ind_to_node.insert(ind, node_id);
+            tableau.add_label(node_id, Concept::Atom(ind));
             // A GCI holds of EVERY element of the domain, so a node that does not
             // carry the GCIs is a hole this check cannot see into. These nodes were
             // the only ones in the tableau created without them — the loop above
             // adds them to every typed individual and `create_successor` adds them
             // to every generated successor — and the omission was a second false
             // clean of the same shape as the domain/range one: an ABox whose only
-            // contradiction lands on an individual named just as the object of a
-            // role assertion was reported consistent.
+            // contradiction lands on an individual named just by a role assertion
+            // was reported consistent.
             for gci in tableau.tbox.gcis.clone() {
                 tableau.add_label(node_id, gci);
             }
@@ -2560,11 +2870,21 @@ impl DlReasoner {
         }
 
 
+        let individuals_checked = ind_to_node.len();
         (tableau, ind_to_node, individuals_checked)
     }
 
     pub fn check_abox(&self) -> ABoxResult {
-        if self.individual_types.is_empty() && self.individual_anon_types.is_empty() {
+        // "No ABox" has to mean no ABox, and a role assertion is ABox. An
+        // ontology whose entire instance data is untyped individuals related by
+        // a property with a domain still states something refutable, and this
+        // guard used to return `consistent: true` on it without building
+        // anything, which is the same false clean one level up from the one
+        // `add_role_edge` closed.
+        if self.individual_types.is_empty()
+            && self.individual_anon_types.is_empty()
+            && self.role_assertions.is_empty()
+        {
             return ABoxResult {
                 consistent: true,
                 undecided: false,
@@ -2658,6 +2978,30 @@ impl DlReasoner {
             && !result.subsumption_cut_short
             && !abox_result.undecided;
 
+        // WHICH phase ran out, not merely THAT something did.
+        //
+        // `complete: false` says the run is not a proof. It does not say which of
+        // the three phases to give more room, and they do not draw on the same
+        // settings: the satisfiability and subsumption sweeps are bounded by
+        // `[reasoner] classify_timeout_ms` across the whole classification as well
+        // as by their own `tableaux_test_timeout_ms` phase budget, while the ABox
+        // check is one tableau under that phase budget alone. A reader who is told
+        // only "incomplete" cannot act, and before each phase got its own budget
+        // the phase that hit the wall was usually not the phase that spent the
+        // time — classification would eat the clock and the ABox check would be
+        // the one reporting `undecided`. Naming the phases makes that visible
+        // rather than leaving it to be inferred.
+        let mut budget_exhausted_in: Vec<&str> = Vec::new();
+        if !undetermined_names.is_empty() {
+            budget_exhausted_in.push("satisfiability");
+        }
+        if result.subsumption_cut_short {
+            budget_exhausted_in.push("subsumption");
+        }
+        if abox_result.undecided {
+            budget_exhausted_in.push("abox");
+        }
+
         let mut hierarchy_json: Vec<serde_json::Value> = Vec::new();
         for (&cls, supers) in &result.hierarchy {
             let cls_name = reasoner.interner.resolve(cls);
@@ -2736,6 +3080,7 @@ impl DlReasoner {
             "named_classes": reasoner.named_classes.len(),
             "unsatisfiable_classes": unsat_names,
             "complete": complete,
+            "budget_exhausted_in": budget_exhausted_in,
             "undetermined_classes": undetermined_names,
             "subsumption_sweep_cut_short": result.subsumption_cut_short,
             "inferred_subsumptions": result.inferred_subsumptions,
@@ -3803,7 +4148,7 @@ impl DlReasoner {
             anyhow::bail!("no class named {class_iri} in this ontology");
         };
         let concept = Concept::Atom(cid);
-        let mut tableau = Tableau::with_deadline(Arc::clone(&self.tbox), self.deadline);
+        let mut tableau = Tableau::with_deadline(Arc::clone(&self.tbox), self.phase_deadline());
         tableau.capture = true;
         match tableau.decide(&concept) {
             Verdict::Unsatisfiable => return Ok(ModelOutcome::Refuted),
@@ -3845,7 +4190,19 @@ impl DlReasoner {
     /// conclusion than the proof supports. Naming them in a source comment is
     /// not enough: it has to be in the report, next to the verdict.
     pub fn unmodelled_constructs(graph: &Arc<GraphStore>) -> Vec<(String, u64)> {
-        const NOT_MODELLED: [(&str, &str); 8] = [
+        // `owl:AsymmetricProperty` sits here rather than in the tableau, and the
+        // choice is worth stating. Asymmetry is a constraint on a PAIR of edges
+        // (`a r b` forbids `b r a`), not a concept membership, so unlike every
+        // characteristic the tableau does model it cannot be expressed as a label
+        // on a node in SHIQ without nominals — the ALCOIQ encoding needs `{a}` to
+        // say "the r-successor that is this individual". Modelling it would mean
+        // a new edge-level clash rule and a new termination argument. Declaring it
+        // costs a line and is honest, which is what this list is for. Until it was
+        // added here it was in NEITHER place: not implemented, and not declared,
+        // so an ontology leaning on asymmetry got a clean verdict with no sign
+        // that a constraint had been dropped. That is the one outcome this list
+        // exists to prevent.
+        const NOT_MODELLED: [(&str, &str); 9] = [
             ("owl:sameAs", "http://www.w3.org/2002/07/owl#sameAs"),
             ("owl:differentFrom", "http://www.w3.org/2002/07/owl#differentFrom"),
             ("owl:oneOf", "http://www.w3.org/2002/07/owl#oneOf"),
@@ -3854,6 +4211,7 @@ impl DlReasoner {
             ("owl:hasKey", "http://www.w3.org/2002/07/owl#hasKey"),
             ("owl:ReflexiveProperty", "http://www.w3.org/2002/07/owl#ReflexiveProperty"),
             ("owl:IrreflexiveProperty", "http://www.w3.org/2002/07/owl#IrreflexiveProperty"),
+            ("owl:AsymmetricProperty", "http://www.w3.org/2002/07/owl#AsymmetricProperty"),
         ];
         let mut found = Vec::new();
         for (label, iri) in NOT_MODELLED {
@@ -3875,7 +4233,7 @@ impl DlReasoner {
     }
 
     pub fn certify_tbox_consistent(&self, dir: &Path) -> anyhow::Result<ModelOutcome> {
-        let mut tableau = Tableau::with_deadline(Arc::clone(&self.tbox), self.deadline);
+        let mut tableau = Tableau::with_deadline(Arc::clone(&self.tbox), self.phase_deadline());
         tableau.capture = true;
         match tableau.decide(&Concept::Top) {
             Verdict::Unsatisfiable => return Ok(ModelOutcome::Refuted),
@@ -3887,7 +4245,14 @@ impl DlReasoner {
 
     /// Certify that the ABox is consistent with the TBox.
     pub fn certify_abox_consistent(&self, dir: &Path) -> anyhow::Result<ModelOutcome> {
-        if self.individual_types.is_empty() && self.individual_anon_types.is_empty() {
+        // Same three-part test as `check_abox`, and it has to be the same or the
+        // certificate layer silently declines to certify an ABox the reasoner
+        // decided. `abox_axioms` already emits one `indiv` line per role-assertion
+        // endpoint, so refusing here left those axioms with nothing to certify.
+        if self.individual_types.is_empty()
+            && self.individual_anon_types.is_empty()
+            && self.role_assertions.is_empty()
+        {
             return Ok(ModelOutcome::Refused(
                 "this ontology has no ABox, so there is nothing to certify beyond the TBox"
                     .to_string(),
