@@ -781,6 +781,68 @@ pub struct FolProblem {
     pub individuals: BTreeSet<String>,
 }
 
+/// One line of the model-finding problem: a role, a diagnostic label, and the
+/// formula the solver is asked about and the checker then checks.
+#[derive(Clone, Debug)]
+pub struct CheckerEntry {
+    /// `axiom` or `goal_negated`, and nothing else.
+    pub role: &'static str,
+    /// The emitter's own label. DIAGNOSTIC ONLY: not digested, and no theorem
+    /// looks at it.
+    pub label: String,
+    pub form: Form,
+}
+
+/// The symbols a problem uses, by arity, in a fixed order.
+///
+/// Three separate sets rather than one, because `Fol.FinModel` has three
+/// separate fields: `c:X` as a unary predicate and `op:X` as a binary one
+/// could not collide even without the [`sym`] prefixes.
+#[derive(Clone, Debug, Default)]
+pub struct Vocabulary {
+    pub unary: BTreeSet<String>,
+    pub binary: BTreeSet<String>,
+    pub consts: BTreeSet<String>,
+}
+
+impl Vocabulary {
+    pub fn len(&self) -> usize {
+        self.unary.len() + self.binary.len() + self.consts.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+fn collect(f: &Form, v: &mut Vocabulary) {
+    fn t(term: &Term, v: &mut Vocabulary) {
+        if let Term::Const(a) = term {
+            v.consts.insert(sym::constant(a));
+        }
+    }
+    match f {
+        Form::App1(p, x) => {
+            v.unary.insert(sym::p1(p));
+            t(x, v);
+        }
+        Form::App2(p, x, y) => {
+            v.binary.insert(sym::p2(p));
+            t(x, v);
+            t(y, v);
+        }
+        Form::Eq(x, y) => {
+            t(x, v);
+            t(y, v);
+        }
+        Form::Tru | Form::Fls => {}
+        Form::Neg(g) | Form::All(_, g) | Form::Ex(_, g) => collect(g, v),
+        Form::And(g, h) | Form::Or(g, h) | Form::Imp(g, h) => {
+            collect(g, v);
+            collect(h, v);
+        }
+    }
+}
+
 impl FolProblem {
     /// Build the problem for an ontology and an optional goal.
     ///
@@ -837,10 +899,89 @@ impl FolProblem {
         out
     }
 
+    /// Every formula as the MODEL-FINDING half of the pipeline sees it.
+    ///
+    /// This is [`FolProblem::formulas`] with one difference, and the
+    /// difference is the whole point of the model direction: a conjecture
+    /// becomes a `goal_negated` line carrying `¬φ`. A countermodel to
+    /// `Γ ⊨ φ` is a model of `Γ ∪ {¬φ}`, so the negation happens ONCE, here,
+    /// and neither the solver nor `oo-folmodel` negates anything again.
+    ///
+    /// The SMT-LIB file, the LADR file and `problem.tsv` are all folds over
+    /// this one list. That is the mechanical reason the solver cannot be asked
+    /// a different question from the one the checker then checks, and it is
+    /// the same argument [`FolProblem::formulas`] makes for TPTP and CLIF.
+    pub fn checker_entries(&self) -> Vec<CheckerEntry> {
+        let mut out = Vec::new();
+        for (label, role, f) in self.formulas() {
+            match role {
+                "conjecture" => out.push(CheckerEntry {
+                    role: "goal_negated",
+                    label,
+                    form: Form::neg(f.clone()),
+                }),
+                _ => out.push(CheckerEntry { role: "axiom", label, form: f.clone() }),
+            }
+        }
+        out
+    }
+
+    /// The symbols the problem actually uses, by arity.
+    ///
+    /// Collected from [`FolProblem::checker_entries`] and therefore including
+    /// the negated goal's, because a model file that did not interpret a
+    /// symbol occurring only in the goal would fail `Fol.covers`.
+    pub fn vocabulary(&self) -> Vocabulary {
+        let mut v = Vocabulary::default();
+        for e in self.checker_entries() {
+            collect(&e.form, &mut v);
+        }
+        v
+    }
+
+    /// `problem.tsv` for `oo-folmodel`, and its digest.
+    pub fn to_problem_tsv(&self) -> Result<(String, String), UnwritableSymbol> {
+        let entries = self.checker_entries();
+        let mut file = String::new();
+        let mut canonical: Vec<String> = Vec::with_capacity(entries.len());
+        for e in &entries {
+            let shown = checkfmt::show_form(&e.form)?;
+            let _ = writeln!(file, "{}\t{}\t{}", e.role, e.label, shown);
+            canonical.push(format!("{}\t{}", e.role, shown));
+        }
+        let digest = checkfmt::hex16(checkfmt::fnv1a64(&canonical.join("\n")));
+        Ok((file, digest))
+    }
+
+    /// SMT-LIB 2, with the goal already negated.
+    pub fn to_smtlib(&self, enc: smtlib::SmtEncoding) -> Result<String, UnwritableSymbol> {
+        let v = self.vocabulary();
+        let mut s = header(";", self.conjecture.is_some(), SMTLIB_STYLE);
+        let _ = writeln!(s, "\n(set-logic {})", smtlib::logic(enc));
+        let _ = writeln!(s, "(set-option :produce-models true)");
+        let _ = writeln!(s, "{}", smtlib::sort_decl(enc));
+        for p in &v.unary {
+            let _ = writeln!(s, "(declare-fun {} (U) Bool)", smtlib::symbol(p)?);
+        }
+        for p in &v.binary {
+            let _ = writeln!(s, "(declare-fun {} (U U) Bool)", smtlib::symbol(p)?);
+        }
+        for c in &v.consts {
+            let _ = writeln!(s, "(declare-fun {} () U)", smtlib::symbol(c)?);
+        }
+        for e in self.checker_entries() {
+            let _ = writeln!(s, "; {} ({})", e.label, e.role);
+            let _ = writeln!(s, "(assert {})", smtlib::form(&e.form)?);
+        }
+        let _ = writeln!(s, "(check-sat)");
+        let _ = writeln!(s, "(get-model)");
+        Ok(s)
+    }
+
     /// TPTP FOF.
     pub fn to_tptp(&self) -> String {
         let mut s = String::new();
-        s.push_str(&header("%", self.conjecture.is_some()));
+        s.push_str(&header("%", self.conjecture.is_some(), TPTP_STYLE));
         for (name, role, f) in self.formulas() {
             let _ = writeln!(s, "fof({name}, {role}, {}).", fof::form(f));
         }
@@ -871,7 +1012,7 @@ impl FolProblem {
         let _ = writeln!(
             s,
             "  {}",
-            clif::standalone_comment(dialect, &header_text(self.conjecture.is_some(), true))
+            clif::standalone_comment(dialect, &header_text(self.conjecture.is_some(), CLIF_STYLE))
         );
         for (label, role, f) in self.formulas() {
             match comments {
@@ -897,11 +1038,11 @@ impl FolProblem {
     }
 }
 
-/// The header both serialisers carry, with each line prefixed by the syntax's
-/// comment marker. It is not decoration: a file that leaves its own limits to
-/// a README gets read without one.
-fn header(comment: &str, has_goal: bool) -> String {
-    header_text(has_goal, comment == "//")
+/// The header every serialiser carries, with each line prefixed by the
+/// syntax's comment marker. It is not decoration: a file that leaves its own
+/// limits to a README gets read without one.
+fn header(comment: &str, has_goal: bool, style: HeaderStyle) -> String {
+    header_text(has_goal, style)
         .lines()
         .map(|l| {
             if l.is_empty() {
@@ -913,8 +1054,52 @@ fn header(comment: &str, has_goal: bool) -> String {
         .collect()
 }
 
+/// The syntax-specific paragraphs of the header.
+///
+/// `extra` is what the syntax itself needs a reader to know. `goal` replaces
+/// the paragraph about the conjecture, and it has to be swappable rather than
+/// shared: TPTP and CLIF carry the goal as a CONJECTURE and a prover negates
+/// it internally, while SMT-LIB and LADR carry the NEGATION as an assertion
+/// and a `sat` answer is the non-entailment. A reader told the wrong one of
+/// those two reads the file backwards.
+#[derive(Clone, Copy)]
+struct HeaderStyle {
+    extra: &'static [&'static str],
+    goal: &'static [&'static str],
+}
+
+/// What a refutation-style consumer is told: its verdict is an oracle opinion.
+const ORACLE_GOAL: &[&str] = &[
+    "",
+    "A prover's verdict on this file is an ORACLE OPINION, not a certificate.",
+    "Checking a superposition refutation needs a verified first-order calculus",
+    "with unification, which does not exist in core Lean. Disagreement between",
+    "a prover and this engine is a bug in one of the two and nothing here says",
+    "which.",
+];
+
+/// What a model-finding consumer is told: the goal is already negated, and its
+/// SATISFIABILITY answer is the one this repository can certify.
+const MODEL_GOAL: &[&str] = &[
+    "",
+    "THE GOAL IS ALREADY NEGATED IN THIS FILE. A countermodel to `G |= phi` is a",
+    "model of `G + {not phi}`, so the negation is asserted here and nothing",
+    "downstream negates anything again. A `sat` answer therefore says the",
+    "conjecture is NOT entailed, and an `unsat` answer says nothing this",
+    "repository will print the word `unsatisfiable` for unless the encoding was",
+    "unbounded.",
+    "",
+    "A MODEL THIS FILE YIELDS CAN BE CERTIFIED; A REFUTATION CANNOT. Hand the",
+    "solver's structure to `oo-folmodel` (lean/Fol/) and a machine-checked",
+    "theorem, Fol.satisfiable_of_check, turns an accepted structure into",
+    "satisfiability of exactly these formulas. Nothing in this repository",
+    "certifies the other direction. See docs/decisions/0006.",
+];
+
+const TPTP_STYLE: HeaderStyle = HeaderStyle { extra: &[], goal: ORACLE_GOAL };
+
 /// The header, unprefixed, so CLIF can carry it inside a `cl:comment` string.
-fn header_text(has_goal: bool, clif: bool) -> String {
+fn header_text(has_goal: bool, style: HeaderStyle) -> String {
     let mut lines: Vec<&str> = vec![
         "Generated by open-ontologies `fol` export.",
         "",
@@ -928,8 +1113,16 @@ fn header_text(has_goal: bool, clif: bool) -> String {
         "owl-lean's `background`; the `ind_typing_*` axioms are its `indAxioms`, and",
         "omitting them refutes adequacy outright (OwlLean.Refutations).",
     ];
-    if clif {
-        lines.extend([
+    lines.extend(style.extra.iter().copied());
+    if has_goal {
+        lines.extend(style.goal.iter().copied());
+    }
+    lines.join("\n")
+}
+
+/// The CLIF paragraphs of the header.
+const CLIF_NOTES: &[&str] = &{
+    [
             "",
             "CLIF RESTRICTION. Common Logic is not plain first-order logic. This text",
             "uses only the first-order-equivalent fragment: no sequence markers, fixed",
@@ -963,20 +1156,58 @@ fn header_text(has_goal: bool, clif: bool) -> String {
             "the Macleod toolchain's shipped lexer use `cl-text` and `cl-comment`",
             "instead, and will not read the colon spelling. Re-export with the other",
             "dialect rather than hand-editing.",
-        ]);
-    }
-    if has_goal {
-        lines.extend([
-            "",
-            "A prover's verdict on this file is an ORACLE OPINION, not a certificate.",
-            "Checking a superposition refutation needs a verified first-order calculus",
-            "with unification, which does not exist in core Lean. Disagreement between",
-            "a prover and this engine is a bug in one of the two and nothing here says",
-            "which.",
-        ]);
-    }
-    lines.join("\n")
-}
+    ]
+};
+
+const CLIF_STYLE: HeaderStyle = HeaderStyle { extra: CLIF_NOTES, goal: ORACLE_GOAL };
+
+/// The SMT-LIB paragraphs.
+const SMTLIB_NOTES: &[&str] = &[
+    "",
+    "SMT-LIB 2. One sort `U`, unary and binary predicates over it, and nullary",
+    "constants. There are no function symbols of positive arity, no theories and",
+    "no sorts beyond `U`, because `OwlLean.FOL` has none: `FSig` is exactly P1,",
+    "P2 and Const.",
+    "",
+    "`U` is declared one of two ways and the difference decides what an answer",
+    "means. `declare-sort` leaves the cardinality open, so `unsat` is real",
+    "unsatisfiability. An enumeration datatype `(e0 … e(k-1))` fixes it at k, so",
+    "`unsat` establishes only that NO MODEL OF SIZE k EXISTS, which is not",
+    "unsatisfiability: `(forall ((x U)) (exists ((y U)) (and (r x y) (not (= x",
+    "y))))) ` is unsat at k=1 and sat at k=2.",
+    "",
+    "`e0 …`, `U` and `X0 …` cannot collide with a translated symbol: every one",
+    "of those is `thing`, `lit`, or carries a colon prefix.",
+];
+
+const SMTLIB_STYLE: HeaderStyle = HeaderStyle { extra: SMTLIB_NOTES, goal: MODEL_GOAL };
+
+/// The LADR paragraphs.
+const LADR_NOTES: &[&str] = &[
+    "",
+    "LADR, for Mace4. EVERY SYMBOL IN THIS FILE IS MANGLED and the table is",
+    "written beside it as `symbols.tsv`: p0… are the unary predicates, r0… the",
+    "binary ones, c0… the constants, and x0… are bound variables. Do not read an",
+    "IRI back out of this file by hand.",
+    "",
+    "The mangling is not cosmetic. LADR reads a name whose first letter is in",
+    "{u,v,w,x,y,z} as a VARIABLE, so an IRI beginning with one of those would",
+    "silently become universally quantified and Mace4 would search a different",
+    "problem and report `exhausted` with no error. Measured on LADR 2009-11A:",
+    "the input `p0(w0). -p0(k0).` is echoed in Mace4's own CLAUSES FOR SEARCH",
+    "block as `p0(x).` and `-p0(k0).`. LADR also has no quoting construct that",
+    "survives the colon and the slash an IRI contains.",
+    "",
+    "Mace4 CLAUSIFIES AND SKOLEMISES, so the model it prints interprets names",
+    "this file never declared (f1, and fresh c… it chose itself). Those are",
+    "dropped on the way back in, which is taking the reduct of its structure,",
+    "and the driver reports the dropped names rather than passing over them.",
+    "",
+    "Mace4's minimum domain size is 2: `-n 1` is a fatal error, measured. A",
+    "one-element model can be found by the SMT-LIB route and not by this one.",
+];
+
+const LADR_STYLE: HeaderStyle = HeaderStyle { extra: LADR_NOTES, goal: MODEL_GOAL };
 
 fn axiom_label(a: &OwlAxiom) -> &'static str {
     match a {
@@ -1005,6 +1236,99 @@ fn axiom_label(a: &OwlAxiom) -> &'static str {
     }
 }
 
+// ── The namer: one module, four consumers ───────────────────────────────────
+
+/// The seven prefixed images of the Lean's symbol arms. ONE namer.
+///
+/// `lean/Fol/Syntax.lean` monomorphises `OwlLean.FOL.Form` at `Sym := String`,
+/// which flattens `OwlP1`'s four arms, `OwlP2`'s two and `FSig.Const` into one
+/// string space. That flattening is sound only if the map is INJECTIVE, and
+/// the injectivity is supplied by these prefixes: `thing` and `lit` carry no
+/// colon and every other arm carries its own, so the seven images are pairwise
+/// disjoint whatever the IRIs are.
+///
+/// ```text
+/// OwlP1.Thing  ->  thing        OwlP2.Op r   ->  op:r
+/// OwlP1.Lit    ->  lit          OwlP2.Dp d   ->  dp:d
+/// OwlP1.Cls a  ->  c:a          FSig.Const a ->  i:a
+/// OwlP1.Dt d   ->  d:d
+/// ```
+///
+/// Four consumers: [`fof`] wraps these in single-quoted TPTP atoms, [`clif`]
+/// in double-quoted CLIF enclosed names, [`smtlib`] in `|…|` quoted symbols,
+/// and [`checkfmt`] writes them bare into the file the Lean checker reads. The
+/// fifth, [`ladr`], does not use them at all: LADR has no quoting construct
+/// that survives a colon or a slash, so it mangles instead and keeps a table.
+///
+/// Writing a second namer by stripping the quotes off the TPTP output is the
+/// obvious shortcut and is exactly what this module exists to prevent. If the
+/// prefixes ever drift apart between two syntaxes, a class IRI and a datatype
+/// IRI with the same spelling become one predicate in one of them.
+pub mod sym {
+    use super::{P1, P2};
+
+    /// The image of a unary predicate symbol.
+    pub fn p1(p: &P1) -> String {
+        match p {
+            P1::Cls(a) => format!("c:{a}"),
+            P1::Dt(d) => format!("d:{d}"),
+            P1::Thing => "thing".to_string(),
+            P1::Lit => "lit".to_string(),
+        }
+    }
+
+    /// The image of a binary predicate symbol.
+    pub fn p2(p: &P2) -> String {
+        match p {
+            P2::Op(r) => format!("op:{r}"),
+            P2::Dp(d) => format!("dp:{d}"),
+        }
+    }
+
+    /// The image of an individual name.
+    pub fn constant(a: &str) -> String {
+        format!("i:{a}")
+    }
+
+    /// The characters a symbol may not contain, and why.
+    ///
+    /// `bare()` strips the angle brackets before an IRI reaches `Term::Const`
+    /// or `P1::Cls`, so the symbols here are RAW IRIs out of the graph and
+    /// this refusal is live rather than belt and braces. In the checker format
+    /// a symbol containing a space re-parses as a DIFFERENT formula (the token
+    /// stream splits on spaces) and one containing a tab re-parses as a
+    /// different set of fields. The 13 September 2026 audit of this repository
+    /// found exactly that truncation class silently disabling SHACL
+    /// constraints, so the writer returns an error rather than emitting one.
+    pub fn unwritable_char(s: &str) -> Option<char> {
+        s.chars().find(|c| matches!(c, ' ' | '\t' | '\r' | '\n'))
+    }
+}
+
+/// A symbol that cannot be written into a target syntax, named with the reason.
+///
+/// Returned rather than escaped or dropped: a dropped symbol is a different
+/// theory and an escaped one is a different symbol.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnwritableSymbol {
+    pub symbol: String,
+    pub character: char,
+    pub syntax: &'static str,
+    pub why: &'static str,
+}
+
+impl std::fmt::Display for UnwritableSymbol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the symbol {:?} contains {:?}, which cannot be written in {}: {}",
+            self.symbol, self.character, self.syntax, self.why
+        )
+    }
+}
+
+impl std::error::Error for UnwritableSymbol {}
+
 // ── Serialiser 1: TPTP FOF ──────────────────────────────────────────────────
 
 /// TPTP FOF rendering of [`Form`]. A fold over the formula and nothing else.
@@ -1012,21 +1336,28 @@ fn axiom_label(a: &OwlAxiom) -> &'static str {
 /// Named `fof` rather than `tptp` so it sits beside [`clif`] as one of two
 /// syntaxes, which is what it is.
 pub mod fof {
-    use super::{Form, P1, P2, Term};
+    use super::{Form, P1, P2, Term, sym};
 
     /// Symbols are single-quoted TPTP atoms carrying a kind prefix.
     ///
-    /// The prefix is not cosmetic. `OwlP1` and `OwlP2` are disjoint sums in
-    /// the Lean, so a class and an object property that happen to share an IRI
-    /// are two unrelated symbols, and a rendering that collapsed them would
-    /// emit a different theory. Every prefix contains a colon, which is not
-    /// legal in an unquoted TPTP lower-word, so no prefixed symbol can ever
-    /// collide with the bare atoms `thing` and `lit`.
-    fn quoted(prefix: &str, iri: &str) -> String {
-        let mut s = String::with_capacity(iri.len() + prefix.len() + 4);
+    /// The prefix comes from [`super::sym`] and is not cosmetic: `OwlP1` and
+    /// `OwlP2` are disjoint sums in the Lean, so a class and an object
+    /// property that happen to share an IRI are two unrelated symbols, and a
+    /// rendering that collapsed them would emit a different theory. Every
+    /// prefix contains a colon, which is not legal in an unquoted TPTP
+    /// lower-word, so no prefixed symbol can ever collide with the bare atoms
+    /// `thing` and `lit`.
+    ///
+    /// Only `\` and `'` are escaped, and the prefixes contain neither, so
+    /// quoting the prefixed image is byte for byte what quoting the prefix and
+    /// the escaped IRI separately used to produce.
+    fn quoted(image: &str) -> String {
+        if image == "thing" || image == "lit" {
+            return image.to_string();
+        }
+        let mut s = String::with_capacity(image.len() + 4);
         s.push('\'');
-        s.push_str(prefix);
-        for ch in iri.chars() {
+        for ch in image.chars() {
             if ch == '\\' || ch == '\'' {
                 s.push('\\');
             }
@@ -1037,25 +1368,17 @@ pub mod fof {
     }
 
     fn p1(p: &P1) -> String {
-        match p {
-            P1::Cls(a) => quoted("c:", a),
-            P1::Dt(d) => quoted("d:", d),
-            P1::Thing => "thing".to_string(),
-            P1::Lit => "lit".to_string(),
-        }
+        quoted(&sym::p1(p))
     }
 
     fn p2(p: &P2) -> String {
-        match p {
-            P2::Op(r) => quoted("op:", r),
-            P2::Dp(d) => quoted("dp:", d),
-        }
+        quoted(&sym::p2(p))
     }
 
     fn term(t: &Term) -> String {
         match t {
             Term::Var(n) => format!("X{n}"),
-            Term::Const(a) => quoted("i:", a),
+            Term::Const(a) => quoted(&sym::constant(a)),
         }
     }
 
@@ -1228,7 +1551,7 @@ impl ClifDialect {
 /// `tests/fol_translation_correspondence_test.rs` is the check that it still
 /// does.
 pub mod clif {
-    use super::{ClifDialect, Form, P1, P2, Term};
+    use super::{ClifDialect, Form, P1, P2, Term, sym};
 
     /// Names are written as CLIF **enclosed names**, delimited by DOUBLE
     /// QUOTES, with `"` and `\` escaped.
@@ -1240,13 +1563,13 @@ pub mod clif {
     /// containing two pipes and would not protect a slash or a colon. The
     /// bar convention belongs to Common Lisp and to KIF, not to CLIF.
     ///
-    /// The kind prefixes are the TPTP serialiser's, for the same reason:
-    /// `OwlP1` and `OwlP2` are disjoint sums in the Lean.
-    fn enclosed(prefix: &str, iri: &str) -> String {
-        let mut s = String::with_capacity(iri.len() + prefix.len() + 4);
+    /// The kind prefixes come from [`super::sym`], the same module the TPTP
+    /// and SMT-LIB serialisers read, for the same reason: `OwlP1` and `OwlP2`
+    /// are disjoint sums in the Lean.
+    fn enclosed(image: &str) -> String {
+        let mut s = String::with_capacity(image.len() + 4);
         s.push('"');
-        s.push_str(prefix);
-        for ch in iri.chars() {
+        for ch in image.chars() {
             if ch == '\\' || ch == '"' {
                 s.push('\\');
             }
@@ -1338,24 +1661,20 @@ pub mod clif {
 
     fn p1(p: &P1) -> String {
         match p {
-            P1::Cls(a) => enclosed("c:", a),
-            P1::Dt(d) => enclosed("d:", d),
             P1::Thing => "thing".to_string(),
             P1::Lit => "lit".to_string(),
+            other => enclosed(&sym::p1(other)),
         }
     }
 
     fn p2(p: &P2) -> String {
-        match p {
-            P2::Op(r) => enclosed("op:", r),
-            P2::Dp(d) => enclosed("dp:", d),
-        }
+        enclosed(&sym::p2(p))
     }
 
     fn term(t: &Term) -> String {
         match t {
             Term::Var(n) => format!("X{n}"),
-            Term::Const(a) => enclosed("i:", a),
+            Term::Const(a) => enclosed(&sym::constant(a)),
         }
     }
 
@@ -1378,6 +1697,486 @@ pub mod clif {
             Form::All(n, g) => format!("(forall (X{n}) {})", form(g)),
             Form::Ex(n, g) => format!("(exists (X{n}) {})", form(g)),
         }
+    }
+}
+
+// ── Serialiser 3: SMT-LIB 2 ─────────────────────────────────────────────────
+
+/// SMT-LIB 2 rendering of [`Form`]. The third printer over the same [`Form`],
+/// and no more OWL-specific than the other two.
+///
+/// # Why this one exists and the other two were not enough
+///
+/// TPTP and CLIF are refutation formats: the consumer takes a conjecture,
+/// negates it and searches for a contradiction, and by decision 0005 what it
+/// hands back is an oracle opinion. SMT-LIB is read by solvers that also build
+/// MODELS, and a model is a finite object this repository can check. The file
+/// this module writes is therefore asked a different question, and it asserts
+/// the NEGATED goal rather than declaring a conjecture, because a countermodel
+/// to `Γ ⊨ φ` is a model of `Γ ∪ {¬φ}`.
+///
+/// # The two encodings, and why the difference is load-bearing
+///
+/// [`SmtEncoding::Unbounded`] declares `U` with `declare-sort`, so a model may
+/// be of any cardinality and `unsat` really means unsatisfiable. Nothing
+/// constrains the solver to return a finite structure, so a `sat` here is an
+/// oracle opinion.
+///
+/// [`SmtEncoding::Finite`] declares `U` as an enumeration datatype with
+/// exactly `k` nullary constructors `e0 … e(k-1)`. Now `sat` comes with a
+/// structure over a known finite carrier, which is exactly what `oo-folmodel`
+/// can check, and `unsat` establishes only that no model of size `k` exists.
+/// Reporting the second as unsatisfiability is the ten-minute mistake
+/// decision 0006 item 4 exists to stop: `∀x∃y (r(x,y) ∧ x≠y)` is `unsat` at
+/// carrier 1 and `sat` at carrier 2.
+///
+/// `e0 … e(k-1)`, `U` and `X0 …` cannot collide with a problem symbol, because
+/// every problem symbol is `thing`, `lit`, or carries one of the five colon
+/// prefixes from [`sym`], and none of those spellings contains a colon.
+pub mod smtlib {
+    use super::{Form, P1, P2, Term, UnwritableSymbol, sym};
+
+    /// Which sort declaration the file carries.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum SmtEncoding {
+        /// `(declare-sort U 0)`. Any cardinality, so `unsat` is real
+        /// unsatisfiability and `sat` carries no size bound.
+        Unbounded,
+        /// `(declare-datatypes ((U 0)) (((e0) … )))`, exactly `k` elements.
+        /// `unsat` establishes only `no_model_up_to_size_k`.
+        Finite(u32),
+    }
+
+    impl SmtEncoding {
+        /// The word a report prints for this encoding. Decision 0006 makes the
+        /// verdict depend on it mechanically, so it is a value and not prose.
+        pub fn name(self) -> String {
+            match self {
+                SmtEncoding::Unbounded => "unbounded".to_string(),
+                SmtEncoding::Finite(k) => format!("finite({k})"),
+            }
+        }
+        pub fn bound(self) -> Option<u32> {
+            match self {
+                SmtEncoding::Unbounded => None,
+                SmtEncoding::Finite(k) => Some(k),
+            }
+        }
+    }
+
+    /// An SMT-LIB 2 symbol.
+    ///
+    /// `thing` and `lit` are legal simple symbols and are written bare.
+    /// Everything else carries a colon, which SMT-LIB's simple-symbol
+    /// character set excludes (a leading colon is a keyword), so it goes in
+    /// `|…|`. A quoted symbol may contain anything except `|` and `\`
+    /// (SMT-LIB 2.6 §3.1), and there is no escape for either, so a symbol
+    /// containing one is REFUSED rather than mangled into a different symbol.
+    pub fn symbol(image: &str) -> Result<String, UnwritableSymbol> {
+        if image == "thing" || image == "lit" {
+            return Ok(image.to_string());
+        }
+        if let Some(c) = image.chars().find(|c| matches!(c, '|' | '\\')) {
+            return Err(UnwritableSymbol {
+                symbol: image.to_string(),
+                character: c,
+                syntax: "SMT-LIB 2",
+                why: "a quoted symbol admits every character except | and \\, and SMT-LIB \
+                      defines no escape for either (2.6 section 3.1)",
+            });
+        }
+        Ok(format!("|{image}|"))
+    }
+
+    fn p1(p: &P1) -> Result<String, UnwritableSymbol> {
+        symbol(&sym::p1(p))
+    }
+    fn p2(p: &P2) -> Result<String, UnwritableSymbol> {
+        symbol(&sym::p2(p))
+    }
+    fn term(t: &Term) -> Result<String, UnwritableSymbol> {
+        match t {
+            Term::Var(n) => Ok(format!("X{n}")),
+            Term::Const(a) => symbol(&sym::constant(a)),
+        }
+    }
+
+    /// Render a formula. Fully parenthesised, because S-expressions are.
+    pub fn form(f: &Form) -> Result<String, UnwritableSymbol> {
+        Ok(match f {
+            Form::App1(p, t) => format!("({} {})", p1(p)?, term(t)?),
+            Form::App2(p, t, u) => format!("({} {} {})", p2(p)?, term(t)?, term(u)?),
+            Form::Eq(t, u) => format!("(= {} {})", term(t)?, term(u)?),
+            Form::Tru => "true".to_string(),
+            Form::Fls => "false".to_string(),
+            Form::Neg(g) => format!("(not {})", form(g)?),
+            Form::And(g, h) => format!("(and {} {})", form(g)?, form(h)?),
+            Form::Or(g, h) => format!("(or {} {})", form(g)?, form(h)?),
+            Form::Imp(g, h) => format!("(=> {} {})", form(g)?, form(h)?),
+            Form::All(n, g) => format!("(forall ((X{n} U)) {})", form(g)?),
+            Form::Ex(n, g) => format!("(exists ((X{n} U)) {})", form(g)?),
+        })
+    }
+
+    /// The sort declaration for an encoding.
+    pub fn sort_decl(enc: SmtEncoding) -> String {
+        match enc {
+            SmtEncoding::Unbounded => "(declare-sort U 0)".to_string(),
+            SmtEncoding::Finite(k) => {
+                let ctors: Vec<String> = (0..k).map(|i| format!("(e{i})")).collect();
+                format!("(declare-datatypes ((U 0)) (({})))", ctors.join(" "))
+            }
+        }
+    }
+
+    /// The logic name. `UF` is quantified uninterpreted functions; `UFDT` adds
+    /// the datatypes the finite encoding declares the carrier with.
+    pub fn logic(enc: SmtEncoding) -> &'static str {
+        match enc {
+            SmtEncoding::Unbounded => "UF",
+            SmtEncoding::Finite(_) => "UFDT",
+        }
+    }
+}
+
+// ── Serialiser 4: LADR, for Mace4 ───────────────────────────────────────────
+
+/// LADR rendering of [`Form`], for Mace4, the finite model finder that ships
+/// with Prover9.
+///
+/// # Why a dead toolchain is here at all
+///
+/// Prover9 is unmaintained and its refutations are uncheckable, so by
+/// decision 0005 it is an oracle like any other prover. Mace4 ships in the
+/// same distribution, is a FINITE MODEL FINDER, and prints exactly the kind of
+/// object `lean/Fol/` can certify. The dead toolchain has a live half.
+///
+/// # The trap this module is built around
+///
+/// LADR's default convention is that a name whose first letter is in
+/// `{u,v,w,x,y,z}` is a VARIABLE. A mangler that turned an IRI into `w0` would
+/// turn a constant into a universally quantified variable, and Mace4 would
+/// silently search a different and usually unsatisfiable problem. Measured on
+/// this machine with LADR 2009-11A: the input
+///
+/// ```text
+/// p0(w0).
+/// -p0(k0).
+/// ```
+///
+/// is echoed by Mace4 in its own `CLAUSES FOR SEARCH` block as `p0(x).` and
+/// `-p0(k0).`, the search is then exhausted, and the run reports no model at
+/// all. Nothing errors. So this module never writes an IRI: it MANGLES every
+/// symbol into `p0…` (unary), `r0…` (binary) and `c0…` (constants), renders
+/// bound variables as `x0, x1, …` so that they still ARE variables under the
+/// same convention, and keeps a [`SymbolTable`] to read the answer back.
+/// [`check_not_variable`] is run over every emitted name, so the gate exists
+/// as a function that can be made to fire rather than as a comment.
+///
+/// Mangling also solves the quoting problem, which LADR has no answer to: an
+/// IRI contains `:` and `/` and LADR has no quoting construct that survives
+/// either.
+pub mod ladr {
+    use super::{FolProblem, Form, Term, sym};
+    use std::collections::BTreeMap;
+    use std::fmt::Write as _;
+
+    /// A name LADR would read as a variable, so the writer refused it.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct LadrVariableName {
+        pub name: String,
+        pub why: &'static str,
+    }
+
+    impl std::fmt::Display for LadrVariableName {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "LADR would read {:?} as a VARIABLE, not a symbol: {}", self.name, self.why)
+        }
+    }
+    impl std::error::Error for LadrVariableName {}
+
+    /// True when LADR's default convention reads this name as a variable.
+    pub fn is_variable_name(name: &str) -> bool {
+        matches!(
+            name.chars().next(),
+            Some('u' | 'v' | 'w' | 'x' | 'y' | 'z' | 'U' | 'V' | 'W' | 'X' | 'Y' | 'Z')
+        )
+    }
+
+    /// The gate. Every name this module emits in a symbol position goes
+    /// through it, so that the trap above cannot be reintroduced by an edit to
+    /// the mangler.
+    pub fn check_not_variable(name: &str) -> Result<(), LadrVariableName> {
+        if is_variable_name(name) {
+            return Err(LadrVariableName {
+                name: name.to_string(),
+                why: "LADR treats a name beginning with u, v, w, x, y or z as universally \
+                      quantified. A constant mangled to such a name makes Mace4 search a \
+                      different problem and report `exhausted` with no error",
+            });
+        }
+        Ok(())
+    }
+
+    /// Which slot of `Fol.FinModel` a symbol belongs in. Three separate
+    /// fields there, so this is a kind and not a number.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum SymKind {
+        Unary,
+        Binary,
+        Constant,
+    }
+
+    impl SymKind {
+        pub fn name(self) -> &'static str {
+            match self {
+                SymKind::Unary => "unary",
+                SymKind::Binary => "binary",
+                SymKind::Constant => "constant",
+            }
+        }
+    }
+
+    /// The mangling, and its inverse.
+    ///
+    /// Built in sorted order so that a given problem always produces the same
+    /// file, which is what makes a Mace4 run reproducible and a diff readable.
+    ///
+    /// The inverse carries the KIND as well as the image, and that is not
+    /// bookkeeping. A model finder that returned `relation(p0(_,_))` for a
+    /// symbol the problem uses as a unary predicate would otherwise be filed
+    /// as a perfectly good binary interpretation, and the unary slot would
+    /// then be reported as uninterpreted: a confusing message for a defect
+    /// that is really a disagreement about the signature. The table is the
+    /// authority on the arity, because the table is what wrote the file.
+    #[derive(Debug, Clone, Default)]
+    pub struct SymbolTable {
+        /// `c:Person` → `p3`
+        pub unary: BTreeMap<String, String>,
+        /// `op:worksFor` → `r0`
+        pub binary: BTreeMap<String, String>,
+        /// `i:a` → `c0`
+        pub consts: BTreeMap<String, String>,
+        inverse: BTreeMap<String, (String, SymKind)>,
+    }
+
+    impl SymbolTable {
+        /// Mangle every symbol the problem uses.
+        pub fn build(problem: &FolProblem) -> Result<SymbolTable, LadrVariableName> {
+            let v = problem.vocabulary();
+            let mut t = SymbolTable::default();
+            for (i, s) in v.unary.iter().enumerate() {
+                let m = format!("p{i}");
+                check_not_variable(&m)?;
+                t.unary.insert(s.clone(), m.clone());
+                t.inverse.insert(m, (s.clone(), SymKind::Unary));
+            }
+            for (i, s) in v.binary.iter().enumerate() {
+                let m = format!("r{i}");
+                check_not_variable(&m)?;
+                t.binary.insert(s.clone(), m.clone());
+                t.inverse.insert(m, (s.clone(), SymKind::Binary));
+            }
+            for (i, s) in v.consts.iter().enumerate() {
+                let m = format!("c{i}");
+                check_not_variable(&m)?;
+                t.consts.insert(s.clone(), m.clone());
+                t.inverse.insert(m, (s.clone(), SymKind::Constant));
+            }
+            Ok(t)
+        }
+
+        /// The symbol a mangled name stands for, or `None` when LADR invented
+        /// it. Mace4 clausifies and Skolemises, so its models interpret names
+        /// this table never issued; those are the reduct and are dropped.
+        pub fn demangle(&self, mangled: &str) -> Option<&str> {
+            self.inverse.get(mangled).map(|(s, _)| s.as_str())
+        }
+
+        /// The image AND the slot it belongs in. The arity a model file claims
+        /// is checked against this rather than believed.
+        pub fn demangle_kind(&self, mangled: &str) -> Option<(&str, SymKind)> {
+            self.inverse.get(mangled).map(|(s, k)| (s.as_str(), *k))
+        }
+
+        pub fn len(&self) -> usize {
+            self.unary.len() + self.binary.len() + self.consts.len()
+        }
+        pub fn is_empty(&self) -> bool {
+            self.len() == 0
+        }
+    }
+
+    fn term(t: &Term, tab: &SymbolTable) -> Result<String, LadrVariableName> {
+        Ok(match t {
+            // A bound variable is deliberately `x…`, because under the same
+            // convention that makes `c0` a symbol, `x0` is a variable.
+            Term::Var(n) => format!("x{n}"),
+            Term::Const(a) => lookup(&tab.consts, &sym::constant(a))?,
+        })
+    }
+
+    fn lookup(m: &BTreeMap<String, String>, image: &str) -> Result<String, LadrVariableName> {
+        match m.get(image) {
+            Some(s) => Ok(s.clone()),
+            // Unreachable through `problem`, which builds the table from the
+            // same vocabulary it then renders. Reported rather than panicking
+            // so that a future caller that builds the two separately gets a
+            // sentence instead of a crash.
+            None => Err(LadrVariableName {
+                name: image.to_string(),
+                why: "the symbol is not in the table this file was mangled with, so the \
+                      LADR name for it does not exist",
+            }),
+        }
+    }
+
+    /// Render a formula. Fully parenthesised: LADR's precedence table is not
+    /// worth relying on and a misparse here is silent.
+    pub fn form(f: &Form, tab: &SymbolTable) -> Result<String, LadrVariableName> {
+        Ok(match f {
+            Form::App1(p, t) => format!("{}({})", lookup(&tab.unary, &sym::p1(p))?, term(t, tab)?),
+            Form::App2(p, t, u) => format!(
+                "{}({},{})",
+                lookup(&tab.binary, &sym::p2(p))?,
+                term(t, tab)?,
+                term(u, tab)?
+            ),
+            Form::Eq(t, u) => format!("({} = {})", term(t, tab)?, term(u, tab)?),
+            // LADR's own truth constants. Measured: Mace4 2009-11A accepts a
+            // bare `$T.` as an assumption.
+            Form::Tru => "$T".to_string(),
+            Form::Fls => "$F".to_string(),
+            Form::Neg(g) => format!("-({})", form(g, tab)?),
+            Form::And(g, h) => format!("({} & {})", form(g, tab)?, form(h, tab)?),
+            Form::Or(g, h) => format!("({} | {})", form(g, tab)?, form(h, tab)?),
+            Form::Imp(g, h) => format!("({} -> {})", form(g, tab)?, form(h, tab)?),
+            Form::All(n, g) => format!("(all x{n} ({}))", form(g, tab)?),
+            Form::Ex(n, g) => format!("(exists x{n} ({}))", form(g, tab)?),
+        })
+    }
+
+    /// The whole input file, goal already negated.
+    ///
+    /// `max_seconds` is written into the file rather than passed on the
+    /// command line so that a saved file reproduces the run it came from.
+    pub fn problem(
+        p: &FolProblem,
+        tab: &SymbolTable,
+        max_seconds: u32,
+    ) -> Result<String, LadrVariableName> {
+        let mut s = super::header("%", p.conjecture.is_some(), super::LADR_STYLE);
+        let _ = writeln!(s, "\nassign(max_seconds, {max_seconds}).\n");
+        let _ = writeln!(s, "formulas(assumptions).");
+        for e in p.checker_entries() {
+            let _ = writeln!(s, "  % {} ({})", e.label, e.role);
+            let _ = writeln!(s, "  {}.", form(&e.form, tab)?);
+        }
+        let _ = writeln!(s, "end_of_list.");
+        Ok(s)
+    }
+
+    /// The mangling, as data, so a report can say what a Mace4 name meant.
+    pub fn table_tsv(tab: &SymbolTable) -> String {
+        let mut s = String::new();
+        for (image, m) in &tab.unary {
+            let _ = writeln!(s, "unary\t{m}\t{image}");
+        }
+        for (image, m) in &tab.binary {
+            let _ = writeln!(s, "binary\t{m}\t{image}");
+        }
+        for (image, m) in &tab.consts {
+            let _ = writeln!(s, "constant\t{m}\t{image}");
+        }
+        s
+    }
+}
+
+// ── Serialiser 5: the checker format ────────────────────────────────────────
+
+/// `problem.tsv`, the file `oo-folmodel` reads, and the digest that binds a
+/// model file to it.
+///
+/// The grammar and the hash are specified in `lean/Fol/Syntax.lean` and
+/// `lean/Fol/Parse.lean`. This module is the second implementation of both,
+/// and the pinned digest `4403d8aaa0c422f7` for the worked example is what
+/// holds the two together: `lean/Fol/Parse.lean` has a `#guard` on it and
+/// `tests/fol_checker_format_test.rs` has an assertion on it, so a change to
+/// either printer or to the hash fails a build on one side and a test on the
+/// other.
+///
+/// FNV-1a IDENTIFIES, IT DOES NOT COMMIT. It is not a cryptographic hash. It
+/// exists so that two implementations can be compared, not so that one can be
+/// defended against someone who controls the file. Decision 0003 item 5, in
+/// the same words, for the same reason.
+pub mod checkfmt {
+    use super::{Form, P1, P2, Term, UnwritableSymbol, sym};
+
+    /// Refuse a symbol the token stream cannot survive. See
+    /// [`sym::unwritable_char`] for why this is live rather than defensive.
+    fn clean(image: String) -> Result<String, UnwritableSymbol> {
+        match sym::unwritable_char(&image) {
+            None => Ok(image),
+            Some(c) => Err(UnwritableSymbol {
+                symbol: image,
+                character: c,
+                syntax: "the oo-folmodel checker format",
+                why: "the formula is a space-separated token stream and the file is \
+                      tab-separated, so a symbol containing either re-parses as a DIFFERENT \
+                      formula or as a different set of fields",
+            }),
+        }
+    }
+
+    fn p1(p: &P1) -> Result<String, UnwritableSymbol> {
+        clean(sym::p1(p))
+    }
+    fn p2(p: &P2) -> Result<String, UnwritableSymbol> {
+        clean(sym::p2(p))
+    }
+
+    /// `Fol.Parse.showTerm`.
+    pub fn show_term(t: &Term) -> Result<String, UnwritableSymbol> {
+        Ok(match t {
+            Term::Var(n) => format!("var {n}"),
+            Term::Const(a) => format!("const {}", clean(sym::constant(a))?),
+        })
+    }
+
+    /// `Fol.Parse.showForm`. Prefix, no parentheses, single spaces.
+    pub fn show_form(f: &Form) -> Result<String, UnwritableSymbol> {
+        Ok(match f {
+            Form::App1(p, t) => format!("app1 {} {}", p1(p)?, show_term(t)?),
+            Form::App2(p, t, u) => {
+                format!("app2 {} {} {}", p2(p)?, show_term(t)?, show_term(u)?)
+            }
+            Form::Eq(t, u) => format!("eq {} {}", show_term(t)?, show_term(u)?),
+            Form::Tru => "tru".to_string(),
+            Form::Fls => "fls".to_string(),
+            Form::Neg(g) => format!("neg {}", show_form(g)?),
+            Form::And(g, h) => format!("and {} {}", show_form(g)?, show_form(h)?),
+            Form::Or(g, h) => format!("or {} {}", show_form(g)?, show_form(h)?),
+            Form::Imp(g, h) => format!("imp {} {}", show_form(g)?, show_form(h)?),
+            Form::All(n, g) => format!("all {n} {}", show_form(g)?),
+            Form::Ex(n, g) => format!("ex {n} {}", show_form(g)?),
+        })
+    }
+
+    /// FNV-1a, 64 bit, over the UTF-8 bytes. Offset basis
+    /// 14695981039346656037, prime 1099511628211, wrapping at 2^64.
+    ///
+    /// Written out rather than taken from a library because the Lean side
+    /// writes it out too: `String.hash` there is an opaque extern with no
+    /// specification a second implementation could target.
+    pub fn fnv1a64(s: &str) -> u64 {
+        s.as_bytes().iter().fold(14695981039346656037u64, |h, b| {
+            (h ^ (*b as u64)).wrapping_mul(1099511628211)
+        })
+    }
+
+    /// Sixteen lowercase hex digits, most significant first, zero padded.
+    pub fn hex16(x: u64) -> String {
+        format!("{x:016x}")
     }
 }
 
@@ -2078,6 +2877,43 @@ impl Reader {
     /// Constructs that have no place in the fragment at all. Counted by
     /// scanning for the predicate or the class, the same shape as
     /// `DlReasoner::unmodelled_constructs`.
+    /// How many assertions a punned subject carries.
+    ///
+    /// Mirrors the assertion loop's own conditions exactly, so the count is
+    /// the number of axioms that WOULD have been exported had the subject not
+    /// been declared an entity of another kind. Declarations, subsumptions,
+    /// domains, ranges and annotations are not assertions and are not counted:
+    /// those ARE exported for a punned subject, which is why the omission was
+    /// invisible.
+    fn count_punned_assertions(&mut self, s: &str) -> u64 {
+        let mut n = 0u64;
+        let pairs = self.by_subject.get(s).cloned().unwrap_or_default();
+        for (p, o) in &pairs {
+            let bp = bare(p).to_string();
+            if bp == RDF_TYPE {
+                let bo = bare(o).to_string();
+                if !bo.starts_with(OWL)
+                    && !bo.starts_with("http://www.w3.org/2000/01/rdf-schema#")
+                    && self.concept(o).is_some()
+                {
+                    n += 1;
+                }
+                continue;
+            }
+            if bp.starts_with(OWL)
+                || bp.starts_with("http://www.w3.org/2000/01/rdf-schema#")
+                || bp.starts_with("http://www.w3.org/1999/02/22-rdf-syntax-ns#")
+                || is_literal(o)
+            {
+                continue;
+            }
+            if self.is_object_property(&bp) {
+                n += 1;
+            }
+        }
+        n
+    }
+
     fn count_out_of_fragment(&mut self) {
         const OUT: [(&str, &str, &str); 6] = [
             (
@@ -2387,13 +3223,34 @@ impl Reader {
 
         // Assertions. An individual is a subject that is neither a class, a
         // property, nor a piece of OWL syntax.
+        //
+        // A subject that IS one of those and still carries an assertion is
+        // PUNNED: the same IRI used as a class in one triple and as an
+        // individual in another. OWL 2 DL allows that, `OwlLean/Syntax.lean`
+        // does not — `Sig` gives each entity kind its own type — so the
+        // assertion is outside the fragment and is not exported.
+        //
+        // It used to be dropped SILENTLY, and that was found by running the
+        // model-certificate pipeline over the shipped case studies: five of
+        // the nine derivations the OWL-RL reasoner claims on
+        // `case-studies/blast-furnace-ironmaking/` came back with a
+        // machine-checked countermodel, because `bf:Hanging`, a class, also
+        // carries `bf:hasSeverity bf:HighSeverity` and the domain axiom on
+        // that property is what the reasoner used. The export was genuinely
+        // weaker than the graph and the report said `exports_a_weaker_axiom_set:
+        // false`, which is the laundering shape this project exists to catch,
+        // in its own output. Counted here so the report is true; the reading
+        // itself is unchanged.
+        let mut punned = 0u64;
         for s in &subjects {
             let bare_s = bare(s).to_string();
-            if self.classes.contains(&bare_s)
+            let is_entity = self.classes.contains(&bare_s)
                 || self.object_properties.contains(&bare_s)
-                || self.data_properties.contains(&bare_s)
-                || bare_s.starts_with(OWL)
-            {
+                || self.data_properties.contains(&bare_s);
+            if is_entity || bare_s.starts_with(OWL) {
+                if is_entity {
+                    punned += self.count_punned_assertions(s);
+                }
                 continue;
             }
             let pairs = self.by_subject.get(s).cloned().unwrap_or_default();
@@ -2429,6 +3286,16 @@ impl Reader {
             }
         }
 
+        if punned > 0 {
+            self.dropped.insert(
+                "assertion on a punned entity".to_string(),
+                (
+                    punned,
+                    "the subject is declared a class or a property AND carries an assertion, so                      the same IRI is used as two entity kinds. OWL 2 DL permits the punning;                      OwlLean/Syntax.lean does not, because `Sig` gives each entity kind its own                      type and `Sig.Ind` is disjoint from `Sig.Cls`. The assertion is therefore                      outside the fragment and the exported theory is WEAKER than the graph. An                      RDFS or OWL-RL reasoner will still derive consequences from it, so a                      conjecture that rests on one is genuinely not entailed by this export and                      is not evidence of a defect in either side"
+                        .to_string(),
+                ),
+            );
+        }
         self.count_out_of_fragment();
         // Data property assertions have no constructor in the fragment: the
         // Axiom type has oPropAssert and no dPropAssert.
@@ -2734,15 +3601,23 @@ pub enum Syntax {
     /// syntax for the same first-order content, and the one ISO/IEC 21838-2
     /// publishes BFO in.
     Clif(ClifDialect, ClifComments),
+    /// SMT-LIB 2, the format the SAT/SMT family reads. The goal is asserted
+    /// NEGATED, because this is the syntax a MODEL comes back out of and a
+    /// model is the thing this repository can certify.
+    Smtlib(smtlib::SmtEncoding),
+    /// LADR, for Mace4. Mangled symbols, the table beside the file.
+    Ladr,
 }
 
 impl Syntax {
     /// `dialect` and `comments` are consulted only for CLIF and default to
-    /// `iso` and `standalone`.
+    /// `iso` and `standalone`; `domain` only for SMT-LIB, where `None` is the
+    /// unbounded encoding.
     pub fn parse(
         s: &str,
         dialect: Option<&str>,
         comments: Option<&str>,
+        domain: Option<u32>,
     ) -> anyhow::Result<Syntax> {
         match s.to_ascii_lowercase().as_str() {
             "tptp" | "fof" | "tptp-fof" => Ok(Syntax::Tptp),
@@ -2750,8 +3625,18 @@ impl Syntax {
                 ClifDialect::parse(dialect.unwrap_or("iso"))?,
                 ClifComments::parse(comments.unwrap_or("standalone"))?,
             )),
+            "smtlib" | "smt" | "smt2" | "smt-lib" => Ok(Syntax::Smtlib(match domain {
+                None => smtlib::SmtEncoding::Unbounded,
+                Some(0) => anyhow::bail!(
+                    "--smt-domain 0 asks for a model with an empty carrier; a first-order \
+                     structure cannot have one, and `Fol.FinModel` is defined only at n+1"
+                ),
+                Some(k) => smtlib::SmtEncoding::Finite(k),
+            })),
+            "ladr" | "mace4" | "prover9" => Ok(Syntax::Ladr),
             other => anyhow::bail!(
-                "unknown first-order syntax {other:?}; expected `tptp` or `clif`"
+                "unknown first-order syntax {other:?}; expected `tptp`, `clif`, `smtlib` or \
+                 `ladr`"
             ),
         }
     }
@@ -2759,31 +3644,48 @@ impl Syntax {
         match self {
             Syntax::Tptp => "p",
             Syntax::Clif(..) => "clif",
+            Syntax::Smtlib(_) => "smt2",
+            Syntax::Ladr => "in",
         }
     }
     pub fn name(self) -> &'static str {
         match self {
             Syntax::Tptp => "tptp",
             Syntax::Clif(..) => "clif",
+            Syntax::Smtlib(_) => "smtlib",
+            Syntax::Ladr => "ladr",
         }
     }
     pub fn dialect(self) -> Option<ClifDialect> {
         match self {
-            Syntax::Tptp => None,
             Syntax::Clif(d, _) => Some(d),
+            _ => None,
         }
     }
     pub fn comments(self) -> Option<ClifComments> {
         match self {
-            Syntax::Tptp => None,
             Syntax::Clif(_, c) => Some(c),
+            _ => None,
         }
     }
-    fn render(self, problem: &FolProblem, name: &str) -> String {
+    pub fn encoding(self) -> Option<smtlib::SmtEncoding> {
         match self {
+            Syntax::Smtlib(e) => Some(e),
+            _ => None,
+        }
+    }
+    /// Render. Fallible from the SMT-LIB and LADR arms on: both refuse a
+    /// symbol they cannot write rather than mangling it into a different one.
+    fn render(self, problem: &FolProblem, name: &str) -> anyhow::Result<String> {
+        Ok(match self {
             Syntax::Tptp => problem.to_tptp(),
             Syntax::Clif(d, c) => problem.to_clif(d, c, name),
-        }
+            Syntax::Smtlib(e) => problem.to_smtlib(e)?,
+            Syntax::Ladr => {
+                let tab = ladr::SymbolTable::build(problem)?;
+                ladr::problem(problem, &tab, 30)?
+            }
+        })
     }
 }
 
@@ -2823,7 +3725,21 @@ pub fn export(
     let problem = FolProblem::build(&read.axioms, None)?;
     std::fs::create_dir_all(dir)?;
     let main = dir.join(format!("ontology.{}", syntax.extension()));
-    std::fs::write(&main, syntax.render(&problem, &ontology_iri))?;
+    std::fs::write(&main, syntax.render(&problem, &ontology_iri)?)?;
+    // LADR mangles every symbol, so the file is unreadable without the table.
+    // Written beside it rather than into it, because Mace4 echoes its input
+    // and a comment per symbol would bury the clause block a reader needs.
+    if syntax == Syntax::Ladr {
+        std::fs::write(
+            dir.join("symbols.tsv"),
+            ladr::table_tsv(&ladr::SymbolTable::build(&problem)?),
+        )?;
+    }
+    // The checker's own format, for every syntax, so that a run of any solver
+    // over any of these files can be handed to `oo-folmodel` without going
+    // back through the engine. The digest is what binds the two.
+    let (problem_tsv, problem_digest) = problem.to_problem_tsv()?;
+    std::fs::write(dir.join("problem.tsv"), &problem_tsv)?;
 
     let mut goal_files = Vec::new();
     let mut not_asked: Vec<GoalNotAsked> = Vec::new();
@@ -2866,10 +3782,21 @@ pub fn export(
             let name = format!("goal_{i:05}.{}", syntax.extension());
             std::fs::write(
                 goals_dir.join(&name),
-                syntax.render(&gp, &format!("{ontology_iri}#goal-{i:05}")),
+                syntax.render(&gp, &format!("{ontology_iri}#goal-{i:05}"))?,
             )?;
+            let (gtsv, gdigest) = gp.to_problem_tsv()?;
+            let gtsv_name = format!("goal_{i:05}.problem.tsv");
+            std::fs::write(goals_dir.join(&gtsv_name), gtsv)?;
+            if syntax == Syntax::Ladr {
+                std::fs::write(
+                    goals_dir.join(format!("goal_{i:05}.symbols.tsv")),
+                    ladr::table_tsv(&ladr::SymbolTable::build(&gp)?),
+                )?;
+            }
             manifest.push(serde_json::json!({
                 "file": name,
+                "checker_problem_file": gtsv_name,
+                "checker_problem_digest": gdigest,
                 "triple": [s, p, o],
                 "axiom_form": axiom_label(&ax),
             }));
@@ -2889,8 +3816,13 @@ pub fn export(
         "clif_dialect": syntax.dialect().map(|d| d.name()),
         "clif_comments": syntax.comments().map(|c| c.name()),
         "clif_text_name": syntax.dialect().map(|_| ontology_iri.clone()),
+        "smt_encoding": syntax.encoding().map(|e| e.name()),
         "dir": dir.display().to_string(),
         "ontology_file": main.display().to_string(),
+        "checker_problem_file": dir.join("problem.tsv").display().to_string(),
+        "checker_problem_digest": problem_digest,
+        "ladr_symbol_table": (syntax == Syntax::Ladr)
+            .then(|| dir.join("symbols.tsv").display().to_string()),
         "initial_triples": initial_triples,
         "axioms_exported": problem.axioms.len(),
         "background_axioms": problem.background.len(),

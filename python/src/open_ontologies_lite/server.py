@@ -94,6 +94,31 @@ def onto_lint() -> dict:
 
 
 @mcp.tool()
+def onto_reason(
+    certificate_dir: str, rules_file: str | None = None, check: bool = True
+) -> dict:
+    """Derive the closure of a Horn rule table over the loaded store and write a
+    certificate the proved-sound Lean checker verifies.
+
+    With no `rules_file` this runs the BUILT-IN table, the only table that can
+    earn the absolute verdict. Pass `rules_file` to run a table you wrote: those
+    rules are ASSUMED and never checked, so a certificate over them holds only in
+    models of the asserted graph that ALSO satisfy your rules. A rule saying
+    every supplier is compliant produces certificates that check green for ever.
+
+    The verdict comes from that checker and not from here, because rules you
+    supply are assumed and never checked. If the checker is not installed the
+    report says so under `check`, names the binary and how to build it, and
+    carries no verdict at all.
+
+    Nothing is materialised into the store: the certificate is the output of the
+    run. Only the default graph is asserted, so a previous run's inferences
+    cannot be read back in as assertions.
+    """
+    return _engine.reason_horn(certificate_dir, rules=rules_file, check=check)
+
+
+@mcp.tool()
 def onto_kgcl_diff(data_a: str, data_b: str, format: str = "turtle") -> dict:
     """Classify the change from version A to B as KGCL change records.
 

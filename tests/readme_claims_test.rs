@@ -88,12 +88,12 @@ fn no_stale_tool_count_survives_anywhere() {
             let head = &rest[..i];
             let digits: String =
                 head.chars().rev().take_while(|c| c.is_ascii_digit()).collect::<Vec<_>>().into_iter().rev().collect();
-            if !digits.is_empty() && (prefix.is_empty() || head.ends_with(&format!("{prefix}{digits}"))) {
-                if let Ok(found) = digits.parse::<usize>() {
-                    if found != n {
-                        stale.push(format!("{prefix}{found}{suffix} (server exposes {n})"));
-                    }
-                }
+            let matches_shape =
+                !digits.is_empty() && (prefix.is_empty() || head.ends_with(&format!("{prefix}{digits}")));
+            if let Some(found) =
+                digits.parse::<usize>().ok().filter(|f| matches_shape && *f != n)
+            {
+                stale.push(format!("{prefix}{found}{suffix} (server exposes {n})"));
             }
             rest = &rest[i + suffix.len()..];
         }
@@ -148,10 +148,10 @@ fn every_theorem_the_readme_cites_exists() {
                     continue;
                 }
                 stack.push(p);
-            } else if p.extension().is_some_and(|x| x == "lean") {
-                if let Ok(t) = std::fs::read_to_string(&p) {
-                    sources.push((p, t));
-                }
+            } else if p.extension().is_some_and(|x| x == "lean")
+                && let Ok(t) = std::fs::read_to_string(&p)
+            {
+                sources.push((p, t));
             }
         }
     }

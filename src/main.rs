@@ -448,21 +448,37 @@ enum Commands {
         #[arg(long)]
         rules: Option<String>,
     },
-    /// Export the loaded ontology as first-order logic, for an ATP
+    /// Export the loaded ontology as first-order logic, for a prover or a model finder
     ///
     /// The translation is the one owl-lean's machine-checked adequacy theorem
     /// (`OwlLean.adequacy`) is about. The correspondence between this emitter
     /// and that Lean is PINNED BY TESTS AND NOT ITSELF PROVED, and a prover's
-    /// verdict on the output is an oracle opinion, never a certificate.
+    /// verdict on the output is an oracle opinion, never a certificate. A
+    /// MODEL is the other case: see `fol-model`.
     Fol {
-        /// Output directory. `ontology.p` (or `.clif`) lands here, plus one
-        /// problem per goal under `goals/` when --goals is given.
+        /// Output directory. `ontology.p`, `.clif`, `.smt2` or `.in` lands
+        /// here, plus one problem per goal under `goals/` when --goals is
+        /// given. Every run also writes `problem.tsv`, the format the verified
+        /// checker `oo-folmodel` reads, with its digest in the report.
         #[arg(long)]
         out: String,
-        /// `tptp` (FOF, what provers read) or `clif` (ISO/IEC 24707 Common
-        /// Logic, restricted to the first-order-equivalent fragment).
+        /// `tptp` (FOF, what provers read), `clif` (ISO/IEC 24707 Common
+        /// Logic, restricted to the first-order-equivalent fragment),
+        /// `smtlib` (SMT-LIB 2, what Z3 reads) or `ladr` (what Mace4 reads,
+        /// with every symbol MANGLED and the table in `symbols.tsv`).
+        ///
+        /// The last two assert the NEGATED goal rather than declaring a
+        /// conjecture, because they are read by model finders and a
+        /// countermodel to `G |= phi` is a model of `G + {not phi}`.
         #[arg(long, default_value = "tptp")]
         format: String,
+        /// With --format smtlib: the carrier size. Omitted gives the UNBOUNDED
+        /// encoding, where `unsat` really is unsatisfiability. Given `k`, the
+        /// carrier is an enumeration datatype of exactly k elements, a `sat`
+        /// comes with a structure `oo-folmodel` can check, and an `unsat`
+        /// establishes only that no model of size k exists.
+        #[arg(long)]
+        smt_domain: Option<u32>,
         /// With --format clif: `iso` (default, `cl:text`, what ISO/IEC 21838-2
         /// publishes BFO in) or `colore` (`cl-text`, what COLORE and the
         /// Macleod toolchain read; Macleod cannot read the ISO spelling).
@@ -515,6 +531,47 @@ enum Commands {
         /// `certifies_a_weaker_rule_set: true`, and every lost rule is named.
         #[arg(long)]
         allow_partial: bool,
+    },
+
+    /// Find a finite model and CHECK it, for a verdict that says what it rests on
+    ///
+    /// Export, run Z3 or Mace4, read the structure back, and hand it to the
+    /// verified checker `oo-folmodel`. Only the verdict `model_checked` rests
+    /// on a machine-checked theorem (`Fol.satisfiable_of_check`). A solver's
+    /// `unsat` is an ORACLE OPINION and can never be more, and an exhausted
+    /// BOUNDED search is `no_model_up_to_size_k`, which is not
+    /// unsatisfiability. Exits 1 if any run is a stop-the-line disagreement.
+    FolModel {
+        /// Working directory. Every intermediate file lands here, so a run is
+        /// reproducible by hand from what it leaves behind.
+        #[arg(long)]
+        out: String,
+        /// `z3` (SMT-LIB, and the only one that can be asked the UNBOUNDED
+        /// question) or `mace4` (LADR, a dedicated finite model finder whose
+        /// minimum carrier is 2).
+        #[arg(long, default_value = "z3")]
+        solver: String,
+        /// The largest carrier the ladder tries. The default is from the
+        /// measured cost of the compiled checker: about 9M evaluation points
+        /// per second, cubic in the carrier at quantifier depth 3.
+        #[arg(long, default_value_t = 16)]
+        max_domain: u32,
+        #[arg(long, default_value_t = 30)]
+        timeout_secs: u32,
+        /// After a bounded ladder finds nothing, ask the UNBOUNDED question
+        /// too. This is the ONLY route to `unsatisfiable_oracle`. Z3 only.
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        unbounded_probe: bool,
+        /// A TSV of triples to ask as conjectures, one run per line, the same
+        /// shape `fol --goals` takes.
+        #[arg(long)]
+        goals: Option<String>,
+        #[arg(long, default_value_t = 0)]
+        goals_skip_columns: usize,
+        /// Path to `oo-folmodel`. Defaults to `lean/.lake/build/bin/` then
+        /// `$PATH`; its absence is reported loudly and never worked around.
+        #[arg(long)]
+        checker: Option<String>,
     },
     /// Full pipeline: ingest → SHACL → reason
     Extend {
@@ -718,7 +775,7 @@ impl Commands {
                 }
                 cmd("reason", a)
             }
-            Commands::Fol { out, format, clif_dialect, clif_comments, goals, goals_skip_columns } => {
+            Commands::Fol { out, format, smt_domain, clif_dialect, clif_comments, goals, goals_skip_columns } => {
                 let mut a = vec![
                     "--out".into(),
                     absolutize(out),
@@ -729,6 +786,10 @@ impl Commands {
                     "--clif-comments".into(),
                     clif_comments.clone(),
                 ];
+                if let Some(k) = smt_domain {
+                    a.push("--smt-domain".into());
+                    a.push(k.to_string());
+                }
                 if let Some(g) = goals {
                     a.push("--goals".into());
                     a.push(absolutize(g));
@@ -755,6 +816,41 @@ impl Commands {
                     a.push("--allow-partial".into());
                 }
                 cmd("rules-import", a)
+            }
+
+            Commands::FolModel {
+                out,
+                solver,
+                max_domain,
+                timeout_secs,
+                unbounded_probe,
+                goals,
+                goals_skip_columns,
+                checker,
+            } => {
+                let mut a = vec![
+                    "--out".into(),
+                    absolutize(out),
+                    "--solver".into(),
+                    solver.clone(),
+                    "--max-domain".into(),
+                    max_domain.to_string(),
+                    "--timeout-secs".into(),
+                    timeout_secs.to_string(),
+                    "--unbounded-probe".into(),
+                    unbounded_probe.to_string(),
+                ];
+                if let Some(g) = goals {
+                    a.push("--goals".into());
+                    a.push(absolutize(g));
+                    a.push("--goals-skip-columns".into());
+                    a.push(goals_skip_columns.to_string());
+                }
+                if let Some(c) = checker {
+                    a.push("--checker".into());
+                    a.push(absolutize(c));
+                }
+                cmd("fol-model", a)
             }
             Commands::Shacl { shapes } => cmd("shacl", vec![absolutize(shapes)]),
             Commands::Status => cmd("status", vec![]),
@@ -2468,12 +2564,56 @@ async fn async_main() -> anyhow::Result<()> {
             };
             output_result_checked(&result, cli.pretty);
         }
-        Commands::Fol { out, format, clif_dialect, clif_comments, goals, goals_skip_columns } => {
+        Commands::FolModel {
+            out,
+            solver,
+            max_domain,
+            timeout_secs,
+            unbounded_probe,
+            goals,
+            goals_skip_columns,
+            checker,
+        } => {
+            use open_ontologies::fol_solve::{SolveOptions, Solver, solve_export};
+            let (_db, graph) = setup(&cli.data_dir)?;
+            let result = match Solver::parse(&solver) {
+                Ok(s) => {
+                    let opts = SolveOptions {
+                        solver: s,
+                        max_domain,
+                        timeout_secs,
+                        unbounded_probe,
+                        checker: checker.as_deref().map(std::path::PathBuf::from),
+                    };
+                    solve_export(
+                        &graph,
+                        std::path::Path::new(&out),
+                        &opts,
+                        goals.as_deref().map(std::path::Path::new),
+                        goals_skip_columns,
+                    )
+                    .unwrap_or_else(|e| serde_json::json!({"error": e.to_string()}).to_string())
+                }
+                Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
+            };
+            output_result_checked(&result, cli.pretty);
+            // A stop-the-line disagreement must fail a pipeline, the way
+            // tools/shacl_differential.py exits 1 on a FALSE_CLEAN.
+            let stop = serde_json::from_str::<serde_json::Value>(&result)
+                .ok()
+                .and_then(|v| v.get("stop_the_line").and_then(|n| n.as_u64()))
+                .unwrap_or(0);
+            if stop > 0 {
+                std::process::exit(1);
+            }
+        }
+        Commands::Fol { out, format, smt_domain, clif_dialect, clif_comments, goals, goals_skip_columns } => {
             let (_db, graph) = setup(&cli.data_dir)?;
             let result = match open_ontologies::tptp::Syntax::parse(
                 &format,
                 Some(&clif_dialect),
                 Some(&clif_comments),
+                smt_domain,
             ) {
                 Ok(syntax) => open_ontologies::tptp::export(
                     &graph,
@@ -3016,7 +3156,8 @@ mod proxy_serialization_tests {
             Commands::Query { query: "SELECT ?s WHERE { ?s ?p ?o }".into() },
             Commands::Lint { input: "x.ttl".into() },
             Commands::Reason { profile: "rdfs".into(), certificate: None, rules: None },
-            Commands::Fol { out: "/tmp/fol".into(), format: "tptp".into(), clif_dialect: "iso".into(), clif_comments: "standalone".into(), goals: None, goals_skip_columns: 0 },
+            Commands::Fol { out: "/tmp/fol".into(), format: "tptp".into(), smt_domain: None, clif_dialect: "iso".into(), clif_comments: "standalone".into(), goals: None, goals_skip_columns: 0 },
+            Commands::FolModel { out: "/tmp/folmodel".into(), solver: "z3".into(), max_domain: 16, timeout_secs: 30, unbounded_probe: true, goals: None, goals_skip_columns: 0, checker: None },
             Commands::Shacl { shapes: "s.ttl".into() },
             Commands::Status,
             Commands::Pull { url: "http://example.org".into(), sparql: false, query: None },

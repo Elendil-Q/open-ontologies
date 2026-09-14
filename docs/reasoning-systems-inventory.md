@@ -4,7 +4,7 @@ Every external reasoning system that has been considered for this project, with 
 point of the document is that a name appearing in a design discussion is not a capability, and a
 reader deserves to know which is which without reading the commit log.
 
-The organising principle is decision 0004. A model is a finite object and a verified checker can
+The organising principle is decision 0006. A model is a finite object and a verified checker can
 validate one, so a satisfiability answer can be turned into a certificate. A refutation is a proof in
 a calculus nobody has mechanised in core Lean here, so an unsatisfiability answer is testimony. That
 single asymmetry decides how each system below is used, and it explains rankings that otherwise look

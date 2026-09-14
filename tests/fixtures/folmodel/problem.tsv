@@ -1,0 +1,5 @@
+axiom	background_1	all 0 neg and app1 thing var 0 app1 lit var 0
+axiom	ind_typing_1	app1 thing const i:a
+axiom	owl_1_subClassOf	all 0 imp app1 c:Person var 0 ex 1 and app2 op:worksFor var 0 var 1 app1 c:Company var 1
+axiom	owl_2_classAssertion	app1 c:Person const i:a
+goal_negated	goal_classAssertion	neg app1 c:Company const i:a

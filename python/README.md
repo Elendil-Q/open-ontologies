@@ -1,6 +1,6 @@
 # Open Ontologies Lite (Python bridge)
 
-A lightweight, pip-installable Python bridge to the same [Oxigraph](https://github.com/oxigraph/oxigraph) RDF/OWL engine that powers [Open Ontologies](https://github.com/fabio-rovai/open-ontologies). **No Rust toolchain, no compilation, no multi-gigabyte build directory** — `pyoxigraph` ships the engine as a prebuilt wheel, so everything here is pure-Python glue installed from PyPI.
+A lightweight, pip-installable Python bridge to the same [Oxigraph](https://github.com/oxigraph/oxigraph) RDF/OWL engine that powers [Open Ontologies](https://github.com/fabio-rovai/open-ontologies). **No Rust toolchain, no compilation, no multi-gigabyte build directory**. `pyoxigraph` ships the engine as a prebuilt wheel, so everything here is pure-Python glue installed from PyPI.
 
 It exposes the core ontology lifecycle as both a Python library and an MCP server.
 
@@ -54,9 +54,9 @@ structural comparison, no model. Also exposed as the `onto_kgcl_diff` MCP tool.
 engine.load_rows(df, base_iri="http://x.org/", class_iri="http://x.org/Thing", id_column="id")
 ```
 
-`load_rows` duck-types against the common export methods — `to_pylist()`
+`load_rows` duck-types against the common export methods (`to_pylist()`
 (fenic DataFrame, pyarrow Table), `to_dicts()` (polars), `to_dict("records")`
-(pandas) — or takes a plain list of dicts. Values become typed literals
+(pandas)), or takes a plain list of dicts. Values become typed literals
 (int/float/bool → XSD), `None` is skipped, and the output is deterministic.
 The primary consumer is [fenic](https://github.com/typedef-ai/fenic): its
 semantic operators do the LLM extraction, this bridge just loads and lets
@@ -118,6 +118,66 @@ Register it with any MCP client (e.g. Claude):
 | `onto_lint` | Missing labels, domains, ranges |
 | `onto_shacl` | SHACL conformance: violations with focus node, path, value, severity and constraint, plus `focus_nodes` and `unmatched_shapes` (needs the `[shacl]` extra) |
 | `onto_vocab_check` | Closed-world check: which terms in the data are not declared in the loaded ontology |
+| `onto_reason` | Forward-chain a Horn rule table over the store and write a certificate the Lean checker verifies |
+
+### Certified reasoning
+
+The reasoner here is pure Python over pyoxigraph and adds no dependency at all.
+It is also **untrusted**, in exactly the way the Rust engine is untrusted: what
+carries the warrant is not the engine but the certificate, and the certificate is
+checked by a small verified checker written in core Lean 4, no Mathlib, whose
+soundness is a machine-checked theorem with the axiom footprint pinned to
+`[propext, Classical.choice, Quot.sound]`.
+
+```python
+from open_ontologies_lite import OntologyEngine
+
+engine = OntologyEngine()
+engine.load(open("ontology.ttl").read())
+report = engine.reason_horn("out/cert")
+
+report["derived_triples"]      # 859
+report["check"]["verdict"]     # 'entailed'
+report["check"]["theorem"]     # 'OOCert.entails_of_builtin_horn'
+```
+
+Three files land in `out/cert`: the rule table that ran, every triple the run
+started from, and one line per derived triple carrying the rule index, the
+binding and the premises. `oo-horn check` reads those three and pronounces.
+
+**Two verdicts, and they never share a word.** A certificate over the built-in
+table earns `entailed`: every conclusion is true in every model of the asserted
+graph. A certificate over any other table, the built-ins plus one extra rule
+included, earns `entailed_under_supplied_rules`: every conclusion is true in
+every model that *also satisfies your rules*, which are assumed and never
+checked. A rule reading "every supplier is compliant" produces certificates that
+check green for ever. Only the Lean checker decides which of the two a run
+earned; nothing in this package contains either word as an executable string,
+and a test scans the abstract syntax tree to keep it that way.
+
+**The checker is optional and external.** Build it with `cd lean && lake build`
+in a checkout of the [Rust repository](https://github.com/fabio-rovai/open-ontologies),
+or set `OO_HORN`. Without it the package still reasons and still writes the
+certificate, and the report says so in its own words:
+
+```python
+report["check"]["status"]    # 'unchecked_no_checker'
+report["check"]["checked"]   # False
+report["check"]["verdict"]   # None
+report["check"]["warning"]   # 'the certificate was written and NOT checked: ...
+                             #  Nothing here has been proved; these are the
+                             #  claims of an untrusted engine'
+```
+
+Nothing is materialised into the store. A conclusion drawn under a supplied rule
+table holds only in models that satisfy that table, so writing it back in beside
+the assertions is how one run's output becomes the next run's axiom. Only the
+default graph is asserted, for the same reason.
+
+Because this engine and the Rust one are independent implementations of one
+specification, running both over a corpus and checking both certificates gives a
+three-way differential. `tests/test_horn_differential.py` does exactly that, and
+reports disagreement rather than adjudicating it.
 
 ### Closed-world checking
 

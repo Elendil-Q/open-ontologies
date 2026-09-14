@@ -1,0 +1,2 @@
+axiom	other_1	app1 c:Person const i:a
+axiom	other_2	neg app1 c:Person const i:a

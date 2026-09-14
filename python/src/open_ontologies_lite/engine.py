@@ -217,6 +217,94 @@ class OntologyEngine:
                 out.append(val.value)
         return out
 
+    # ---- certified reasoning ----------------------------------------------
+    def reason_horn(
+        self,
+        certificate_dir: str,
+        *,
+        rules=None,
+        graphs: str | list[str] = "default",
+        check: bool = True,
+        checker: str | None = None,
+        timeout: float = 120.0,
+        max_iterations: int | None = None,
+    ) -> dict:
+        """Derive the closure of a Horn rule table over the loaded store and
+        write a certificate the proved-sound Lean checker in `lean/` verifies.
+
+        With `rules=None` this runs the BUILT-IN table, whose bytes are shipped
+        with the package and written verbatim. That is the only table that can
+        earn the absolute verdict, and `oo-horn` decides whether it did. Pass a
+        path or a list of `RulePattern` to run a table you wrote: those rules are
+        ASSUMED and never checked, so a certificate over them holds only in
+        models of the asserted graph that ALSO satisfy them. A rule saying every
+        supplier is compliant produces certificates that check green for ever.
+
+        Nothing is materialised. A conclusion drawn under a supplied rule table
+        holds only in models that satisfy that table, so it is not written into
+        the store beside the assertions; the certificate is the output of the
+        run.
+
+        `check=False` writes the certificate and does not run the checker. The
+        returned report then says `not_requested` and carries no verdict, exactly
+        as it does when the checker is not installed.
+        """
+        from .horn.certify import CertificateUnreadable, check_horn
+        from .horn.reason import run_horn
+        from .horn.rules import RulePattern, parse_rules
+
+        source = None
+        if rules is None:
+            table = None
+        elif isinstance(rules, (str, Path)):
+            path = Path(rules)
+            table = parse_rules(path.read_text(encoding="utf-8"))
+            source = str(path)
+        else:
+            table = list(rules)
+            for r in table:
+                if not isinstance(r, RulePattern):
+                    raise TypeError(
+                        f"rules must be a path or a sequence of RulePattern, got "
+                        f"{type(r).__name__}"
+                    )
+        result = run_horn(
+            self.store,
+            table,
+            certificate_dir=certificate_dir,
+            graphs=graphs,
+            max_iterations=max_iterations,
+            rules_source=source,
+        )
+        report = result.to_dict()
+        if not check:
+            report["check"] = {
+                "status": "not_requested",
+                "checked": False,
+                "verdict": None,
+                "pronounced_by": None,
+                "check_with": report["certificate"]["check_with"],
+                "warning": (
+                    "the certificate was written and NOT checked, because check=False. "
+                    "Nothing here has been proved; these are the claims of an untrusted "
+                    "engine"
+                ),
+            }
+            return report
+        outcome = check_horn(certificate_dir, checker=checker, timeout=timeout)
+        report["check"] = outcome
+        if outcome["status"] == "unreadable":
+            # This method wrote the three files itself, so a checker that cannot
+            # read or parse them is an emitter bug and not a data problem. Folding
+            # it into the missing-binary branch is how such a bug gets mistaken
+            # for an uninstalled checker and never investigated.
+            raise CertificateUnreadable(
+                f"{outcome['check_with']} could not read the certificate this run had "
+                f"just written, which is a defect in this emitter and not a rejection: "
+                f"{outcome['error']}"
+            )
+        return report
+
 
 def _triple_key(t) -> str:
     tr = getattr(t, "triple", t)

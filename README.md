@@ -53,6 +53,7 @@ cd lean && lake exe oo-cert ../cert/asserted.tsv ../cert/derivations.tsv
 | Reason over OWL | A derivation certificate | `OOCert.certificate_sound` |
 | Reason with rules you wrote | A certificate, and a different verdict word | `OOCert.horn_certificate_sound` |
 | Is this satisfiable | A finite model | `Dl.satisfiable_of_checkModel` |
+| Is a solver's model real | The model, replayed | `Fol.satisfiable_of_check` |
 | Is this inconsistent | A refutation | `OOCert.refutation_sound` |
 | Does this data fit the shapes | A validation report | `Shacl.validate_spec` |
 
@@ -114,11 +115,15 @@ Restart, and the `onto_*` tools are available. Cursor, Windsurf, Zed and VS Code
 
 ## What is in the box
 
-**111 tools** to build, validate, query, diff, lint, version, reason over, align, plan, certify
-and govern RDF and OWL, over an in-memory Oxigraph store. A default build advertises all 111 tools.
+**112 tools** to build, validate, query, diff, lint, version, reason over, align, plan, certify
+and govern RDF and OWL, over an in-memory Oxigraph store. A default build advertises all 112 tools.
 Eight need an optional Cargo feature and return an error without it: four need `embeddings`, two
 need `plugins`, two need `postgres` or `duckdb`. The published binaries and the GHCR image are
 built with the default feature set, so they do not carry those eight.
+
+The Python package `open-ontologies-lite` now reasons as well, in pure Python with no Rust
+toolchain, and its certificates are checked by the same Lean binaries. It is a second engine, and
+being untrusted costs nothing: the warrant was never in the engine.
 
 Alongside them, a marketplace of 33 standard ontologies, clinical crosswalks, semantic embeddings,
 a lineage audit trail, and a desktop Studio with a virtualized ontology tree, an AI chat panel and

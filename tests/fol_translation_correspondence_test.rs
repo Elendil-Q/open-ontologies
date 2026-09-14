@@ -1025,6 +1025,79 @@ fn an_ontology_inside_the_fragment_does_not_set_the_flag() {
     assert_eq!(v["individual_typing_axioms"], 1);
 }
 
+/// **A punned assertion weakens the export, and the report says so.**
+///
+/// OWL 2 DL lets one IRI be a class and an individual at once.
+/// `OwlLean/Syntax.lean` does not: `Sig` gives each entity kind its own type
+/// and `Sig.Ind` is disjoint from `Sig.Cls`. So an assertion whose subject is
+/// declared a class is outside the fragment and is not exported — while its
+/// subsumptions, domains and ranges ARE, which is exactly why the omission was
+/// invisible.
+///
+/// It WAS invisible. Running the model-certificate pipeline over
+/// `case-studies/blast-furnace-ironmaking/` returned machine-checked
+/// countermodels for five of the nine triples the OWL-RL reasoner derives
+/// there: `bf:Hanging` is declared `owl:Class` and also carries
+/// `bf:hasSeverity bf:HighSeverity`, `bf:hasSeverity` has domain
+/// `bf:ProcessState`, and `rdfs2` is what the reasoner used. The exported
+/// theory really did not entail the conclusion, and the report said
+/// `exports_a_weaker_axiom_set: false`. That is the laundering shape this
+/// project keeps finding in other people's work, in its own output.
+#[test]
+fn a_punned_assertion_is_named_as_weakening_the_export() {
+    let ttl = r#"
+@prefix : <http://e/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+:State a owl:Class .
+:Hanging a owl:Class ; rdfs:subClassOf :State ; :hasSeverity :High .
+:High a owl:Class .
+:hasSeverity a owl:ObjectProperty ; rdfs:domain :State .
+"#;
+    let graph = std::sync::Arc::new(open_ontologies::graph::GraphStore::new());
+    graph.load_turtle(ttl, None).expect("turtle parses");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let report = open_ontologies::tptp::export(&graph, dir.path(), Syntax::Tptp, None, 0)
+        .expect("export");
+    let v: serde_json::Value = serde_json::from_str(&report).expect("json");
+    assert_eq!(
+        v["exports_a_weaker_axiom_set"], true,
+        "the punned assertion is not exported, so the axiom set IS weaker; got {}",
+        v["constructs_not_exported"]
+    );
+    let named: Vec<String> = v["constructs_not_exported"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|d| d["construct"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert!(
+        named.iter().any(|n| n == "assertion on a punned entity"),
+        "got {named:?}"
+    );
+    let entry = v["constructs_not_exported"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|d| d["construct"] == "assertion on a punned entity")
+        .expect("the entry");
+    assert_eq!(entry["occurrences"], 1, "one assertion, on :Hanging");
+    let why = entry["why"].as_str().unwrap_or("");
+    assert!(why.contains("Sig.Ind"), "the reason must name the Lean: {why}");
+    assert!(
+        why.contains("WEAKER than the graph"),
+        "and say what it costs: {why}"
+    );
+    // The subsumption on the SAME subject is still exported, which is why the
+    // omission was invisible: the file looks complete.
+    let text = std::fs::read_to_string(dir.path().join("ontology.p")).expect("read");
+    assert!(text.contains("subClassOf"), "{text}");
+    assert!(
+        !text.contains("op:http://e/hasSeverity'(\'i:http://e/Hanging"),
+        "the assertion itself is not there"
+    );
+}
+
 /// The COLORE dialect is a different SPELLING of the same text, not a
 /// different translation.
 ///
@@ -1075,21 +1148,29 @@ fn the_colore_dialect_changes_the_spelling_and_nothing_else() {
 /// that names the alternatives, rather than silently defaulting.
 #[test]
 fn an_unknown_syntax_or_dialect_is_refused() {
-    assert!(Syntax::parse("smtlib", None, None).is_err());
+    // `smtlib` and `ladr` joined `tptp` and `clif` when the model-finding half
+    // arrived; `sexpr` never existed and still does not.
+    let e = Syntax::parse("sexpr", None, None, None).expect_err("sexpr is not a syntax");
+    assert!(
+        ["tptp", "clif", "smtlib", "ladr"].iter().all(|n| e.to_string().contains(n)),
+        "the message must name every alternative: {e}"
+    );
+    assert!(Syntax::parse("smtlib", None, None, None).is_ok());
+    assert!(Syntax::parse("ladr", None, None, None).is_ok());
     let e =
-        Syntax::parse("clif", Some("kif"), None).expect_err("kif is not a CLIF dialect");
+        Syntax::parse("clif", Some("kif"), None, None).expect_err("kif is not a CLIF dialect");
     assert!(
         e.to_string().contains("iso") && e.to_string().contains("colore"),
         "got {e}"
     );
-    let e = Syntax::parse("clif", None, Some("inline"))
+    let e = Syntax::parse("clif", None, Some("inline"), None)
         .expect_err("inline is not a comment placement");
     assert!(
         e.to_string().contains("standalone") && e.to_string().contains("wrapped"),
         "got {e}"
     );
     // The defaults, and the alternatives.
-    let d = Syntax::parse("clif", None, None).unwrap();
+    let d = Syntax::parse("clif", None, None, None).unwrap();
     assert_eq!(d.dialect(), Some(ClifDialect::Iso));
     assert_eq!(
         d.comments(),
@@ -1098,12 +1179,12 @@ fn an_unknown_syntax_or_dialect_is_refused() {
          available parser recovers sentences from"
     );
     assert_eq!(
-        Syntax::parse("clif", Some("colore"), Some("wrapped"))
+        Syntax::parse("clif", Some("colore"), Some("wrapped"), None)
             .unwrap()
             .comments(),
         Some(ClifComments::Wrapped)
     );
-    assert_eq!(Syntax::parse("tptp", None, None).unwrap().dialect(), None);
+    assert_eq!(Syntax::parse("tptp", None, None, None).unwrap().dialect(), None);
 }
 
 /// **Gate.** The default CLIF shape is the one a parser can recover sentences

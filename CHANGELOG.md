@@ -70,6 +70,64 @@ All notable changes to Open Ontologies are documented here.
   measurements, and the property is sampled instead. The first property-test run
   found the `rdfs7` defect below, and measuring its reach found the `cls-avf`
   one.
+- **The SAT/SMT family, and the asymmetry that makes it worth building.** A
+  refutation cannot be replayed in core Lean, so decision 0005 rules a prover's
+  verdict an oracle opinion for ever. A MODEL is the opposite: a finite object,
+  decidable to check, and `lean/Fol/` holds a verified evaluator for it. So the
+  SATISFIABILITY direction is CERTIFIED while the refutation direction stays an
+  oracle, and the two never share a word.
+
+  `fol --format smtlib|ladr` are a third and fourth printer over the same
+  `FolProblem` the TPTP and CLIF printers walk, never a second translation;
+  every run also writes `problem.tsv`, the format `oo-folmodel` reads, with a
+  digest the Lean recomputes. `fol-model` (also `onto_fol_model` and batch
+  `fol-model`) drives the whole loop: export, run Z3 or Mace4, read the
+  structure back, hand it to the verified checker, and report five fields that
+  are never collapsed — `solver_verdict`, `encoding`, `checker_exit`, `verdict`
+  and `owl_reading`. Only `model_checked` rests on a theorem
+  (`Fol.satisfiable_of_check`), and it requires `checker_exit: 0`. An exhausted
+  BOUNDED search is `no_model_up_to_size_k` and is not unsatisfiability:
+  `∀x∃y (r(x,y) ∧ x≠y)` is unsat at carrier 1 and sat at carrier 2.
+  `unsatisfiable_oracle` may come only from a run with no cardinality
+  constraint. With a goal, a checked countermodel carries
+  `not_entailed_under_unproved_translation` — `Fol.not_entails_of_check`, the
+  sentence no prover can produce, weakened by the two things this layer does
+  not prove.
+
+  A solver answering `sat` whose model the checker REJECTS is a STOP_THE_LINE
+  disagreement with its own block, counted in the summary and exiting non-zero,
+  the way `tools/shacl_differential.py` treats a FALSE_CLEAN. It is never
+  `rejected` as though the ontology were at fault and never `model_checked`.
+
+  Mace4 is here because the dead toolchain has a live half: Prover9's
+  refutations are uncheckable, and Mace4 is a finite model finder whose output
+  is exactly what this layer certifies. Its symbols are MANGLED, because LADR
+  reads a name beginning with `u`, `v`, `w`, `x`, `y` or `z` as a VARIABLE —
+  measured on LADR 2009-11A, `p0(w0). -p0(k0).` is echoed as `p0(x).` and the
+  run reports `exit (exhausted)` with no error at all.
+
+### Fixed
+- **An assertion on a punned entity was dropped from the first-order export
+  SILENTLY, and the report said the axiom set was not weakened.** OWL 2 DL lets
+  one IRI be a class and an individual at once; `OwlLean/Syntax.lean` does not,
+  so the assertion is correctly outside the fragment — but
+  `count_out_of_fragment` knew six named OWL constructs and nothing about
+  punning, so `exports_a_weaker_axiom_set` was `false` over an export that was
+  weaker than the graph. Found by the new model-certificate pipeline, which
+  returned machine-checked countermodels for five of the nine triples the
+  OWL-RL reasoner derives on
+  `case-studies/blast-furnace-ironmaking/blast-furnace-ontology.ttl`, where
+  `bf:Hanging` is an `owl:Class` that also carries `bf:hasSeverity
+  bf:HighSeverity`. Now counted as `assertion on a punned entity` with its
+  reason; the reading itself is unchanged.
+- **A stop-the-line disagreement did not fail a `batch` run.** `src/batch.rs`
+  decided the exit code from the presence of an `"error"` key, and a
+  stop-the-line is not an error: the command ran and answered. Batch is the
+  mode every tool in `tools/` uses, so in the one place the gate has to bite it
+  did not. It now also reads the `stop_the_line` count, keyed on the field
+  rather than on the command name.
+
+### Added
 - **First-order export, over the translation a machine-checked adequacy theorem
   is about.** `fol --out DIR --format tptp|clif` (also `onto_fol_export` and
   batch `fol`) writes the loaded ontology as TPTP FOF or as ISO/IEC 24707
