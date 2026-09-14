@@ -1,0 +1,20 @@
+rdfs2	2	?s	?p	?o	?p	<http://www.w3.org/2000/01/rdf-schema#domain>	?c	?s	<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>	?c
+rdfs3	2	?s	?p	?o	?p	<http://www.w3.org/2000/01/rdf-schema#range>	?c	?o	<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>	?c
+rdfs5	2	?a	<http://www.w3.org/2000/01/rdf-schema#subPropertyOf>	?b	?b	<http://www.w3.org/2000/01/rdf-schema#subPropertyOf>	?c	?a	<http://www.w3.org/2000/01/rdf-schema#subPropertyOf>	?c
+rdfs7	2	?s	?p	?o	?p	<http://www.w3.org/2000/01/rdf-schema#subPropertyOf>	?q	?s	?q	?o
+rdfs9	2	?x	<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>	?a	?a	<http://www.w3.org/2000/01/rdf-schema#subClassOf>	?b	?x	<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>	?b
+rdfs11	2	?a	<http://www.w3.org/2000/01/rdf-schema#subClassOf>	?b	?b	<http://www.w3.org/2000/01/rdf-schema#subClassOf>	?c	?a	<http://www.w3.org/2000/01/rdf-schema#subClassOf>	?c
+prp-trp	3	?p	<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>	<http://www.w3.org/2002/07/owl#TransitiveProperty>	?x	?p	?y	?y	?p	?z	?x	?p	?z
+prp-symp	2	?p	<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>	<http://www.w3.org/2002/07/owl#SymmetricProperty>	?x	?p	?y	?y	?p	?x
+prp-inv1	2	?p	<http://www.w3.org/2002/07/owl#inverseOf>	?q	?x	?p	?y	?y	?q	?x
+prp-inv2	2	?p	<http://www.w3.org/2002/07/owl#inverseOf>	?q	?x	?q	?y	?y	?p	?x
+eq-sym	1	?a	<http://www.w3.org/2002/07/owl#sameAs>	?b	?b	<http://www.w3.org/2002/07/owl#sameAs>	?a
+scm-eqc1	1	?a	<http://www.w3.org/2002/07/owl#equivalentClass>	?b	?a	<http://www.w3.org/2000/01/rdf-schema#subClassOf>	?b
+scm-eqc1	1	?a	<http://www.w3.org/2002/07/owl#equivalentClass>	?b	?b	<http://www.w3.org/2000/01/rdf-schema#subClassOf>	?a
+scm-eqp1	1	?a	<http://www.w3.org/2002/07/owl#equivalentProperty>	?b	?a	<http://www.w3.org/2000/01/rdf-schema#subPropertyOf>	?b
+scm-eqp1	1	?a	<http://www.w3.org/2002/07/owl#equivalentProperty>	?b	?b	<http://www.w3.org/2000/01/rdf-schema#subPropertyOf>	?a
+cls-svf1	4	?r	<http://www.w3.org/2002/07/owl#onProperty>	?p	?r	<http://www.w3.org/2002/07/owl#someValuesFrom>	?c	?x	?p	?y	?y	<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>	?c	?x	<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>	?r
+cls-avf	4	?r	<http://www.w3.org/2002/07/owl#onProperty>	?p	?r	<http://www.w3.org/2002/07/owl#allValuesFrom>	?c	?x	<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>	?r	?x	?p	?y	?y	<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>	?c
+cls-hv1	3	?r	<http://www.w3.org/2002/07/owl#onProperty>	?p	?r	<http://www.w3.org/2002/07/owl#hasValue>	?v	?x	<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>	?r	?x	?p	?v
+cls-hv2	3	?r	<http://www.w3.org/2002/07/owl#onProperty>	?p	?r	<http://www.w3.org/2002/07/owl#hasValue>	?v	?x	?p	?v	?x	<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>	?r
+every-supplier-is-compliant	1	?s	<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>	<http://ex.org/Supplier>	?s	<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>	<http://ex.org/Compliant>

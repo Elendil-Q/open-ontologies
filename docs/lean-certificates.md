@@ -141,6 +141,41 @@ repository's RDF was never walked and was excluded without being named. Widening
 surfaced the literal-subject defect in `prp-symp`, `prp-inv1`, `prp-inv2` and `eq-sym`, which lived
 in `benchmark/`.
 
+## User-written rules
+
+The twenty built-in rules were twenty arms in the checker, which does not extend to rules you write.
+`lean/OOCert/Horn.lean` makes a rule into data: a body and a head over triple patterns with
+variables. A certificate step cites a rule by index into a table you supply and gives a binding, and
+one theorem, `OOCert.horn_certificate_sound`, covers every rule table at once.
+
+```bash
+cd lean
+lake build
+lake exe oo-horn rules                                    # the built-in table, as data
+lake exe oo-horn check RULES.tsv ASSERTED.tsv HORN.tsv    # check a certificate
+```
+
+**The verdict tells you what it is relative to, and you must read it.**
+
+| table | verdict | theorem | means |
+|---|---|---|---|
+| exactly the built-ins | `entailed` | `OOCert.entails_of_builtin_horn` | true in every model of the asserted graph |
+| anything else | `entailed_under_supplied_rules` | `OOCert.horn_certificate_sound` | true in every model that **also satisfies your rules** |
+
+The second is weaker and the difference is not academic. A rule reading "every supplier is
+compliant" makes certificates that check green for ever, because the certificate certifies the
+inference and never the premises. The report carries a digest of the table that was in force so two
+runs can be compared, and `tests/lean_horn_certificate_test.rs` fails if a user-rule run ever
+reports the absolute verdict.
+
+Nineteen of the engine's rules are Horn rules and appear in the built-in table. `cls-int1` and
+`cls-uni` are not: their premise count is the length of an RDF list, which is data rather than fixed
+by the rule, so they remain hardcoded arms. A user rule language stops at the same boundary.
+
+The Rust reasoner does not yet evaluate a supplied rule table, so today this layer checks
+certificates rather than producing them. See
+[decision 0003](decisions/0003-a-rule-is-data-and-an-assumption-is-not-a-fact.md).
+
 ## Known limitations
 
 Stated rather than discovered later.

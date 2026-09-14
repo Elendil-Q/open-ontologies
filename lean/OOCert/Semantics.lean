@@ -129,8 +129,15 @@ structure Model (I : Interp) (G : List Triple) : Prop where
   uni : ∀ c l ms, (⟨c, V.unionOf, l⟩ : Triple) ∈ G → Chain G l ms →
     ∀ x m, m ∈ ms → I.cext (I.ι m) x → I.cext (I.ι c) x
 
+/-- Entailment relative to an arbitrary class of interpretations. The soundness
+proof never needs more than "every interpretation in this class models `G`", so
+stating it this way lets one proof serve the built-in rules and any further
+assumption a certificate chooses to carry, `OOCert.EntailsR` for user-written
+Horn rules among them. -/
+def EntailsIn (P : Interp → Prop) (t : Triple) : Prop := ∀ I : Interp, P I → I.sat t
+
 /-- `G ⊨ t`: every model of `G` satisfies `t`. -/
-def Entails (G : List Triple) (t : Triple) : Prop := ∀ I : Interp, Model I G → I.sat t
+def Entails (G : List Triple) (t : Triple) : Prop := EntailsIn (fun I => Model I G) t
 
 theorem Entails.of_mem {G : List Triple} {t : Triple} (h : t ∈ G) : Entails G t :=
   fun _ M => M.facts t h

@@ -1,6 +1,6 @@
 name = "oocert"
 version = "0.1.0"
-defaultTargets = ["OOCert", "oo-cert"]
+defaultTargets = ["OOCert", "oo-cert", "oo-horn"]
 
 # Core Lean only. No Mathlib, no external packages: the checker's trust surface
 # is the Lean kernel plus what is written in this directory, and it should stay
@@ -12,3 +12,7 @@ name = "OOCert"
 [[lean_exe]]
 name = "oo-cert"
 root = "Main"
+
+[[lean_exe]]
+name = "oo-horn"
+root = "HMain"

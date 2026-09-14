@@ -319,6 +319,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Certify every shipped ontology through the proved checker
         run: OO_REQUIRE_FIXTURES=1 cargo test --test lean_certificate_test -- --nocapture
+      - name: Check the generic Horn-rule layer, and that a user rule cannot earn the absolute verdict
+        # The five legs here are not interchangeable. Four of them prove the
+        # checker rejects a specific forgery; the fifth proves that a
+        # certificate over rules the user supplied reports a DIFFERENT verdict
+        # from one over the built-ins. That last one is the difference between
+        # a verification layer and a device for laundering an assumption into a
+        # fact, and it is the reason this job exists rather than being folded
+        # into the line above.
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test lean_horn_certificate_test -- --nocapture
 
   # The official W3C SHACL test suite, as a ratchet.
   #
