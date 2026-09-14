@@ -169,26 +169,186 @@ structure HornStep where
   conclusion : Triple
 deriving Repr
 
-/-- A cited binding list read as a total substitution. A variable with no
-binding maps to its own name, which is junk and will fail the premise check;
-soundness does not depend on that, because the semantic side quantifies over
-every total substitution including this one. -/
+/-- A cited binding list read as a total substitution. The default for a
+variable the list does not mention is the variable's own name, and it is
+UNREACHABLE on any variable the cited rule mentions, because `checkHornStep`
+refuses a binding that does not cover them: see `bindingWellFormed` and
+`lookup_eq_substOf_of_covers`. The total form is kept because the semantic side
+quantifies over total substitutions, not because any value it invents is
+meaningful. -/
 def substOf (l : List (Var × Term)) : Subst := fun v => (List.lookup v l).getD v
 
-/-- Check one Horn step. As with the built-in rules, premise ORDER is part of
-the contract: the premise list must be the body instantiated, in order. A
-certificate with the right triples in the wrong order is rejected, which is a
-false alarm and never a false pass. -/
+/-! ## The binding list as a data structure
+
+Decision 0008. A binding list is DATA before it is a substitution, and a
+certificate whose binding is malformed is refused rather than repaired.
+
+Two shapes are refused, and both were found by running this checker and the
+independent Isabelle/HOL one over 1,718 certificates and comparing:
+
+* a REPEATED KEY, because the value of the variable would then be decided by
+  the tie-break inside whatever lookup function a checker happens to use.
+  `List.lookup` here is first-wins, while `dict()` and `HashMap::from_iter`
+  elsewhere are last-wins, and a certificate whose meaning depends on that is
+  not evidence of anything;
+* an INCOMPLETE BINDING, because `substOf`'s default would otherwise mint a
+  term out of a variable's NAME in the rule file and put it in the conclusion.
+
+A binding for a variable the rule never mentions is NOT refused. It cannot make
+a step mean two things, because it is never consulted, and refusing it would be
+a tidiness rule rather than a determinacy one. -/
+
+def Pat.varList : Pat → List Var
+  | .const _ => []
+  | .var v => [v]
+
+/-- Every variable the pattern mentions, with repeats. Deduplicating would cost
+a `DecidableEq` pass and buy nothing: every use is under `List.all` or a
+membership, and neither can see a repeat. -/
+def AtomPat.varList (a : AtomPat) : List Var :=
+  a.s.varList ++ a.p.varList ++ a.o.varList
+
+/-- Every variable the rule mentions, body AND head. The head matters: a rule
+whose head carries a variable its body never binds is the sharp case, and it is
+the one where the silent default fabricated a term. -/
+def RulePattern.varList (r : RulePattern) : List Var :=
+  (r.body.map AtomPat.varList).flatten ++ r.head.varList
+
+/-- No key occurs twice. Written out rather than borrowed so that it is a
+`Bool` the witness file can `decide`, and so this file does not move with the
+standard library. -/
+def keysDistinct : List (Var × Term) → Bool
+  | [] => true
+  | (v, _) :: rest => rest.all (fun p => p.1 != v) && keysDistinct rest
+
+/-- Every variable the cited rule mentions has a binding. -/
+def bindsCover (r : RulePattern) (l : List (Var × Term)) : Bool :=
+  r.varList.all (fun v => (List.lookup v l).isSome)
+
+/-- The binding list is well formed FOR THE CITED RULE. Not a property of the
+list alone: coverage is relative to the rule, which is why this is checked after
+the rule has been looked up and not at parse time. -/
+def bindingWellFormed (r : RulePattern) (l : List (Var × Term)) : Bool :=
+  keysDistinct l && bindsCover r l
+
+/-- With distinct keys, `List.lookup`'s first-wins tie-break stops deciding
+anything: the value is the one the certificate wrote. This is the whole content
+of refusing a repeated key, and it is why the refusal is not a taste. -/
+theorem lookup_eq_of_mem_of_keysDistinct :
+    ∀ {l : List (Var × Term)}, keysDistinct l = true →
+      ∀ {v : Var} {t : Term}, (v, t) ∈ l → List.lookup v l = some t := by
+  intro l
+  induction l with
+  | nil => intro _ v t hm; simp at hm
+  | cons p rest ih =>
+    obtain ⟨w, u⟩ := p
+    intro hd v t hm
+    simp only [keysDistinct, Bool.and_eq_true] at hd
+    obtain ⟨hne, hrest⟩ := hd
+    rcases List.mem_cons.mp hm with heq | hmem
+    · have hv : v = w := congrArg Prod.fst heq
+      have ht : t = u := congrArg Prod.snd heq
+      subst hv; subst ht
+      simp [List.lookup]
+    · have hvw : ¬ v = w := by
+        intro h
+        subst h
+        have := List.all_eq_true.mp hne (v, t) hmem
+        simp at this
+      have hbeq : (v == w) = false := by
+        cases hb : v == w with
+        | false => rfl
+        | true => exact absurd (eq_of_beq hb) hvw
+      simp only [List.lookup, hbeq]
+      exact ih hrest hmem
+
+/-- On every variable the rule mentions, the total substitution's value is the
+value the binding list actually supplies. The default is never reached, so
+`substOf` and a PARTIAL lookup agree everywhere the checker looks. -/
+theorem lookup_eq_substOf_of_covers {r : RulePattern} {l : List (Var × Term)}
+    (h : bindsCover r l = true) {v : Var} (hv : v ∈ r.varList) :
+    List.lookup v l = some (substOf l v) := by
+  have hs := List.all_eq_true.mp h v hv
+  unfold substOf
+  cases hl : List.lookup v l with
+  | none => rw [hl] at hs; simp at hs
+  | some t => simp
+
+theorem Pat.inst_congr {sigma tau : Subst} {q : Pat}
+    (h : ∀ v ∈ q.varList, sigma v = tau v) : q.inst sigma = q.inst tau := by
+  cases q with
+  | const c => rfl
+  | var x => exact h x (by simp [Pat.varList])
+
+theorem AtomPat.inst_congr {sigma tau : Subst} {a : AtomPat}
+    (h : ∀ v ∈ a.varList, sigma v = tau v) : a.inst sigma = a.inst tau := by
+  unfold AtomPat.varList at h
+  unfold AtomPat.inst
+  rw [Pat.inst_congr (fun v hv => h v (by simp [List.mem_append, hv])),
+      Pat.inst_congr (fun v hv => h v (by simp [List.mem_append, hv])),
+      Pat.inst_congr (fun v hv => h v (by simp [List.mem_append, hv]))]
+
+theorem mem_varList_of_mem_body {r : RulePattern} {a : AtomPat} (ha : a ∈ r.body)
+    {v : Var} (hv : v ∈ a.varList) : v ∈ r.varList :=
+  List.mem_append_left _ (List.mem_flatten.mpr ⟨a.varList, List.mem_map_of_mem ha, hv⟩)
+
+theorem mem_varList_of_mem_head {r : RulePattern} {v : Var} (hv : v ∈ r.head.varList) :
+    v ∈ r.varList :=
+  List.mem_append_right _ hv
+
+/-- **The format decision, as a theorem.** Once the binding list is well formed
+for the cited rule, EVERY total substitution that extends it instantiates that
+rule the same way. So a checker that carries the binding as a partial map and
+one that carries it as a total function with a default are reading the same
+certificate, and the certificate has one meaning rather than one per checker.
+Nothing below depends on this: it is the statement the differential could not
+make for itself. -/
+theorem wellFormed_determines_instantiation {r : RulePattern} {l : List (Var × Term)}
+    (h : bindingWellFormed r l = true) {sigma : Subst}
+    (hext : ∀ v t, List.lookup v l = some t → sigma v = t) :
+    r.body.map (AtomPat.inst sigma) = r.body.map (AtomPat.inst (substOf l)) ∧
+      AtomPat.inst sigma r.head = AtomPat.inst (substOf l) r.head := by
+  simp only [bindingWellFormed, Bool.and_eq_true] at h
+  have agree : ∀ v ∈ r.varList, sigma v = substOf l v := fun v hv =>
+    hext v _ (lookup_eq_substOf_of_covers h.2 hv)
+  refine ⟨List.map_congr_left ?_, AtomPat.inst_congr ?_⟩
+  · intro a ha
+    exact AtomPat.inst_congr (fun v hv => agree v (mem_varList_of_mem_body ha hv))
+  · intro v hv
+    exact agree v (mem_varList_of_mem_head hv)
+
+/-- Check one Horn step. Three things are contracted, not two.
+
+The BINDING must be well formed for the cited rule (decision 0008): distinct
+keys, and a binding for every variable the rule mentions.
+
+The PREMISE ORDER is part of the contract: the premise list must be the body
+instantiated, in order. A certificate with the right triples in the wrong order
+is rejected, which is a false alarm and never a false pass.
+
+Both refusals are strictness and neither carries soundness content. That is the
+point. `checkHornStep_sound` holds with or without them, because `EntailsR`
+quantifies over every total substitution; what they buy is that the certificate
+means ONE thing, which is not something a soundness theorem can say. -/
 def checkHornStep (R : List RulePattern) (k : Triple → Bool) (st : HornStep) : Bool :=
   match nth? R st.rule with
   | none => false
   | some r =>
+      bindingWellFormed r st.binds &&
       decide (st.premises = r.body.map (AtomPat.inst (substOf st.binds))) &&
       st.premises.all k &&
       decide (st.conclusion = AtomPat.inst (substOf st.binds) r.head)
 
 /-- THE THEOREM, one step. No case analysis on the rule: there is nothing to
-case on. -/
+case on.
+
+The statement is unchanged by decision 0008, and so is the proof below the first
+line: the well-formedness conjunct is destructured and DISCARDED. That is the
+honest accounting. Adding a check makes `checkHornStep = true` a stronger
+hypothesis, so this theorem cannot have been weakened to accommodate it, and the
+new refusals earn their place somewhere a soundness theorem cannot look:
+`wellFormed_determines_instantiation` above, and `HornWitness.lean` for the
+evidence that the checker still accepts anything at all. -/
 theorem checkHornStep_sound {G : List Triple} {R : List RulePattern} {k : Triple → Bool}
     {st : HornStep} (hk : ∀ t, k t = true → EntailsR G R t)
     (h : checkHornStep R k st = true) : EntailsR G R st.conclusion := by
@@ -199,7 +359,7 @@ theorem checkHornStep_sound {G : List Triple} {R : List RulePattern} {k : Triple
   | some r =>
     intro h
     simp only [Bool.and_eq_true, decide_eq_true_eq] at h
-    obtain ⟨⟨hprem, hall⟩, hconc⟩ := h
+    obtain ⟨⟨⟨_hwf, hprem⟩, hall⟩, hconc⟩ := h
     intro I hI
     obtain ⟨M, hR⟩ := hI
     have hrmem : r ∈ R := nth?_mem hr
@@ -292,6 +452,14 @@ theorem horn_certificate_sound_fo (G : List Triple) (R : List RulePattern) (step
 /-- info: 'OOCert.SatRuleFO.to_SatRule' depends on axioms: [propext] -/
 #guard_msgs in
 #print axioms SatRuleFO.to_SatRule
+
+/-- info: 'OOCert.wellFormed_determines_instantiation' depends on axioms: [propext, Quot.sound] -/
+#guard_msgs in
+#print axioms wellFormed_determines_instantiation
+
+/-- info: 'OOCert.lookup_eq_of_mem_of_keysDistinct' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms lookup_eq_of_mem_of_keysDistinct
 
 /-- info: 'OOCert.horn_certificate_sound' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in

@@ -4,6 +4,34 @@ All notable changes to Open Ontologies are documented here.
 
 ## [Unreleased]
 
+### Changed
+- **A binding is data, and a certificate that admits two readings is refused.** Running the
+  Lean checker in `lean/OOCert/Horn.lean` and the independent Isabelle/HOL one in `isabelle/`
+  over 1,718 certificates found 47 rows where the two disagreed, always in the same direction
+  and always from one cause: Isabelle validated the binding list as a data structure and Lean
+  did not. Neither checker was unsound, because Lean's acceptances held in Lean's own theorem:
+  `EntailsR` quantifies over every total substitution. So the defect was in the FORMAT, which
+  said nothing about a repeated binding key or an incomplete binding. `checkHornStep` now
+  requires the binding to have distinct keys and to cover every variable the cited rule
+  mentions, body and head, and the divergence is 47 rows to 0: 349 accepted by both and 465
+  unparseable on both are unchanged, and the 47 moved into rejected-by-both, 857 to 904. The
+  corpus test now requires both kernels to refuse each of the 286 rows carrying a malformed
+  binding, so the analysis that used to excuse a disagreement is a gate that can fail. The
+  refusals are strictness with
+  no soundness content: `horn_certificate_sound`, `horn_certificate_sound_fo` and
+  `SatRuleFO.to_SatRule` are unchanged in statement and in axiom footprint, and what the checks
+  buy is stated as `OOCert.wellFormed_determines_instantiation` instead. Every total
+  substitution extending a well-formed binding instantiates the cited rule the same way, so the
+  certificate has one meaning rather than one per checker. **A binding for a variable the rule
+  never mentions is still accepted.** The Isabelle is untouched, because it was written from the
+  W3C sources without reading the Lean and is worth nothing once it is edited to agree.
+  `reason --rules` structurally cannot emit either refused shape, and
+  `no_emitted_binding_is_one_the_format_now_refuses` checks that against the bytes. See
+  [decision 0008](docs/decisions/0008-a-binding-is-data-and-evidence-admits-one-reading.md).
+  This does NOT make a conclusion writable RDF: binding `z` to the bare term `z` is required and
+  still accepted, and `the_refusal_costs_no_certificate_anybody_meant` pins that boundary rather
+  than letting it be assumed away.
+
 ### Added
 - **The refutation checker has a producer.** `lean/OOCert/Refute.lean` has
   checked refutations since it landed and nothing in `src/` could write one: a

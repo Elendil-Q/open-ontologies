@@ -299,6 +299,34 @@ Twenty-seven of the engine's rules are Horn rules and appear in the built-in tab
 rather than fixed by the rule. They remain hardcoded arms. A user rule language stops at the same
 boundary.
 
+### What a binding must look like
+
+A step's binding is a list of `var TAB term` pairs and **it is data before it is a substitution**.
+Two shapes are refused, on both checkers:
+
+| shape | example | why |
+|---|---|---|
+| a key bound twice | `x <http://ex.org/a> x <http://ex.org/zzz>` | the variable's value would be decided by the tie-break inside whichever lookup function a checker uses: first-wins in Lean's `List.lookup` and Isabelle's `map_of`, last-wins in Python's `dict()` and Rust's `HashMap::from_iter` |
+| a variable of the cited rule with no binding | binding `s`, `o` for the rule `?s <p> ?o -> ?s <q> ?z` | the checker would otherwise have to invent a value, and the only one available is the variable's NAME, so the conclusion would carry a term nobody wrote |
+
+A binding for a variable the cited rule never mentions **is accepted**: it is never consulted, so it
+cannot make a certificate mean two things.
+
+Both refusals are strictness and neither carries soundness content. What they buy is that a
+certificate has ONE meaning, which `OOCert.wellFormed_determines_instantiation` states and the Lean
+kernel checks: once the binding is well formed for the cited rule, every total substitution that
+extends it instantiates that rule the same way. The defect they close was found by running this
+checker and the independent Isabelle/HOL one in `isabelle/` over 1,718 certificates: 47 rows
+disagreed, all from this one cause. See
+[decision 0008](decisions/0008-a-binding-is-data-and-evidence-admits-one-reading.md).
+
+This does **not** make a conclusion writable RDF. Binding `z` to the bare term `z` is required and
+still accepted, so a certificate can still conclude a triple no serialiser can write; what changed is
+that the term must be written by the certificate's author rather than minted by the checker.
+`reason --rules` cannot emit either refused shape, which
+`tests/reason_horn_emit_test.rs::no_emitted_binding_is_one_the_format_now_refuses` checks against the
+bytes rather than asserting.
+
 `reason --rules TABLE --certificate DIR` evaluates a supplied table to a fixpoint over the loaded
 graph and writes the three files `oo-horn check` reads. Nothing is materialised: a conclusion drawn
 under a table nobody has checked holds only in models that satisfy that table, and writing it into

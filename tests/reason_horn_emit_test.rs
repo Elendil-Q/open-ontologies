@@ -329,6 +329,114 @@ fn every_binding_instantiates_the_body_and_the_head() {
     }
 }
 
+/// **Decision 0008, on the producer side.** No binding this engine writes has a repeated
+/// key, and none omits a variable of the rule it cites. Those are the two shapes the
+/// checker now refuses, so if the engine could emit either it would be a producer that
+/// writes certificates its own checker rejects.
+///
+/// It structurally cannot, and the structure is worth naming because the run below is
+/// evidence and not the argument.
+///
+/// * **No repeated key.** `run_horn` builds the binding from `rule.vars`, and `rule.vars`
+///   is assembled with `!vars.iter().any(|x| x == v)` guarding every push. It is a
+///   deduplicated list before a single binding is written, so a repeat has no way in.
+/// * **No omitted variable.** The same `rule.vars` is collected over `r.atoms()`, which is
+///   `body.iter().chain(once(&head))`, body AND head. So the binding is written from
+///   exactly the set of variables the rule mentions, which is exactly the set the checker
+///   requires, and coverage holds by construction rather than by care.
+/// * **And the `expect` in between cannot fire.** `env[i].expect(..)` would panic on a
+///   variable the body never bound, and `parse_rules` refuses "a head variable the body
+///   never binds" before any table reaches the evaluator, and
+///   `a_malformed_rule_table_is_refused_with_a_reason` is that guard, run. So every member
+///   of `rule.vars` occurs in the body and `match_body` has bound it.
+///
+/// The run is over every rule table and graph this file has, because a structural argument
+/// that nobody checks against the bytes is how a structural argument goes stale.
+#[test]
+fn no_emitted_binding_is_one_the_format_now_refuses() {
+    let Some(builtin) = builtin_table() else { return };
+    let tables: Vec<(&str, String)> = vec![
+        ("ancestor", ancestor_rules()),
+        ("builtin", builtin),
+        ("no-body", rule("fact", &[], [&iri("a"), &iri("b"), &iri("c")])),
+    ];
+    let graphs: Vec<(&str, &str)> = vec![("chain", CHAIN), ("every-horn-rule", EVERY_HORN_RULE)];
+
+    let mut lines = 0usize;
+    for (tn, table) in &tables {
+        for (gn, ttl) in &graphs {
+            let dir = scratch(&format!("wellformed-{tn}-{gn}"));
+            emit(ttl, table, &dir);
+            let rules = parse_rules(&std::fs::read_to_string(dir.join("rules.tsv")).unwrap())
+                .expect("the table the engine wrote must parse");
+            for (n, line) in read_lines(&dir.join("horn.tsv")).iter().enumerate() {
+                let (ri, binds, _conclusion, _premises) = parse_horn_line(line);
+                let r = rules
+                    .get(ri)
+                    .unwrap_or_else(|| panic!("{tn}/{gn} line {}: rule index {ri} is off the end", n + 1));
+
+                let keys: Vec<&str> = binds.iter().map(|(k, _)| k.as_str()).collect();
+                let mut seen: BTreeSet<&str> = BTreeSet::new();
+                for k in &keys {
+                    assert!(
+                        seen.insert(k),
+                        "{tn}/{gn} line {}: the binding repeats the key '{k}'. Decision 0008 \
+                         refuses that, so this engine would be writing a certificate its own \
+                         checker rejects: {keys:?}",
+                        n + 1
+                    );
+                }
+
+                // Every variable of the rule, body AND head, exactly as `bindsCover` reads
+                // `RulePattern.varList`.
+                let mut wanted: BTreeSet<&str> = BTreeSet::new();
+                for a in r.body.iter().chain(std::iter::once(&r.head)) {
+                    for p in [&a.s, &a.p, &a.o] {
+                        if let open_ontologies::reason::Pat::Var(v) = p {
+                            wanted.insert(v.as_str());
+                        }
+                    }
+                }
+                let missing: Vec<&&str> = wanted.iter().filter(|v| !keys.contains(v)).collect();
+                assert!(
+                    missing.is_empty(),
+                    "{tn}/{gn} line {}: the binding omits {missing:?}, which rule '{}' mentions. \
+                     Decision 0008 refuses that",
+                    n + 1,
+                    r.name
+                );
+                lines += 1;
+            }
+        }
+    }
+
+    // A test that checked nothing would also pass every assertion above.
+    assert!(lines >= 20, "only {lines} emitted steps were checked; the corpus has collapsed");
+}
+
+/// The other half of the producer argument, and the one a structural claim cannot make on
+/// its own: a rule table whose HEAD carries a variable the body never binds is refused
+/// before it is ever evaluated, so the `expect` in `run_horn`'s binding construction has
+/// no reachable input. Without this, "coverage holds by construction" would rest on a
+/// panic never firing rather than on a table never arriving.
+#[test]
+fn a_head_variable_the_body_never_binds_never_reaches_the_evaluator() {
+    let unsafe_head = "r\t1\t?s\t<http://ex.org/p>\t?o\t?s\t<http://ex.org/q>\t?z\n";
+    let e = parse_rules(unsafe_head).expect_err("this table must be refused, not evaluated");
+    assert!(e.to_string().contains("does not occur in the body"), "{e}");
+
+    // And it is refused through the same door `run_horn` uses, not only through the
+    // function this test calls directly.
+    let dir = scratch("unsafehead");
+    let table = dir.join("rules.tsv");
+    std::fs::write(&table, unsafe_head).unwrap();
+    let store = Arc::new(GraphStore::new());
+    store.load_turtle(&format!("{PREFIXES}{CHAIN}"), None).unwrap();
+    let err = Reasoner::run_horn(&store, &table, &dir.join("cert"))
+        .expect_err("run_horn must refuse the table rather than run it");
+    assert!(err.to_string().contains("does not occur in the body"), "{err}");
+}
+
 // ── 4. The generic path against the hardcoded one ───────────────────────────
 
 /// One graph for every built-in rule that is a Horn rule. No `owl:intersectionOf`
