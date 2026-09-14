@@ -62,5 +62,15 @@ because their premise count is the length of an RDF list.
 
 ## Still not done
 
-- Nothing in `src/` writes the refutation format, so inconsistency can be checked and not yet
-  produced by this engine.
+- ~~Nothing in `src/` writes the refutation format, so inconsistency can be checked and not yet
+  produced by this engine.~~ Landed. `reason --certificate DIR` now looks for a contradiction in the
+  closure it reached and writes `refutation.tsv` for the one clash rule the checker has a semantic
+  condition for, `cax-dw`. Nine further clash rules are detected and deliberately NOT written,
+  because a file naming a rule `OOCert.RefuteConditions` has no field for is refused with exit 2 and
+  would be a certificate-shaped object that certifies nothing. See
+  [lean-certificates.md](../lean-certificates.md#refutations-certifying-that-a-graph-has-no-model).
+- The tableau's unsatisfiability findings still carry no refutation. `oo-refute/1` can express one
+  contradiction, `cax-dw`, over triples the forward-chaining prefix can reach; a clash the tableau
+  reaches through `∃`/`∀` expansion or a cardinality bound is not expressible in it, and giving it a
+  form would be a change to `lean/`. The precise obstruction is written down rather than left as
+  "future work".

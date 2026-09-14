@@ -26,6 +26,22 @@ const RDF_FIRST: &str = "<http://www.w3.org/1999/02/22-rdf-syntax-ns#first>";
 const RDF_REST: &str = "<http://www.w3.org/1999/02/22-rdf-syntax-ns#rest>";
 const RDF_NIL: &str = "<http://www.w3.org/1999/02/22-rdf-syntax-ns#nil>";
 
+// The vocabulary the clash detector reads. None of it drives a rule: nothing in
+// the table above concludes a triple from any of these terms. They are read
+// once, after the fixpoint, by `find_clashes`.
+const OWL_DISJOINT_WITH: &str = "<http://www.w3.org/2002/07/owl#disjointWith>";
+const OWL_NOTHING: &str = "<http://www.w3.org/2002/07/owl#Nothing>";
+const OWL_COMPLEMENT_OF: &str = "<http://www.w3.org/2002/07/owl#complementOf>";
+const OWL_IRREFLEXIVE: &str = "<http://www.w3.org/2002/07/owl#IrreflexiveProperty>";
+const OWL_ASYMMETRIC: &str = "<http://www.w3.org/2002/07/owl#AsymmetricProperty>";
+const OWL_PROP_DISJOINT_WITH: &str = "<http://www.w3.org/2002/07/owl#propertyDisjointWith>";
+const OWL_DIFFERENT_FROM: &str = "<http://www.w3.org/2002/07/owl#differentFrom>";
+const OWL_MAX_CARDINALITY: &str = "<http://www.w3.org/2002/07/owl#maxCardinality>";
+const OWL_SOURCE_INDIVIDUAL: &str = "<http://www.w3.org/2002/07/owl#sourceIndividual>";
+const OWL_ASSERTION_PROPERTY: &str = "<http://www.w3.org/2002/07/owl#assertionProperty>";
+const OWL_TARGET_INDIVIDUAL: &str = "<http://www.w3.org/2002/07/owl#targetIndividual>";
+const OWL_TARGET_VALUE: &str = "<http://www.w3.org/2002/07/owl#targetValue>";
+
 /// A triple over interned ids.
 type Fact = (u32, u32, u32);
 
@@ -35,6 +51,365 @@ struct Derivation {
     rule: &'static str,
     conclusion: Fact,
     premises: Vec<Fact>,
+}
+
+
+// ── The rules that conclude `false` ─────────────────────────────────────────
+//
+// Seventeen rules of the OWL 2 RL profile conclude `false` rather than a
+// triple: `eq-diff1`, `eq-diff2`, `eq-diff3`, `prp-irp`, `prp-asyp`,
+// `prp-pdw`, `prp-adp`, `prp-npa1`, `prp-npa2`, `cls-nothing2`, `cls-com`,
+// `cls-maxc1`, `cls-maxqc1`, `cls-maxqc2`, `cax-dw`, `cax-adc` and
+// `dt-not-type`. (`lean/OOCert/Refute.lean` says sixteen. Counted against the
+// W3C tables the number is seventeen; the difference is `dt-not-type`, which
+// that file excludes elsewhere on the stated ground that the Lean semantics
+// has no datatype value space. The count is not load-bearing for anything
+// either side computes.)
+//
+// None of them is in the fixpoint's rule table, and none of them could be:
+// `Derivation.conclusion` is a triple. They are looked for HERE, once, over
+// the closure the fixpoint reached, and reported in the separate `oo-refute/1`
+// format.
+//
+// **Only `cax-dw` can be certified**, and the reason is not this file's.
+// `OOCert.RefuteConditions` in `lean/OOCert/Refute.lean` carries exactly one
+// semantic field, for `cax-dw`, and `oo-refute` refuses a refutation naming any
+// other rule with exit 2 rather than judging it. So a clash of any other rule
+// found here is an engine opinion with nothing behind it, it is reported under
+// a different word from the certified one, and no refutation file is written
+// for it.
+
+/// One way the closure contradicts itself: the OWL 2 RL rule that concludes
+/// `false` from it, and the premises that rule reads, in the order the W3C
+/// table writes them (which is also the order `OOCert.checkRefuteStep` matches
+/// on, and a refutation with the right triples in the wrong order is rejected).
+struct Clash {
+    rule: &'static str,
+    premises: Vec<Fact>,
+}
+
+/// The clash rules `lean/` holds a semantic condition for, so that a refutation
+/// naming one can be CHECKED rather than merely asserted.
+///
+/// One rule, and the list is not this file's to extend: adding a name here
+/// without a matching field in `OOCert.RefuteConditions` and a matching arm in
+/// `OOCert.checkRefuteStep` would make the engine write a file the checker
+/// exits 2 on, which is the one failure mode this layer exists to prevent.
+///
+/// One constant, read both by the emitter and by the report, so the two cannot
+/// drift into disagreeing about what was certified.
+const CLASH_RULES_CERTIFIABLE: &[&str] = &["cax-dw"];
+
+fn clash_is_certifiable(rule: &str) -> bool {
+    CLASH_RULES_CERTIFIABLE.contains(&rule)
+}
+
+/// The clash rules this engine does NOT look for, each with the reason. Listed
+/// so that "no clash found" is never read as "consistent": the honest reading
+/// of a clean run is that none of the rules below was even tried.
+const CLASH_RULES_NOT_DETECTED: &[(&str, &str)] = &[
+    ("cax-adc", "owl:AllDisjointClasses states its members in an RDF list, and this detector reads \
+                 no lists. The pairwise owl:disjointWith spelling of the same axiom IS detected."),
+    ("prp-adp", "owl:AllDisjointProperties states its members in an RDF list, and this detector \
+                 reads no lists. The pairwise owl:propertyDisjointWith spelling IS detected."),
+    ("eq-diff2", "owl:AllDifferent with owl:members is an RDF list. The pairwise owl:differentFrom \
+                  spelling IS detected, by eq-diff1."),
+    ("eq-diff3", "owl:AllDifferent with owl:distinctMembers is an RDF list, as above."),
+    ("cls-maxqc1", "owl:maxQualifiedCardinality needs the qualifying owl:onClass and a type check \
+                    on the value. Not implemented; owl:maxCardinality 0 IS detected, by cls-maxc1."),
+    ("cls-maxqc2", "the owl:Thing case of the same rule, and not implemented for the same reason."),
+    ("dt-not-type", "an ill-typed literal needs a datatype VALUE space. This engine, and the Lean \
+                     semantics under it, read a literal as its N-Triples spelling and compare \
+                     nothing by value, so there is no notion here of a literal outside its type."),
+];
+
+/// The interned vocabulary [`find_clashes`] reads. Gathered into one value so
+/// the detector takes three arguments rather than eighteen.
+struct ClashVocab {
+    rdf_type: u32,
+    disjoint_with: u32,
+    nothing: u32,
+    complement_of: u32,
+    irreflexive: u32,
+    asymmetric: u32,
+    prop_disjoint_with: u32,
+    same_as: u32,
+    different_from: u32,
+    max_cardinality: u32,
+    on_property: u32,
+    source_individual: u32,
+    assertion_property: u32,
+    target_individual: u32,
+    target_value: u32,
+}
+
+/// Zero, in whichever spelling the store hands back for a
+/// `xsd:nonNegativeInteger` zero. Only the lexical form is read, because
+/// nothing else in this engine compares a literal by value and a detector that
+/// did would be claiming a datatype semantics the checker underneath it does
+/// not have.
+fn literal_is_zero(term: &str) -> bool {
+    let Some(rest) = term.strip_prefix('"') else {
+        return false;
+    };
+    let Some(end) = rest.find('"') else {
+        return false;
+    };
+    rest[..end].trim().parse::<i128>().map(|n| n == 0).unwrap_or(false)
+}
+
+/// Look for a contradiction in the closure the fixpoint reached.
+///
+/// Deterministic: the result is sorted on the N-Triples spelling of the
+/// premises and duplicates are dropped, so two runs over one store produce the
+/// same refutation file byte for byte.
+fn find_clashes(closure: &HashSet<Fact>, interner: &Interner, v: &ClashVocab) -> Vec<Clash> {
+    // One pass for every index, because the closure is the large thing here.
+    let mut by_class: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut disjoint: Vec<Fact> = Vec::new();
+    let mut complement: Vec<Fact> = Vec::new();
+    let mut irreflexive: HashSet<u32> = HashSet::new();
+    let mut asymmetric: HashSet<u32> = HashSet::new();
+    let mut prop_disjoint: Vec<Fact> = Vec::new();
+    let mut different: Vec<Fact> = Vec::new();
+    let mut on_property: HashMap<u32, u32> = HashMap::new();
+    let mut max_zero: Vec<(u32, u32)> = Vec::new();
+    let mut npa_source: HashMap<u32, u32> = HashMap::new();
+    let mut npa_prop: HashMap<u32, u32> = HashMap::new();
+    let mut npa_target_ind: HashMap<u32, u32> = HashMap::new();
+    let mut npa_target_val: HashMap<u32, u32> = HashMap::new();
+    for &(s, p, o) in closure.iter() {
+        if p == v.rdf_type {
+            by_class.entry(o).or_default().push(s);
+            if o == v.irreflexive {
+                irreflexive.insert(s);
+            }
+            if o == v.asymmetric {
+                asymmetric.insert(s);
+            }
+        } else if p == v.disjoint_with {
+            disjoint.push((s, p, o));
+        } else if p == v.complement_of {
+            complement.push((s, p, o));
+        } else if p == v.prop_disjoint_with {
+            prop_disjoint.push((s, p, o));
+        } else if p == v.different_from {
+            different.push((s, p, o));
+        } else if p == v.on_property {
+            on_property.insert(s, o);
+        } else if p == v.max_cardinality && literal_is_zero(interner.resolve(o)) {
+            max_zero.push((s, o));
+        } else if p == v.source_individual {
+            npa_source.insert(s, o);
+        } else if p == v.assertion_property {
+            npa_prop.insert(s, o);
+        } else if p == v.target_individual {
+            npa_target_ind.insert(s, o);
+        } else if p == v.target_value {
+            npa_target_val.insert(s, o);
+        }
+    }
+
+    let mut out: Vec<Clash> = Vec::new();
+
+    // cax-dw: c1 owl:disjointWith c2, x rdf:type c1, x rdf:type c2.
+    // The one rule a refutation can be written for.
+    for &(c1, dw, c2) in &disjoint {
+        let Some(xs) = by_class.get(&c1) else { continue };
+        for &x in xs {
+            if closure.contains(&(x, v.rdf_type, c2)) {
+                out.push(Clash {
+                    rule: "cax-dw",
+                    premises: vec![(c1, dw, c2), (x, v.rdf_type, c1), (x, v.rdf_type, c2)],
+                });
+            }
+        }
+    }
+
+    // cls-com: the same shape, over owl:complementOf.
+    for &(c1, co, c2) in &complement {
+        let Some(xs) = by_class.get(&c1) else { continue };
+        for &x in xs {
+            if closure.contains(&(x, v.rdf_type, c2)) {
+                out.push(Clash {
+                    rule: "cls-com",
+                    premises: vec![(c1, co, c2), (x, v.rdf_type, c1), (x, v.rdf_type, c2)],
+                });
+            }
+        }
+    }
+
+    // cls-nothing2: x rdf:type owl:Nothing.
+    if let Some(xs) = by_class.get(&v.nothing) {
+        for &x in xs {
+            out.push(Clash {
+                rule: "cls-nothing2",
+                premises: vec![(x, v.rdf_type, v.nothing)],
+            });
+        }
+    }
+
+    // eq-diff1: x owl:sameAs y, x owl:differentFrom y. The spec's pattern
+    // exactly, with both premises on the same subject.
+    for &(x, df, y) in &different {
+        if closure.contains(&(x, v.same_as, y)) {
+            out.push(Clash {
+                rule: "eq-diff1",
+                premises: vec![(x, v.same_as, y), (x, df, y)],
+            });
+        }
+    }
+
+    // prp-irp, prp-asyp and prp-pdw each need a second scan over the closure,
+    // and the scan is skipped entirely when none of their vocabulary is
+    // present, which is the case for every ontology this repository ships.
+    if !irreflexive.is_empty() || !asymmetric.is_empty() || !prop_disjoint.is_empty() {
+        for &(x, p, y) in closure.iter() {
+            // prp-irp: p rdf:type owl:IrreflexiveProperty, x p x.
+            if x == y && irreflexive.contains(&p) {
+                out.push(Clash {
+                    rule: "prp-irp",
+                    premises: vec![(p, v.rdf_type, v.irreflexive), (x, p, y)],
+                });
+            }
+            // prp-asyp: p rdf:type owl:AsymmetricProperty, x p y, y p x.
+            if asymmetric.contains(&p) && closure.contains(&(y, p, x)) {
+                out.push(Clash {
+                    rule: "prp-asyp",
+                    premises: vec![(p, v.rdf_type, v.asymmetric), (x, p, y), (y, p, x)],
+                });
+            }
+            // prp-pdw: p1 owl:propertyDisjointWith p2, x p1 y, x p2 y.
+            for &(p1, pdw, p2) in &prop_disjoint {
+                if p == p1 && closure.contains(&(x, p2, y)) {
+                    out.push(Clash {
+                        rule: "prp-pdw",
+                        premises: vec![(p1, pdw, p2), (x, p1, y), (x, p2, y)],
+                    });
+                }
+            }
+        }
+    }
+
+    // cls-maxc1: x owl:maxCardinality 0, x owl:onProperty p, u rdf:type x, u p y.
+    // The (subject, predicate) index is built only when the vocabulary is
+    // present, so an ontology with no cardinality-zero restriction pays for
+    // none of it.
+    if !max_zero.is_empty() {
+        let mut values: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+        for &(s, p, o) in closure.iter() {
+            values.entry((s, p)).or_default().push(o);
+        }
+        for &(r, zero) in &max_zero {
+            let Some(&prop) = on_property.get(&r) else { continue };
+            let Some(us) = by_class.get(&r) else { continue };
+            for &u in us {
+                let Some(ys) = values.get(&(u, prop)) else { continue };
+                for &y in ys {
+                    out.push(Clash {
+                        rule: "cls-maxc1",
+                        premises: vec![
+                            (r, v.max_cardinality, zero),
+                            (r, v.on_property, prop),
+                            (u, v.rdf_type, r),
+                            (u, prop, y),
+                        ],
+                    });
+                }
+            }
+        }
+    }
+
+    // prp-npa1 / prp-npa2: a negative property assertion its own graph
+    // contradicts. One assertion per node is read; a node carrying two
+    // owl:sourceIndividual triples is malformed and the last one seen wins.
+    for (&node, &i) in &npa_source {
+        let Some(&p) = npa_prop.get(&node) else { continue };
+        if let Some(&j) = npa_target_ind.get(&node)
+            && closure.contains(&(i, p, j))
+        {
+            out.push(Clash {
+                rule: "prp-npa1",
+                premises: vec![
+                    (node, v.source_individual, i),
+                    (node, v.assertion_property, p),
+                    (node, v.target_individual, j),
+                    (i, p, j),
+                ],
+            });
+        }
+        if let Some(&lt) = npa_target_val.get(&node)
+            && closure.contains(&(i, p, lt))
+        {
+            out.push(Clash {
+                rule: "prp-npa2",
+                premises: vec![
+                    (node, v.source_individual, i),
+                    (node, v.assertion_property, p),
+                    (node, v.target_value, lt),
+                    (i, p, lt),
+                ],
+            });
+        }
+    }
+
+    // Deterministic order, so the refutation file does not depend on hash
+    // iteration order and two runs over one store agree byte for byte.
+    let mut keyed: Vec<(String, Clash)> = out
+        .into_iter()
+        .map(|c| {
+            let mut k = String::from(c.rule);
+            for &(s, p, o) in &c.premises {
+                k.push('\t');
+                k.push_str(interner.resolve(s));
+                k.push('\t');
+                k.push_str(interner.resolve(p));
+                k.push('\t');
+                k.push_str(interner.resolve(o));
+            }
+            (k, c)
+        })
+        .collect();
+    keyed.sort_by(|a, b| a.0.cmp(&b.0));
+    keyed.dedup_by(|a, b| a.0 == b.0);
+    keyed.into_iter().map(|(_, c)| c).collect()
+}
+
+/// The derivation steps a refutation must carry so that every premise it cites
+/// is either asserted or concluded by a step BEFORE it.
+///
+/// Returns indices into `derivations`, ascending, which is a valid order:
+/// `derivations` records each conclusion the first time the fixpoint reached
+/// it, and every premise of that step was in the closure of an earlier
+/// iteration, so the recorded order is already a topological one.
+///
+/// `None` when a premise is neither asserted nor derived, which cannot happen
+/// for a clash found in the closure of a certified run and would be a bug here
+/// rather than a refutation.
+fn refutation_prefix(
+    premises: &[Fact],
+    derivations: &[Derivation],
+    asserted: &HashSet<Fact>,
+) -> Option<Vec<usize>> {
+    let mut first: HashMap<Fact, usize> = HashMap::new();
+    for (i, d) in derivations.iter().enumerate() {
+        first.entry(d.conclusion).or_insert(i);
+    }
+    let mut needed: HashSet<usize> = HashSet::new();
+    let mut work: Vec<Fact> = premises.to_vec();
+    while let Some(t) = work.pop() {
+        if asserted.contains(&t) {
+            continue;
+        }
+        let &i = first.get(&t)?;
+        if !needed.insert(i) {
+            continue;
+        }
+        work.extend(derivations[i].premises.iter().copied());
+    }
+    let mut ids: Vec<usize> = needed.into_iter().collect();
+    ids.sort_unstable();
+    Some(ids)
 }
 
 /// Intern strings to u32 IDs for efficient reasoning.
@@ -106,9 +481,14 @@ impl Interner {
 ///   * The `dt-*` family needs a datatype VALUE space. `OOCert.Semantics`
 ///     reads a literal as its N-Triples spelling and says so, so there is no
 ///     condition here for those rules to be sound against.
-///   * Nothing concludes `false`. The profile's inconsistency rules need a
-///     certificate format that can carry a refutation, which this format
-///     cannot.
+///   * Nothing concludes `false`. Every rule above concludes a triple, which
+///     is what the `oo-cert/1` format can carry. The seventeen rules of the
+///     profile that conclude `false` are handled AFTER the fixpoint instead,
+///     by [`find_clashes`], and written in the separate `oo-refute/1` format
+///     that `lean/OOCert/Refute.lean` checks. Only `cax-dw` earns a
+///     certificate there, because it is the only clash rule the Lean checker
+///     has a semantic condition for; the rest are reported as found and
+///     uncertified, and the two must never share a word.
 ///
 /// The graph materialised inferences are written to when the caller asks for
 /// them to be kept apart from what was asserted.
@@ -237,6 +617,28 @@ impl Reasoner {
         let rdf_first = interner.intern(RDF_FIRST);
         let rdf_rest = interner.intern(RDF_REST);
         let rdf_nil = interner.intern(RDF_NIL);
+
+        // The clash detector's vocabulary. Nothing below drives a rule in the
+        // fixpoint: it is read once, after it, by `find_clashes`. Interning a
+        // term the graph never mentions costs one entry and makes every lookup
+        // a u32 comparison, the same as every other well-known id here.
+        let clash_vocab = ClashVocab {
+            rdf_type,
+            disjoint_with: interner.intern(OWL_DISJOINT_WITH),
+            nothing: interner.intern(OWL_NOTHING),
+            complement_of: interner.intern(OWL_COMPLEMENT_OF),
+            irreflexive: interner.intern(OWL_IRREFLEXIVE),
+            asymmetric: interner.intern(OWL_ASYMMETRIC),
+            prop_disjoint_with: interner.intern(OWL_PROP_DISJOINT_WITH),
+            same_as: owl_sameas,
+            different_from: interner.intern(OWL_DIFFERENT_FROM),
+            max_cardinality: interner.intern(OWL_MAX_CARDINALITY),
+            on_property: owl_on_property,
+            source_individual: interner.intern(OWL_SOURCE_INDIVIDUAL),
+            assertion_property: interner.intern(OWL_ASSERTION_PROPERTY),
+            target_individual: interner.intern(OWL_TARGET_INDIVIDUAL),
+            target_value: interner.intern(OWL_TARGET_VALUE),
+        };
 
         // ── Fixpoint iteration ──────────────────────────────────────
         let mut triple_set: HashSet<Fact> = facts.iter().copied().collect();
@@ -1044,6 +1446,15 @@ impl Reasoner {
             }
             std::fs::write(dir.join("derivations.tsv"), lines)?;
 
+            // A refutation left behind by an earlier run into this directory
+            // would be checked against THIS run's asserted.tsv, which is a
+            // different graph. It would almost certainly be rejected, and
+            // "almost certainly" is not the standard here: the stale file goes
+            // before the clash detector below decides whether to write a new
+            // one. Ignoring the error is correct; the usual case is that there
+            // is no such file.
+            let _ = std::fs::remove_file(dir.join("refutation.tsv"));
+
             result["certificate"] = serde_json::json!({
                 "dir": dir.display().to_string(),
                 "format": "oo-cert/1",
@@ -1052,6 +1463,196 @@ impl Reasoner {
                 "by_rule": by_rule,
                 "check_with": "cd lean && lake exe oo-cert <dir>/asserted.tsv <dir>/derivations.tsv",
             });
+        }
+
+        // ── Inconsistency ───────────────────────────────────────────────────
+        //
+        // The clash rules, looked for over the closure the fixpoint reached.
+        // The key appears only when something was found, so a run over a graph
+        // with no clash is byte for byte the run it always was.
+        let clashes = find_clashes(&triple_set, &interner, &clash_vocab);
+        if !clashes.is_empty() {
+            let show = |t: &Fact| {
+                serde_json::json!([
+                    interner.resolve(t.0),
+                    interner.resolve(t.1),
+                    interner.resolve(t.2)
+                ])
+            };
+            let mut by_rule: std::collections::BTreeMap<&str, usize> =
+                std::collections::BTreeMap::new();
+            for c in &clashes {
+                *by_rule.entry(c.rule).or_default() += 1;
+            }
+            let listed: Vec<serde_json::Value> = clashes
+                .iter()
+                .take(10)
+                .map(|c| {
+                    serde_json::json!({
+                        "rule": c.rule,
+                        "certifiable": clash_is_certifiable(c.rule),
+                        "premises": c.premises.iter().map(show).collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
+            let uncertifiable: Vec<&str> = by_rule
+                .keys()
+                .copied()
+                .filter(|r| !clash_is_certifiable(r))
+                .collect();
+            let mut inconsistency = serde_json::json!({
+                "found": true,
+                // THIS ENGINE'S WORD, and deliberately not the checker's.
+                // `oo-refute` says `unsatisfiable_under_disjointness` when it
+                // has accepted a refutation. Nothing here may say that, or an
+                // engine opinion and a machine-checked result share a string
+                // and a consumer cannot tell them apart.
+                "verdict": "clash_found_by_this_engine",
+                "checked_by_lean": false,
+                "clash_count": clashes.len(),
+                "by_rule": by_rule,
+                "clashes_listed": listed.len(),
+                "clashes": listed,
+                "certifiable_rules": CLASH_RULES_CERTIFIABLE,
+                "uncertifiable_rules_found": uncertifiable,
+                "rules_not_detected": CLASH_RULES_NOT_DETECTED
+                    .iter()
+                    .map(|(r, why)| serde_json::json!({"rule": r, "why": why}))
+                    .collect::<Vec<_>>(),
+                "means": "this engine found a contradiction in the closure it computed, and \
+                          NOTHING HAS CHECKED THAT. A refutation the Lean checker accepted is a \
+                          different kind of result with a different word for it: run `oo-refute \
+                          check` and read its verdict, which is `unsatisfiable_under_disjointness` \
+                          and is never stated here.",
+                "limits": "cax-dw needs an INDIVIDUAL in two disjoint classes, so a TBox that is \
+                           unsatisfiable with no individual asserted is invisible to this route \
+                           entirely: it is a boundary of rule-based reasoning, not a bug. The SHIQ \
+                           tableau in src/tableaux.rs (--profile owl-dl) does see that case, and \
+                           its unsatisfiability finding carries NO certificate, which the owl-dl \
+                           report states as `unsatisfiability and inconsistency carry no \
+                           certificate`. Nothing found by the rules listed under \
+                           rules_not_detected was looked for at all, so a clean run is not a \
+                           consistency result.",
+            });
+
+            if let Some(dir) = certificate_dir {
+                // A refutation file is written for the one rule the checker can
+                // judge, and for nothing else. The engine's own detection of
+                // any other clash rule stays a report, because a file naming a
+                // rule `OOCert.RefuteConditions` has no field for is refused by
+                // `oo-refute` with exit 2 and would be a certificate-shaped
+                // object that certifies nothing.
+                let certifiable = clashes.iter().find(|c| clash_is_certifiable(c.rule));
+                match certifiable {
+                    Some(c) => match refutation_prefix(&c.premises, &derivations, &original) {
+                        Some(ids) => {
+                            let mut text = String::from("oo-refute/1\n");
+                            for &i in &ids {
+                                let d = &derivations[i];
+                                text.push_str(d.rule);
+                                for &(s, p, o) in
+                                    std::iter::once(&d.conclusion).chain(d.premises.iter())
+                                {
+                                    text.push('\t');
+                                    text.push_str(interner.resolve(s));
+                                    text.push('\t');
+                                    text.push_str(interner.resolve(p));
+                                    text.push('\t');
+                                    text.push_str(interner.resolve(o));
+                                }
+                                text.push('\n');
+                            }
+                            text.push_str("refute\t");
+                            text.push_str(c.rule);
+                            for &(s, p, o) in &c.premises {
+                                text.push('\t');
+                                text.push_str(interner.resolve(s));
+                                text.push('\t');
+                                text.push_str(interner.resolve(p));
+                                text.push('\t');
+                                text.push_str(interner.resolve(o));
+                            }
+                            text.push('\n');
+                            std::fs::write(dir.join("refutation.tsv"), text)?;
+                            inconsistency["refutation"] = serde_json::json!({
+                                "written": true,
+                                "file": dir.join("refutation.tsv").display().to_string(),
+                                "format": "oo-refute/1",
+                                "rule": c.rule,
+                                "prefix": ids.len(),
+                                "premises": c.premises.iter().map(show).collect::<Vec<_>>(),
+                                // Written, not checked. The word for a checked
+                                // one is `oo-refute`'s to say.
+                                "verdict": "refutation_written_not_yet_checked",
+                                "check_with": format!(
+                                    "cd lean && lake exe oo-refute check {a} {r}",
+                                    a = dir.join("asserted.tsv").display(),
+                                    r = dir.join("refutation.tsv").display()
+                                ),
+                                "guard_with": format!(
+                                    "cd lean && lake exe oo-refute guard {a} {d} {r}",
+                                    a = dir.join("asserted.tsv").display(),
+                                    d = dir.join("derivations.tsv").display(),
+                                    r = dir.join("refutation.tsv").display()
+                                ),
+                                "means": "a file in the format OOCert.RefuteParse.parseRefutation \
+                                          reads. Exit 0 from `oo-refute check` is the result that \
+                                          means anything; this engine writing the file means only \
+                                          that it wrote it.",
+                            });
+                        }
+                        None => {
+                            inconsistency["refutation"] = serde_json::json!({
+                                "written": false,
+                                "why": "a premise of the clash is neither asserted nor recorded in \
+                                        the derivation log, so no checkable prefix could be built. \
+                                        That is a defect in this producer, not a property of the \
+                                        ontology; please report it.",
+                            });
+                        }
+                    },
+                    None => {
+                        inconsistency["refutation"] = serde_json::json!({
+                            "written": false,
+                            "why": "every clash found is of a rule the Lean checker has no \
+                                    semantic condition for. `OOCert.RefuteConditions` carries one \
+                                    field, for cax-dw, and `oo-refute` refuses a refutation naming \
+                                    any other rule with exit 2 rather than judging it. Writing one \
+                                    anyway would produce a certificate-shaped file that certifies \
+                                    nothing.",
+                        });
+                    }
+                }
+            } else {
+                inconsistency["refutation"] = serde_json::json!({
+                    "written": false,
+                    "why": "no certificate directory was given. Pass --certificate DIR (or \
+                            certificate_dir over MCP) and a refutation is written there for the \
+                            one clash rule the Lean checker can judge.",
+                });
+            }
+
+            // A derivation certificate over a graph with a clash in it is worth
+            // nothing under the disjointness reading, and the certificate block
+            // must not be read without that.
+            // `OOCert.a_certificate_adds_nothing_when_the_graph_is_refuted`.
+            if let Some(cert) = result.get_mut("certificate")
+                && let Some(obj) = cert.as_object_mut()
+            {
+                obj.insert("graph_has_a_clash".into(), serde_json::json!(true));
+                obj.insert(
+                    "read_with".into(),
+                    serde_json::json!(
+                        "this graph contradicts itself, so under the disjointness reading EVERY \
+                         triple is entailed and this certificate carries no information. \
+                         `oo-cert` will still accept it and will still be telling the truth, \
+                         because its verdict quantifies over a model class that ignores \
+                         disjointness. Run `oo-refute guard` instead of `oo-cert`."
+                    ),
+                );
+            }
+
+            result["inconsistency"] = inconsistency;
         }
 
         Ok(result.to_string())

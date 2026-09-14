@@ -330,6 +330,15 @@ jobs:
         run: OO_REQUIRE_FIXTURES=1 cargo test --test dl_model_certificate_test -- --nocapture
       - name: Check the refutation certificates
         run: OO_REQUIRE_FIXTURES=1 cargo test --test lean_refutation_test -- --nocapture
+      - name: Check the refutations THIS ENGINE writes, and that it cannot refute a consistent ontology
+        # The line above checks hand-written fixtures, which settles whether the
+        # checker works and says nothing about whether anything can feed it.
+        # This one runs the engine, takes its `refutation.tsv`, and hands that
+        # to the same binary. The two legs that matter most are the consistent
+        # ontology, where no refutation may be produced and none may be
+        # accepted, and the laundering guard, which fails if this engine ever
+        # states the verdict only an accepted refutation earns.
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test lean_refutation_producer_test -- --nocapture
       - name: Check the mixed certificate layer
         run: OO_REQUIRE_FIXTURES=1 cargo test --test lean_mixed_certificate_test -- --nocapture
       - name: Check the generic Horn-rule layer, and that a user rule cannot earn the absolute verdict
