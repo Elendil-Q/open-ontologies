@@ -24,6 +24,21 @@ classifiers = [
 # fastapi. Measured against semantica 0.6.6, whose pyproject declares
 # `fastapi>=0.109.2`: installing 0.4.0 uninstalled it, and every import of
 # `semantica/explorer` failed afterwards.
+#
+# The Horn reasoner and the certificate bridge in `open_ontologies_lite/horn/`
+# add ZERO runtime dependencies and no extra. The forward chainer is pure Python
+# over the pyoxigraph above; the rest is `subprocess`, `json`, `hashlib` and
+# `importlib.resources`. There is no pyo3, no maturin and no binding to the Rust
+# crate, because the stated value of this package is that it installs without
+# compiling anything, and a Rust toolchain requirement would cost exactly the
+# audience the Rust engine already cannot reach.
+#
+# The Lean checker `oo-horn` is an external BINARY, built from `lean/` by
+# `lake build`. It is deliberately not packaged and is not a dependency of any
+# kind, not even an optional extra: a wheel cannot ship a Lean toolchain, and
+# pretending otherwise in the metadata would make `pip install` fail for
+# everyone who only wants the reasoner. The package is fully functional without
+# it and says loudly, in every report, when a certificate went unchecked.
 dependencies = [
     "pyoxigraph>=0.5,<0.6",
 ]
