@@ -296,6 +296,22 @@ fn an_unreadable_file_is_exit_two_not_a_rejection() {
 ///
 /// This is the end-to-end run decision 0006 recorded as missing. Everything
 /// before it had been measured against files written by hand.
+/// Did the solver say `sat`, on ANY line?
+///
+/// Not `text.starts_with("sat")`, which is what this file used to ask and what
+/// broke it on CI. Z3 on Ubuntu is several minor versions behind the one this
+/// was written against, and it answers `unsupported` to one of the preamble
+/// commands before going on to solve the problem correctly and print the model.
+/// So the output begins `unsupported\nsat\n(…)` there and `sat\n(…)` here.
+///
+/// The engine was already right: `fol_solve::read_sat` scans LINES for a bare
+/// status, precisely so a leading `unsupported` or `(error …)` cannot be
+/// mistaken for a verdict. The test was stricter than the code it tests, which
+/// is its own kind of defect: it failed on a platform where the product works.
+fn said_sat(text: &str) -> bool {
+    text.lines().any(|l| l.trim() == "sat")
+}
+
 #[test]
 fn the_engines_own_export_is_solved_and_checked() {
     if skip() {
@@ -325,7 +341,7 @@ fn the_engines_own_export_is_solved_and_checked() {
 
     let out = Command::new("z3").arg(&smt_path).output().expect("run z3");
     let text = String::from_utf8_lossy(&out.stdout).to_string();
-    assert!(text.starts_with("sat"), "z3 must find a countermodel: {text}");
+    assert!(said_sat(&text), "z3 must find a countermodel: {text}");
 
     let model = z3::parse_model(&text, &p.vocabulary(), 2).expect("a readable model");
     let model_path = d.join("model.tsv");
@@ -388,7 +404,7 @@ fn one_edit_to_the_engines_model_is_caught() {
         &Command::new("z3").arg(d.join("p.smt2")).output().expect("z3").stdout,
     )
     .to_string();
-    assert!(text.starts_with("sat"), "{text}");
+    assert!(said_sat(&text), "{text}");
     let model = z3::parse_model(&text, &p.vocabulary(), 2).expect("readable");
     let good = model.to_model_tsv(&digest, &[2]);
     std::fs::write(d.join("model.tsv"), &good).expect("write");
