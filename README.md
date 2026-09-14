@@ -1041,6 +1041,12 @@ graph **that also satisfies your rules** — and never the `entailed` that only
 the built-in table earns. Details in
 [docs/rule-syntax-front-ends.md](docs/rule-syntax-front-ends.md) and
 [decision 0003](docs/decisions/0003-a-rule-is-data-and-an-assumption-is-not-a-fact.md).
+The theorem is conditional, and what it is conditional on is the Rust writing
+down the truth: the asserted graph the certificate names, and the steps it
+records. That boundary is small, it is the whole trusted base of this layer, and
+it is enumerated as twenty-nine checkable properties in
+[docs/trusted-computing-base.md](docs/trusted-computing-base.md), with what
+checks each and what is still trusted. Read it before relying on a certificate.
 
 ### Studio
 
@@ -1128,6 +1134,7 @@ flowchart TD
 | SHIQ Reasoning | [docs/reasoning.md](docs/reasoning.md) |
 | Derivation certificates, Lean checker | [docs/lean-certificates.md](docs/lean-certificates.md) |
 | SWRL and RIF Core rule front ends | [docs/rule-syntax-front-ends.md](docs/rule-syntax-front-ends.md) |
+| What the Lean proofs assume about the Rust | [docs/trusted-computing-base.md](docs/trusted-computing-base.md) |
 | Semantic Embeddings | [docs/embeddings.md](docs/embeddings.md) |
 | Clinical Crosswalks | [docs/clinical.md](docs/clinical.md) |
 | IES Ecosystem | [docs/ies-ecosystem.md](docs/ies-ecosystem.md) |

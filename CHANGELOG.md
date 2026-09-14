@@ -46,6 +46,30 @@ All notable changes to Open Ontologies are documented here.
   `cax-dw`, over triples the forward-chaining prefix can reach, and a clash
   reached through `∃`/`∀` expansion or a cardinality bound has no form in it.
   Widening that is a change to `lean/`.
+- **The trusted computing base of the certificate layer is written down and
+  property-tested.** `docs/trusted-computing-base.md` enumerates, as twenty-nine
+  checkable properties, everything `lean/` assumes about the Rust: that
+  `asserted.tsv` is the graph the engine reasoned over with nothing dropped and
+  nothing added, that every emitted step is a step the engine took, that the
+  interner round-trips, that the rule table the certificate is checked against
+  is the table that was evaluated, and that no term can carry the field or
+  record separator of a format that has no escaping layer of its own.
+  `tests/certificate_boundary_proptest.rs` property-tests them with generators
+  built to forge a derivation step: literals holding tabs, newlines, carriage
+  returns, quotes and backslashes, a literal spelled exactly like an IRI, a
+  literal spelled exactly like a whole extra TSV line, combining characters
+  against their precomposed form, percent-encoded separators inside IRIs, the
+  empty graph. `proptest` is a DEV-dependency; the shipped binary's dependency
+  surface is unchanged. Three Kani harnesses in `src/reason.rs` (`make verify`)
+  prove the serialisation properties over every byte pattern at a fixed term
+  length rather than over a sample; the bound is stated on each harness, along
+  with the two formulations that made CBMC measure the wrong function. A fourth,
+  over `parse_pat`, does NOT terminate (no verdict at 14 minutes and 9.5GB,
+  because `anyhow`'s error formatting is flattened whether or not the refusal
+  paths are reachable); it is excluded from `make verify`, carries its
+  measurements, and the property is sampled instead. The first property-test run
+  found the `rdfs7` defect below, and measuring its reach found the `cls-avf`
+  one.
 - **First-order export, over the translation a machine-checked adequacy theorem
   is about.** `fol --out DIR --format tptp|clif` (also `onto_fol_export` and
   batch `fol`) writes the loaded ontology as TPTP FOF or as ISO/IEC 24707
@@ -182,6 +206,40 @@ All notable changes to Open Ontologies are documented here.
   the check could not see into, and an ABox whose only contradiction landed
   there was reported consistent. Same shape as the domain/range split, found in
   the sweep for it.
+- **A rule concluding a triple with a non-IRI PREDICATE left the store half
+  materialised, with no certificate, and reported failure.** `rdfs7` reads
+  `s sub o` and `sub rdfs:subPropertyOf super` and concludes `s super o`, and
+  nothing required `super` to be an IRI. `:p rdfs:subPropertyOf [ owl:inverseOf
+  :q ]` is enough, and that is exactly what the OWL 2 mapping to RDF produces
+  for `SubObjectPropertyOf(:p ObjectInverseOf(:q))`, so an ordinary OWL
+  ontology made `reason` fail with `Parser error: The predicate of a triple must
+  be an IRI`. The failure was not clean: `GraphStore::load_ntriples` streams,
+  inserting each quad as it parses it, so the batch failed PARTWAY. Measured on
+  one fixture over three consecutive runs of identical input, 40, 9 and 24 of
+  40 good inferences stayed in the store, the number being hash iteration order,
+  and `run_full` then returned the error and never wrote the certificate. The
+  store was left holding uncertified inferences while the caller was told the
+  run had failed. In `--dry-run` the materialiser never ran, so the certificate
+  WAS written, containing a conclusion no RDF serialiser can express; the Lean
+  checker holds terms as opaque strings and accepts it. Reachable from `rdfs7`,
+  `prp-inv1`, `prp-inv2` and `cls-hv1`, each of which takes its conclusion's
+  predicate from an object position where RDF permits a blank node or a literal.
+  Found by the new property tests at case 115, shrunk to two triples.
+- **`cls-avf` could still conclude a triple with a LITERAL subject.** The same
+  defect one position over, found while measuring the reach of the one above.
+  `cls-avf` derives `y rdf:type c` from `x rdf:type ∀P.c` and `x P y`, so an
+  `owl:allValuesFrom` restriction on a property with a literal value derived
+  `"x" rdf:type :D` and broke the materialiser the same way. The subject case
+  was found on 30 August 2026 and guarded at `prp-symp`, `prp-inv1`, `prp-inv2`
+  and `eq-sym`; `cls-avf` was not among them, and this one needs no unusual
+  modelling at all. Both positions are now decided in ONE place,
+  `writable_triple`, shared with `run_horn`, which was the only path that
+  already refused either: a refused conclusion is not materialised, not
+  certified and not available as a premise, and the run reports
+  `skipped_unserialisable` with examples. `tests/reason_unwritable_predicate_test.rs`
+  pins every reachable rule, and pins that `prp-symp` and `prp-trp` are NOT
+  reachable, because their property must already be the predicate of a stored
+  triple and is therefore an IRI.
 - **The CLIF export produced files that parse cleanly and yield NOTHING.**
   Every sentence was emitted as `(cl:comment '...' SENTENCE)`, the shape
   ISO/IEC 21838-2's BFO files use. Measured against both CLIF parsers that

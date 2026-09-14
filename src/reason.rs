@@ -60,11 +60,12 @@ struct Derivation {
 // triple: `eq-diff1`, `eq-diff2`, `eq-diff3`, `prp-irp`, `prp-asyp`,
 // `prp-pdw`, `prp-adp`, `prp-npa1`, `prp-npa2`, `cls-nothing2`, `cls-com`,
 // `cls-maxc1`, `cls-maxqc1`, `cls-maxqc2`, `cax-dw`, `cax-adc` and
-// `dt-not-type`. (`lean/OOCert/Refute.lean` says sixteen. Counted against the
-// W3C tables the number is seventeen; the difference is `dt-not-type`, which
-// that file excludes elsewhere on the stated ground that the Lean semantics
-// has no datatype value space. The count is not load-bearing for anything
-// either side computes.)
+// `dt-not-type`. (Seventeen is the count extracted mechanically from the W3C
+// tables, and `lean/OOCert/Refute.lean` now agrees; it said sixteen until the
+// list was checked against the source. `dt-not-type` is the one that is not
+// merely absent from the Lean but INEXPRESSIBLE there, because that semantics
+// has no datatype value space and a literal is its spelling like any other
+// term.)
 //
 // None of them is in the fixpoint's rule table, and none of them could be:
 // `Derivation.conclusion` is a triple. They are looked for HERE, once, over
@@ -412,6 +413,68 @@ fn refutation_prefix(
     Some(ids)
 }
 
+/// Can this triple be written by an RDF serialiser?
+///
+/// A literal cannot be a subject and only an IRI can be a predicate, in every
+/// RDF 1.1 serialisation. A rule that concludes otherwise has produced
+/// something the store cannot hold, and the materialiser does not find out
+/// until it is halfway through inserting the batch.
+///
+/// Both positions, and ONE definition, because the previous attempt was four
+/// targeted guards and it missed two things.
+///
+/// The subject case was found on 30 August 2026 and guarded at `prp-symp`,
+/// `prp-inv1`, `prp-inv2` and `eq-sym`. It was still open at `cls-avf`, which
+/// concludes `y rdf:type c` from `x type ∀P.c` and `x P y`, so an
+/// `owl:allValuesFrom` restriction on a property with a literal value derived
+/// `"x" rdf:type :D`. That needs no unusual modelling at all.
+///
+/// The predicate case was never guarded anywhere outside `run_horn`. It is
+/// reachable from `rdfs7`, `prp-inv1`, `prp-inv2` and `cls-hv1`, each of which
+/// takes its conclusion's predicate from an object position where RDF permits a
+/// blank node or a literal. `:p rdfs:subPropertyOf [ owl:inverseOf :q ]` is
+/// enough, and that is what the OWL 2 mapping to RDF produces for
+/// `SubObjectPropertyOf(:p ObjectInverseOf(:q))`. Found by
+/// `tests/certificate_boundary_proptest.rs` on 14 September 2026 and pinned by
+/// `tests/reason_unwritable_predicate_test.rs`, which also pins that `prp-symp`
+/// and `prp-trp` CANNOT reach it, because their property must already be the
+/// predicate of a stored triple and is therefore an IRI.
+///
+/// Terms arrive in their N-Triples spelling, so a literal begins with `"` and
+/// an IRI with `<`.
+fn writable_triple(subject: &str, predicate: &str) -> bool {
+    !subject.starts_with('"') && predicate.starts_with('<')
+}
+
+/// Append one line of `asserted.tsv`: `s TAB p TAB o NEWLINE`.
+///
+/// This is the whole of that file's grammar, and it is the narrowest point of
+/// the trusted computing base: `OOCert.certificate_sound` is conditional on the
+/// asserted graph, `OOCert.Parse.parseTriples` recovers it by splitting on
+/// those two characters, and nothing between the two escapes anything. It lives
+/// in one function so that the claim "a line is exactly three fields" is a
+/// claim about one place, verified in `kani_harnesses` below rather than only
+/// sampled.
+fn push_asserted_line(out: &mut String, s: &str, p: &str, o: &str) {
+    out.push_str(s);
+    out.push('\t');
+    out.push_str(p);
+    out.push('\t');
+    out.push_str(o);
+    out.push('\n');
+}
+
+/// Append a triple as three further fields of a line already begun, the shape
+/// `derivations.tsv` and `horn.tsv` use after their header fields.
+fn push_triple_fields(out: &mut String, s: &str, p: &str, o: &str) {
+    out.push('\t');
+    out.push_str(s);
+    out.push('\t');
+    out.push_str(p);
+    out.push('\t');
+    out.push_str(o);
+}
+
 /// Intern strings to u32 IDs for efficient reasoning.
 struct Interner {
     to_id: HashMap<String, u32>,
@@ -654,6 +717,13 @@ impl Reasoner {
         let mut derivations: Vec<Derivation> = Vec::new();
         let mut recorded: HashSet<Fact> = HashSet::new();
 
+        // Conclusions refused for being unwritable, and up to three of them to
+        // show. A set rather than a counter, for the reason `run_horn` gives:
+        // a refused conclusion never enters `triple_set`, so every later round
+        // derives it again and a counter would report attempts.
+        let mut refused: HashSet<Fact> = HashSet::new();
+        let mut skipped_samples: Vec<String> = Vec::new();
+
         loop {
             iterations += 1;
             let before = triple_set.len();
@@ -802,7 +872,30 @@ impl Reasoner {
             // certificate was asked for, records the first derivation of each
             // triple not already in the closure, with the premises in the
             // order the checker expects for that rule.
+            //
+            // It is also the one place that refuses a conclusion no RDF
+            // serialiser can write. Four rules below guard the subject position
+            // themselves and are left alone; this guard is central because the
+            // per-rule approach is what left the PREDICATE position open, and a
+            // rule added later gets the guard without its author remembering.
+            // Deriving less is the sound direction, and the count is reported
+            // rather than swallowed.
+            let interner_ref = &interner;
+            let refused_ref = &mut refused;
+            let samples_ref = &mut skipped_samples;
             let mut emit = |t: Fact, rule: &'static str, premises: &[Fact]| {
+                let (s, p, _) = t;
+                if !writable_triple(interner_ref.resolve(s), interner_ref.resolve(p)) {
+                    if refused_ref.insert(t) && samples_ref.len() < 3 {
+                        samples_ref.push(format!(
+                            "{} {} {} (by {rule})",
+                            interner_ref.resolve(t.0),
+                            interner_ref.resolve(t.1),
+                            interner_ref.resolve(t.2)
+                        ));
+                    }
+                    return;
+                }
                 if certify && !triple_set.contains(&t) && recorded.insert(t) {
                     derivations.push(Derivation { rule, conclusion: t, premises: premises.to_vec() });
                 }
@@ -1415,17 +1508,32 @@ impl Reasoner {
             // they were put.
             result["inference_graph"] = serde_json::json!(INFERRED_GRAPH);
         }
+        if !refused.is_empty() {
+            // Said out loud, because this run derived LESS than its rule set
+            // licenses and a reader comparing two runs' counts is entitled to
+            // know why.
+            result["skipped_unserialisable"] = serde_json::json!(refused.len());
+            result["skipped_examples"] = serde_json::json!(skipped_samples);
+            result["skipped_reason"] = serde_json::json!(
+                "the rule concluded a triple no RDF serialiser can write (a literal in subject \
+                 position, or a non-IRI in predicate position). Such conclusions are neither \
+                 materialised nor certified nor used as premises. Before this was guarded the \
+                 materialiser failed partway through inserting the batch, which left the store \
+                 holding an arbitrary, run-dependent prefix of the inferences with no certificate \
+                 covering any of them"
+            );
+        }
 
         if let Some(dir) = certificate_dir {
             std::fs::create_dir_all(dir)?;
             let mut asserted = String::with_capacity(facts.len() * 96);
             for &(s, p, o) in &facts {
-                asserted.push_str(interner.resolve(s));
-                asserted.push('\t');
-                asserted.push_str(interner.resolve(p));
-                asserted.push('\t');
-                asserted.push_str(interner.resolve(o));
-                asserted.push('\n');
+                push_asserted_line(
+                    &mut asserted,
+                    interner.resolve(s),
+                    interner.resolve(p),
+                    interner.resolve(o),
+                );
             }
             std::fs::write(dir.join("asserted.tsv"), asserted)?;
 
@@ -1435,12 +1543,12 @@ impl Reasoner {
                 *by_rule.entry(d.rule).or_default() += 1;
                 lines.push_str(d.rule);
                 for &(s, p, o) in std::iter::once(&d.conclusion).chain(d.premises.iter()) {
-                    lines.push('\t');
-                    lines.push_str(interner.resolve(s));
-                    lines.push('\t');
-                    lines.push_str(interner.resolve(p));
-                    lines.push('\t');
-                    lines.push_str(interner.resolve(o));
+                    push_triple_fields(
+                        &mut lines,
+                        interner.resolve(s),
+                        interner.resolve(p),
+                        interner.resolve(o),
+                    );
                 }
                 lines.push('\n');
             }
@@ -2084,14 +2192,17 @@ impl Reasoner {
 
         // A rule whose head puts a literal in subject position, or anything but
         // an IRI in predicate position, produces something no RDF serialiser
-        // can write. The built-in loop guards the first case for four of its
-        // rules; here both are refused, the count is reported, and the
+        // can write. Both are refused, the count is reported, and the
         // conclusion is not used as a premise for anything else. Deriving less
         // is the sound direction, but it means the emitted set is the fixpoint
         // of the table over WRITABLE triples, which is what
         // `skipped_unserialisable` in the response is there to say.
+        //
+        // `run_full` now shares the predicate (`writable_triple`). It used to
+        // have its own guard on the subject position only, at four rule sites,
+        // and this path was the only one that refused a non-IRI predicate.
         let serialisable = |interner: &Interner, (s, p, _o): Fact| -> bool {
-            !interner.resolve(s).starts_with('"') && interner.resolve(p).starts_with('<')
+            writable_triple(interner.resolve(s), interner.resolve(p))
         };
 
         let mut known: HashSet<Fact> = facts.iter().copied().collect();
@@ -2197,12 +2308,12 @@ impl Reasoner {
 
         let mut asserted = String::with_capacity(facts.len() * 96);
         for &(s, p, o) in &facts {
-            asserted.push_str(interner.resolve(s));
-            asserted.push('\t');
-            asserted.push_str(interner.resolve(p));
-            asserted.push('\t');
-            asserted.push_str(interner.resolve(o));
-            asserted.push('\n');
+            push_asserted_line(
+                &mut asserted,
+                interner.resolve(s),
+                interner.resolve(p),
+                interner.resolve(o),
+            );
         }
         std::fs::write(certificate_dir.join("asserted.tsv"), asserted)?;
 
@@ -2220,12 +2331,12 @@ impl Reasoner {
                 horn.push_str(interner.resolve(*term));
             }
             for &(s, p, o) in std::iter::once(&st.conclusion).chain(st.premises.iter()) {
-                horn.push('\t');
-                horn.push_str(interner.resolve(s));
-                horn.push('\t');
-                horn.push_str(interner.resolve(p));
-                horn.push('\t');
-                horn.push_str(interner.resolve(o));
+                push_triple_fields(
+                    &mut horn,
+                    interner.resolve(s),
+                    interner.resolve(p),
+                    interner.resolve(o),
+                );
             }
             horn.push('\n');
         }
@@ -2316,5 +2427,369 @@ impl Reasoner {
             );
         }
         Ok(result.to_string())
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The trusted boundary, verified
+//
+// `docs/trusted-computing-base.md` enumerates what `lean/` assumes about this
+// file. `tests/certificate_boundary_proptest.rs` property-tests the parts that
+// need a store. What is left is a handful of pure functions, and those are
+// small enough to do better than sample: the Kani harnesses below prove the
+// same statements over EVERY input up to a length bound, rather than over the
+// inputs a generator happened to draw.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod boundary_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Terms that carry no separator, so the writer's precondition holds and
+    /// the round trip is the thing under test.
+    fn term() -> impl Strategy<Value = String> {
+        prop_oneof![
+            Just(String::new()),
+            Just("<http://e/a>".to_string()),
+            Just("\"lit\"".to_string()),
+            Just("\"a\\tb\"".to_string()),
+            Just("_:b0".to_string()),
+            Just("e\u{0301}".to_string()),
+            Just("\u{0000}".to_string()),
+            "[^\t\n\r]{0,6}",
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 1024, ..ProptestConfig::default() })]
+
+        /// TCB-15 and TCB-16. The interner is a bijection between the strings it
+        /// has seen and the ids it has issued. Every term in every certificate
+        /// file passes through it, so if it were not, two different terms would
+        /// print the same and a step would be checked against a triple the
+        /// engine never used.
+        #[test]
+        fn tcb_15_16_the_interner_is_a_bijection(ss in prop::collection::vec(term(), 0..16)) {
+            let mut i = Interner::new();
+            let ids: Vec<u32> = ss.iter().map(|s| i.intern(s)).collect();
+            for (s, &id) in ss.iter().zip(&ids) {
+                prop_assert_eq!(i.resolve(id), s.as_str());
+            }
+            for a in 0..ss.len() {
+                for b in 0..ss.len() {
+                    prop_assert_eq!(ids[a] == ids[b], ss[a] == ss[b]);
+                }
+            }
+        }
+
+        /// TCB-17. An id keeps its meaning as more strings arrive. The
+        /// certificate writers resolve ids long after the reasoning that
+        /// created them.
+        #[test]
+        fn tcb_17_interning_more_does_not_move_an_id(
+            early in prop::collection::vec(term(), 1..8),
+            late in prop::collection::vec(term(), 0..8),
+        ) {
+            let mut i = Interner::new();
+            let ids: Vec<u32> = early.iter().map(|s| i.intern(s)).collect();
+            for s in &late {
+                i.intern(s);
+            }
+            for (s, &id) in early.iter().zip(&ids) {
+                prop_assert_eq!(i.resolve(id), s.as_str());
+            }
+        }
+
+        /// TCB-1, as a statement about the writer alone. Given three terms that
+        /// carry no separator, the line splits back into exactly those three.
+        /// The Kani harness below proves the same thing over every input up to
+        /// a bound; this one runs in CI without a model checker installed.
+        #[test]
+        fn tcb_1_an_asserted_line_splits_back_into_its_three_terms(
+            s in term(), p in term(), o in term(),
+        ) {
+            let mut out = String::new();
+            push_asserted_line(&mut out, &s, &p, &o);
+            prop_assert!(out.ends_with('\n'));
+            let body = &out[..out.len() - 1];
+            prop_assert!(!body.contains('\n'));
+            let f: Vec<&str> = body.split('\t').collect();
+            prop_assert_eq!(f, vec![s.as_str(), p.as_str(), o.as_str()]);
+        }
+
+        /// TCB-2 and TCB-3, as a statement about the writer alone.
+        #[test]
+        fn tcb_2_3_triple_fields_append_exactly_three_fields(
+            head in "[a-z0-9-]{1,8}",
+            ts in prop::collection::vec((term(), term(), term()), 1..4),
+        ) {
+            let mut out = String::new();
+            out.push_str(&head);
+            for (s, p, o) in &ts {
+                push_triple_fields(&mut out, s, p, o);
+            }
+            let f: Vec<&str> = out.split('\t').collect();
+            prop_assert_eq!(f.len(), 1 + 3 * ts.len());
+            prop_assert_eq!(f[0], head.as_str());
+            for (i, (s, p, o)) in ts.iter().enumerate() {
+                prop_assert_eq!(f[1 + 3 * i], s.as_str());
+                prop_assert_eq!(f[2 + 3 * i], p.as_str());
+                prop_assert_eq!(f[3 + 3 * i], o.as_str());
+            }
+        }
+
+        /// TCB-20 at one rule position. `parse_pat` and `Pat::render` are
+        /// inverse, so a constant never renders to something that reads back as
+        /// a variable. `run_horn`'s re-parse guard rests on this.
+        #[test]
+        fn tcb_20_parse_pat_and_render_are_inverse(field in "[^\t\n\r]{0,8}") {
+            if let Ok(p) = parse_pat(&field, 1, "position") {
+                prop_assert_eq!(p.render(), field);
+            }
+        }
+    }
+}
+
+/// Bounded model checking of the pure functions on the trusted boundary.
+///
+/// Run with `cargo kani --harness <name>`. Not part of `cargo test`: Kani
+/// compiles the crate with its own toolchain, and a `#[cfg(kani)]` block is
+/// invisible to a normal build. What each harness proves and what it does NOT
+/// prove is written on it, because a bounded proof read as an unbounded one is
+/// the same defect this whole layer exists to attack.
+#[cfg(kani)]
+mod kani_harnesses {
+    use super::*;
+
+    /// An ASCII string of EXACTLY `N` bytes, every byte unconstrained below
+    /// 0x80. `kani::any` cannot produce a `String`; ASCII because every byte
+    /// below 0x80 is valid UTF-8 on its own.
+    ///
+    /// Two decisions here are what make these harnesses terminate, and both are
+    /// worth recording because the first attempts did not.
+    ///
+    /// `from_utf8_unchecked` rather than `from_utf8`. With the checked version
+    /// CBMC symbolically executes `core::str::validations::run_utf8_validation`
+    /// once per buffer, and that loop, not the function under test, becomes
+    /// what the harness measures: seventeen minutes and three gigabytes with no
+    /// verdict, the log a wall of `Unwinding loop ... run_utf8_validation`. The
+    /// `assume` below already establishes exactly what `from_utf8` would check.
+    ///
+    /// A FIXED length rather than a symbolic one. A symbolic `n` makes every
+    /// offset in the produced line symbolic, every slice bound a case split,
+    /// and the cost compounds across three terms: two bytes per term with a
+    /// symbolic length reached fifteen gigabytes without a verdict. Fixing the
+    /// length leaves every BYTE unconstrained, which is the dimension that
+    /// matters here (a tab or a newline getting into a term), and moves the
+    /// length dimension to `boundary_tests`, which samples it including the
+    /// empty string. That is a real limitation of these proofs and it is stated
+    /// on each of them rather than left for a reader to infer.
+    fn any_ascii<const N: usize>(buf: &mut [u8; N]) -> &str {
+        *buf = kani::any();
+        for b in buf.iter() {
+            kani::assume(*b < 0x80);
+        }
+        // SAFETY: every byte is assumed below 0x80, so the buffer is ASCII and
+        // therefore valid UTF-8. The assumption is the model checker's, so it
+        // holds on every path it explores.
+        unsafe { core::str::from_utf8_unchecked(&buf[..]) }
+    }
+
+    /// TCB-1, over every byte pattern rather than over a sample.
+    ///
+    /// For ANY three separator-free ASCII terms, `push_asserted_line` writes a
+    /// line carrying exactly two tabs and one newline, the newline last, with
+    /// the three terms at the offsets those separators imply. This is the
+    /// property a forged literal breaks, and the reason
+    /// `lean/OOCert/Parse.lean` is entitled to say that splitting is exact.
+    ///
+    /// What it does NOT prove: that no term ever carries a separator. That is a
+    /// fact about `oxrdf` and `oxiri`, not about this function, and it is
+    /// pinned by test rather than proved.
+    ///
+    /// The claim is about the BYTES, not about Rust's `split`. The reader is
+    /// `OOCert.Parse.parseTriples`, which is Lean's `String.splitOn`, so a proof
+    /// about `str::split` would be a proof about the wrong splitter. What both
+    /// need is the layout: the line holds exactly two TAB bytes and exactly one
+    /// NEWLINE, that newline is last, and the three terms sit at the offsets
+    /// their lengths dictate. Any correct splitter recovers `s`, `p` and `o`
+    /// from that and from nothing less.
+    ///
+    /// Stating it that way is also what makes it verifiable. Asserting on
+    /// `body.split('\t')` instead put CBMC inside `CharSearcher` over a symbolic
+    /// buffer and ran ten minutes to two gigabytes without a verdict at two
+    /// bytes per term. The `split` formulation is kept as a property test in
+    /// `boundary_tests`, where it is free.
+    ///
+    /// Three bytes per term, each byte unconstrained ASCII, the LENGTH fixed.
+    /// See `any_ascii` for why the length is fixed and what that costs the
+    /// claim: `boundary_tests` samples the lengths, including the empty string,
+    /// and this proves every byte pattern at one shape. A bounded proof read as
+    /// an unbounded one is the defect this layer exists to attack, so the bound
+    /// is on the harness rather than in a footnote.
+    ///
+    /// `with_capacity` so the buffer never reallocates. CBMC models the
+    /// allocator, and a realloc is state that has nothing to do with the claim.
+    #[kani::proof]
+    #[kani::unwind(16)]
+    fn asserted_line_round_trips() {
+        const N: usize = 3;
+        let (mut a, mut b, mut c) = ([0u8; N], [0u8; N], [0u8; N]);
+        let s = any_ascii(&mut a);
+        let p = any_ascii(&mut b);
+        let o = any_ascii(&mut c);
+        kani::assume(!s.contains('\t') && !s.contains('\n'));
+        kani::assume(!p.contains('\t') && !p.contains('\n'));
+        kani::assume(!o.contains('\t') && !o.contains('\n'));
+
+        let mut out = String::with_capacity(4 * N);
+        push_asserted_line(&mut out, s, p, o);
+        let w = out.as_bytes();
+
+        // Nothing added and nothing lost: three terms, two tabs, one newline.
+        assert!(w.len() == 3 * N + 3);
+
+        // The separators are where the grammar says.
+        assert!(w[N] == b'\t');
+        assert!(w[2 * N + 1] == b'\t');
+        assert!(w[3 * N + 2] == b'\n');
+
+        // And nowhere else, so any correct splitter finds exactly three fields.
+        // The reader is `OOCert.Parse.parseTriples`, which is Lean's
+        // `String.splitOn`, so the claim has to be about the bytes rather than
+        // about Rust's `str::split`.
+        let mut tabs = 0usize;
+        let mut newlines = 0usize;
+        let mut i = 0usize;
+        while i < w.len() {
+            if w[i] == b'\t' {
+                tabs += 1;
+            }
+            if w[i] == b'\n' {
+                newlines += 1;
+            }
+            i += 1;
+        }
+        assert!(tabs == 2);
+        assert!(newlines == 1);
+
+        // The three terms are at the offsets those separators imply, byte for
+        // byte, so no term was altered on the way out.
+        let mut k = 0usize;
+        while k < N {
+            assert!(w[k] == s.as_bytes()[k]);
+            assert!(w[N + 1 + k] == p.as_bytes()[k]);
+            assert!(w[2 * N + 2 + k] == o.as_bytes()[k]);
+            k += 1;
+        }
+    }
+
+    /// TCB-2 and TCB-3. Three fields appended to a line already begun come back
+    /// as three fields, so a step's conclusion and its premises cannot run into
+    /// one another.
+    #[kani::proof]
+    #[kani::unwind(16)]
+    fn triple_fields_append_exactly_three() {
+        const N: usize = 3;
+        let (mut a, mut b, mut c) = ([0u8; N], [0u8; N], [0u8; N]);
+        let s = any_ascii(&mut a);
+        let p = any_ascii(&mut b);
+        let o = any_ascii(&mut c);
+        kani::assume(!s.contains('\t') && !p.contains('\t') && !o.contains('\t'));
+        kani::assume(!s.contains('\n') && !p.contains('\n') && !o.contains('\n'));
+
+        let mut out = String::with_capacity(4 * N + 4);
+        out.push('r');
+        push_triple_fields(&mut out, s, p, o);
+        let w = out.as_bytes();
+
+        assert!(w.len() == 1 + 3 * N + 3);
+        assert!(w[0] == b'r');
+        assert!(w[1] == b'\t');
+        assert!(w[2 + N] == b'\t');
+        assert!(w[3 + 2 * N] == b'\t');
+
+        // Exactly three tabs are added and no newline, so the header field
+        // keeps its position and the triple occupies exactly the next three.
+        let mut tabs = 0usize;
+        let mut i = 0usize;
+        while i < w.len() {
+            if w[i] == b'\t' {
+                tabs += 1;
+            }
+            assert!(w[i] != b'\n');
+            i += 1;
+        }
+        assert!(tabs == 3);
+
+        let mut k = 0usize;
+        while k < N {
+            assert!(w[2 + k] == s.as_bytes()[k]);
+            assert!(w[3 + N + k] == p.as_bytes()[k]);
+            assert!(w[4 + 2 * N + k] == o.as_bytes()[k]);
+            k += 1;
+        }
+    }
+
+    /// The guard that fixed the unwritable-predicate defect. For ANY pair of
+    /// strings it decides both positions and never panics. The statement is
+    /// small because the function is; its value is that the engine now has
+    /// exactly one of these, so this is the only place the question is decided.
+    #[kani::proof]
+    #[kani::unwind(12)]
+    fn writable_triple_decides_both_positions() {
+        let (mut a, mut b) = ([0u8; 4], [0u8; 4]);
+        let s = any_ascii(&mut a);
+        let p = any_ascii(&mut b);
+        let ok = writable_triple(s, p);
+        assert!(ok == (s.as_bytes()[0] != b'"' && p.as_bytes()[0] == b'<'));
+    }
+
+    /// TCB-20, one rule-table position at a time. `parse_pat` and
+    /// `Pat::render` are inverse, so a constant never renders to something that
+    /// reads back as a variable. Because `parse_pat` returns
+    /// `anyhow::Result`, this also proves it cannot panic on any input of the
+    /// bounded length.
+    /// TCB-20. **THIS HARNESS DOES NOT TERMINATE AND IS NOT IN `make verify`.**
+    /// It is kept because the attempt is worth more written down than deleted,
+    /// and because a reader who wants to finish it should not have to rediscover
+    /// why it is hard.
+    ///
+    /// Measured on this machine, with nothing else competing:
+    ///
+    /// | input | outcome |
+    /// |---|---|
+    /// | 4 ASCII bytes, unconstrained | no verdict at 7 minutes, 3.0 GB |
+    /// | 2 ASCII bytes, unconstrained | no verdict at 8 minutes, 2.8 GB |
+    /// | 2 ASCII bytes, first byte constrained to `?`, `<` or `"` | no verdict at 14 minutes, 9.5 GB |
+    ///
+    /// The cost is not the input. `parse_pat` returns `anyhow::Result` and every
+    /// refusal formats a message naming the line and the position, so the
+    /// function body carries the whole formatting machinery, and CBMC flattens a
+    /// function before it solves: an `assume` that makes the refusals infeasible
+    /// is a constraint for the solver, not a cut in the program, so it does not
+    /// remove the work. Constraining the input made it WORSE, which is the
+    /// evidence for that reading.
+    ///
+    /// What would close it: lift the classification out of `parse_pat` into a
+    /// pure function returning an `Option<Pat>`, with `parse_pat` reduced to
+    /// that call plus the error messages. Then the harness targets a function
+    /// with no allocation and no formatting, and the messages stay where they
+    /// are. That is a refactor of shipped code and it was not made here.
+    ///
+    /// Until then the property is sampled, not proved:
+    /// `boundary_tests::tcb_20_parse_pat_and_render_are_inverse` over 1024 cases,
+    /// and `tests/certificate_boundary_proptest.rs` over whole rule tables.
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn parse_pat_and_render_are_inverse() {
+        let mut buf = [0u8; 2];
+        let field = any_ascii(&mut buf);
+        kani::assume(!field.contains('\t') && !field.contains('\n'));
+        let head = field.as_bytes()[0];
+        kani::assume(head == b'?' || head == b'<' || head == b'"');
+        let p = parse_pat(field, 1, "position").expect("the accepted spellings parse");
+        assert!(p.render() == field);
     }
 }

@@ -1,0 +1,26 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+#
+# What is kept here is curated. Seeds produced by deliberately breaking the
+# engine, to show that a property can fail at all, are NOT kept: they pin
+# nothing, because the code they failed against never existed. What is kept is
+# every seed that found a real defect.
+#
+# 14 September 2026. `rdfs7` concluded a triple with a blank node in predicate
+# position, from `:p rdfs:subPropertyOf [ owl:inverseOf :q ]`, which is what the
+# OWL 2 mapping to RDF produces for `SubObjectPropertyOf(:p ObjectInverseOf(:q))`.
+# The materialiser then failed partway through inserting the batch, leaving the
+# store holding an arbitrary, hash-order-dependent prefix of the inferences with
+# no certificate covering any of them, and returned the parser's error.
+# Fixed by `writable_triple` in `src/reason.rs`; pinned by
+# `tests/reason_unwritable_predicate_test.rs`.
+cc be2b5f1c6ff62a60dd37b1c2b235744ffac11721100af4fe3785ccac4ff657b3 # shrinks to nt = "<http://e/A> <http://e/~a> <http://e/A> .\n<http://e/~a> <http://www.w3.org/2000/01/rdf-schema#subPropertyOf> _:b0 .\n"
+cc 9cc33b8d0b2f16258f38d36e139ea8ff95bedcb902c4ec1eefef030c3e179e60 # shrinks to nt = "<http://e/q> <http://www.w3.org/2000/01/rdf-schema#subPropertyOf> _:b0 .\n<http://e/A> <http://e/q> <http://e/A> .\n"
+cc c9bc9ffd7637a23832cc3aa06ba54e83e86e1fb28484cc5f4e45e395997f4605 # shrinks to nt = "<http://e/A> <http://www.w3.org/2000/01/rdf-schema#subPropertyOf> _:b0 .\n<http://e/A> <http://e/A> <http://e/A> .\n"
+cc bb07b46dc697a2aae5a49c5aaf4a3d920e4178c9b6f1a84e95bdade63e6110f9 # shrinks to nt = "<http://e/a%09b> <http://www.w3.org/2000/01/rdf-schema#subPropertyOf> _:b0 .\n<http://e/A> <http://e/a%09b> <http://e/A> .\n"
+cc 22a2833c5a8a535bae6ca4b2a9272ecc987551739657463b7b0a39cf2389bbdb # shrinks to nt = "<http://e/A> <http://e/A> <http://e/A> .\n<http://e/A> <http://www.w3.org/2000/01/rdf-schema#subPropertyOf> _:b0 .\n"
+cc 9afb7684ba21383452bd0dc23e31f66c0163cfa7abbb209b0157e878364efd5d # shrinks to nt = "<http://e/A> <http://e/q> <http://e/A> .\n<http://e/q> <http://www.w3.org/2000/01/rdf-schema#subPropertyOf> _:b0 .\n"

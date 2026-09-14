@@ -324,11 +324,34 @@ the rest and flags the result `certifies_a_weaker_rule_set`.
 Every imported rule is a rule you wrote, so it lands on the second row of the table above without
 exception: imported rules are named `swrl/…` and `rif/…`, no built-in rule is, and `oo-horn` awards
 the absolute verdict only to a table that renders identically to the built-in one.
+The Rust reasoner evaluates a supplied rule table through `reason --rules RULES.tsv --certificate
+DIR`, which writes `rules.tsv`, `asserted.tsv` and `horn.tsv` and states no verdict of its own.
+Nothing is materialised into the store: a conclusion drawn under a table you wrote holds only in
+models that satisfy that table, and merging it in beside the assertions would lose exactly the
+distinction this is about. See
+[decision 0003](decisions/0003-a-rule-is-data-and-an-assumption-is-not-a-fact.md).
+
+## What the checker assumes about the engine
+
+The theorem is conditional. It says that IF the asserted graph is `G` and IF these steps check,
+THEN the conclusions hold in every model of `G`. Everything to the left of that is the Rust writing
+down the truth, and the checker cannot see any of it: it reads files, not the store and not the
+run. `docs/trusted-computing-base.md` enumerates that boundary as twenty-nine checkable properties
+and says for each what checks it. Read it before relying on a certificate, because a certificate is
+a claim about a file and the file's relationship to the store is the part nobody proved.
 
 ## Known limitations
 
 Stated rather than discovered later.
 
+- **A conclusion no RDF serialiser can write is refused, not derived.** A literal in subject
+  position or a non-IRI in predicate position produces a triple the store cannot hold. Such a
+  conclusion is not materialised, not certified, and not used as a premise, so a run that hits one
+  derives LESS than its rule set licenses. The count and up to three examples come back as
+  `skipped_unserialisable` and `skipped_examples`. This is reachable from ordinary OWL: `:p
+  rdfs:subPropertyOf [ owl:inverseOf :q ]` is what the OWL 2 mapping to RDF produces for
+  `SubObjectPropertyOf(:p ObjectInverseOf(:q))`, and it makes `rdfs7` conclude a triple with a
+  blank node in predicate position.
 - **The rule table is this engine's, not W3C's.** `by_rule` describes what this engine did. It is
   not an OWL 2 RL conformance claim, and the engine does not implement every rule in the profile.
 - **`asserted.tsv` is the store, not your file.** Quads are flattened, so a triple present in two

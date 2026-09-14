@@ -3971,3 +3971,198 @@ impl DlReasoner {
         self.emit(&tableau, &ind_to_node, self.abox_axioms(), dir)
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The model certificate's serialisation boundary
+//
+// `axioms.tsv` is tab separated at the top level and SPACE separated inside a
+// concept, and it carries IRIs and literals. `docs/trusted-computing-base.md`
+// calls that TCB-25 and TCB-26: `name_is_safe` is the only explicit injection
+// guard in this codebase, and the argument that it covers every name that gets
+// written is an argument about two loops agreeing rather than a check.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod certificate_boundary_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Names drawn from exactly the two sides of `name_is_safe`: some that must
+    /// pass, some that must not, and the grammar's own keywords, which must be
+    /// harmless because the encoding is prefix and positional rather than
+    /// delimited.
+    fn name() -> impl Strategy<Value = String> {
+        prop_oneof![
+            Just("<http://e/A>".to_string()),
+            Just("\"lit\"".to_string()),
+            Just("_:b0".to_string()),
+            // Keywords of the concept grammar.
+            Just("atom".to_string()),
+            Just("top".to_string()),
+            Just("not".to_string()),
+            Just("some".to_string()),
+            Just("min".to_string()),
+            Just("2".to_string()),
+            // Must be refused.
+            Just("a b".to_string()),
+            Just("a\tb".to_string()),
+            Just("a\nb".to_string()),
+            Just("a\rb".to_string()),
+            Just(String::new()),
+            "[^ \t\n\r]{1,5}",
+        ]
+    }
+
+    /// A concept over name SLOTS rather than interned ids, so the shape can be
+    /// generated once and instantiated against whatever names the case drew.
+    #[derive(Clone, Debug)]
+    enum Shape {
+        Top,
+        Bot,
+        Atom(usize),
+        NegAtom(usize),
+        And(Vec<Shape>),
+        Or(Vec<Shape>),
+        Exists(usize, Box<Shape>),
+        ForAll(usize, Box<Shape>),
+        Min(usize, u32, Box<Shape>),
+        Max(usize, u32, Box<Shape>),
+    }
+
+    fn shape() -> impl Strategy<Value = Shape> {
+        let leaf = prop_oneof![
+            Just(Shape::Top),
+            Just(Shape::Bot),
+            (0usize..6).prop_map(Shape::Atom),
+            (0usize..6).prop_map(Shape::NegAtom),
+        ];
+        leaf.prop_recursive(3, 12, 3, |inner| {
+            prop_oneof![
+                prop::collection::vec(inner.clone(), 0..3).prop_map(Shape::And),
+                prop::collection::vec(inner.clone(), 0..3).prop_map(Shape::Or),
+                (0usize..6, inner.clone()).prop_map(|(r, f)| Shape::Exists(r, Box::new(f))),
+                (0usize..6, inner.clone()).prop_map(|(r, f)| Shape::ForAll(r, Box::new(f))),
+                (0usize..6, 0u32..3, inner.clone())
+                    .prop_map(|(r, n, f)| Shape::Min(r, n, Box::new(f))),
+                (0usize..6, 0u32..3, inner).prop_map(|(r, n, f)| Shape::Max(r, n, Box::new(f))),
+            ]
+        })
+    }
+
+    fn build(s: &Shape, ids: &[u32]) -> Concept {
+        let pick = |i: usize| ids[i % ids.len()];
+        match s {
+            Shape::Top => Concept::Top,
+            Shape::Bot => Concept::Bottom,
+            Shape::Atom(i) => Concept::Atom(pick(*i)),
+            Shape::NegAtom(i) => Concept::NegAtom(pick(*i)),
+            Shape::And(cs) => Concept::And(cs.iter().map(|c| build(c, ids)).collect()),
+            Shape::Or(cs) => Concept::Or(cs.iter().map(|c| build(c, ids)).collect()),
+            Shape::Exists(r, f) => Concept::Exists(pick(*r), Box::new(build(f, ids))),
+            Shape::ForAll(r, f) => Concept::ForAll(pick(*r), Box::new(build(f, ids))),
+            Shape::Min(r, n, f) => Concept::MinCard(pick(*r), *n, Box::new(build(f, ids))),
+            Shape::Max(r, n, f) => Concept::MaxCard(pick(*r), *n, Box::new(build(f, ids))),
+        }
+    }
+
+    /// How many space-separated tokens the encoding in `write_concept` must
+    /// produce for a concept, derived from the shape alone. Written out here so
+    /// it is an independent statement of the grammar rather than a second call
+    /// to the same code.
+    fn tokens(c: &Concept) -> usize {
+        match c {
+            Concept::Top | Concept::Bottom => 1,
+            Concept::Atom(_) => 2,
+            Concept::NegAtom(_) => 3,
+            Concept::And(cs) => nary_tokens(cs, &Concept::Top),
+            Concept::Or(cs) => nary_tokens(cs, &Concept::Bottom),
+            Concept::Exists(_, f) | Concept::ForAll(_, f) => 2 + tokens(f),
+            Concept::MinCard(_, _, f) | Concept::MaxCard(_, _, f) => 3 + tokens(f),
+        }
+    }
+
+    fn nary_tokens(cs: &[Concept], unit: &Concept) -> usize {
+        match cs.split_first() {
+            None => tokens(unit),
+            Some((head, [])) => tokens(head),
+            Some((head, rest)) => 1 + tokens(head) + nary_tokens(rest, unit),
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 512, ..ProptestConfig::default() })]
+
+        /// TCB-25. `name_is_safe` refuses exactly the names that would break the
+        /// format: empty, or carrying a space, tab, carriage return or newline.
+        #[test]
+        fn tcb_25_name_is_safe_refuses_every_separator(n in name()) {
+            let safe = name_is_safe(&n);
+            prop_assert_eq!(
+                safe,
+                !n.is_empty() && !n.contains([' ', '\t', '\n', '\r'])
+            );
+        }
+
+        /// TCB-25. Given names the guard accepts, a concept serialises to
+        /// exactly the number of space-separated tokens its shape determines.
+        ///
+        /// This is the property that makes the encoding readable back: the
+        /// grammar is prefix and positional, so a name that happens to be a
+        /// keyword (`atom`, `top`, `min`) is harmless, and a name carrying a
+        /// space is not. If the guard ever stopped refusing one, the token count
+        /// would drift from the shape and the checker would read a different
+        /// concept from the one the reasoner decided about.
+        #[test]
+        fn tcb_25_a_safe_concept_serialises_to_the_tokens_its_shape_demands(
+            ns in prop::collection::vec(name(), 1..6),
+            sh in shape(),
+        ) {
+            let mut interner = Interner::new();
+            let ids: Vec<u32> = ns.iter().map(|n| interner.intern(n)).collect();
+            let c = build(&sh, &ids);
+            let s = concept_string(&interner, &c);
+            if ns.iter().all(|n| name_is_safe(n)) {
+                prop_assert_eq!(
+                    s.split(' ').count(), tokens(&c),
+                    "token count drifted from the shape: {:?}", s
+                );
+                prop_assert!(!s.contains('\t') && !s.contains('\n') && !s.contains('\r'));
+            }
+        }
+
+        /// TCB-25 for `axiom_line`. Every axiom is a tab-separated record whose
+        /// field count its variant fixes, so a name carrying a tab would add a
+        /// field and the checker would read a different axiom.
+        #[test]
+        fn tcb_25_an_axiom_line_has_the_fields_its_variant_fixes(n in name()) {
+            let mut interner = Interner::new();
+            let id = interner.intern(&n);
+            let c = Concept::Atom(id);
+            let cases: Vec<(DlAxiom, usize)> = vec![
+                (DlAxiom::Sub(c.clone(), c.clone()), 3),
+                (DlAxiom::Disjoint(c.clone(), c.clone()), 3),
+                (DlAxiom::Domain(id, c.clone()), 3),
+                (DlAxiom::Range(id, c.clone()), 3),
+                (DlAxiom::SubRole(id, id), 3),
+                (DlAxiom::Trans(id), 2),
+                (DlAxiom::Sym(id), 2),
+                (DlAxiom::Inv(id, id), 3),
+                (DlAxiom::InvFunc(id), 2),
+                (DlAxiom::Inst(id, c.clone()), 3),
+                (DlAxiom::Rel(id, id, id), 4),
+                (DlAxiom::Indiv(id), 2),
+                (DlAxiom::NonEmpty(c), 2),
+            ];
+            for (a, want) in cases {
+                let line = axiom_line(&interner, &a);
+                if name_is_safe(&n) {
+                    prop_assert_eq!(
+                        line.split('\t').count(), want,
+                        "{:?} is not {} tab-separated fields", line, want
+                    );
+                    prop_assert!(!line.contains('\n') && !line.contains('\r'));
+                }
+            }
+        }
+    }
+}
