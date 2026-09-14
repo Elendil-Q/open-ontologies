@@ -21,7 +21,7 @@ perverse.
 | Mace4 | Finite model finder | Same. Its output is checkable; Prover9's is not. |
 | Prover9 | First-order prover | Declined. Unmaintained since 2011, refutations uncheckable. |
 | cvc5 | SMT solver | Not installed. Same role as Z3 when it is. |
-| Isabelle/HOL | Proof assistant | Declined for now. Reasons below. |
+| Isabelle/HOL | Proof assistant | Built, as an independent second kernel. It disagreed with the Lean. Below. |
 | Dedukti | Logical framework | Declined. Reasons below. |
 | Duper, lean-smt | Lean automation | Declined. Both require Mathlib. |
 | Aeneas with Charon | Rust to Lean | Declined. Subset does not contain this codebase. |
@@ -69,26 +69,47 @@ merely corroborated.
 Its unsat answers stay oracle answers. An unsat core is not a proof object we can replay, and the
 proof logs Z3 can emit would need the same mechanised calculus that the first-order case lacks.
 
-## Isabelle, and why not yet
+## Isabelle, and what the second kernel found
 
-Isabelle/HOL is the obvious comparison, because Sledgehammer does exactly what we cannot: it calls
-external provers and then reconstructs their findings through the Isabelle kernel, so an external
-prover's answer becomes a proof. That is the capability this project lacks and would most like.
+This section said "declined for now" until 14 September 2026, and it was stale for several hours
+after the work had merged. That is recorded here rather than silently overwritten, because a
+document that says a thing was not built when it was is the same defect as one that claims a
+proof it does not have.
 
-It is declined for now, and not because Isabelle is unsuitable. Adopting it
-means a second proof assistant, a second build, a second set of proofs and a second trust surface,
-for a codebase whose entire pitch is that the trust surface is small enough to read in an afternoon.
-Reconstruction would have to be redone for our translation rather than inherited. And the specific
-thing we would gain, kernel-checked refutations, we can already approximate where it matters by
-checking models instead.
+Isabelle/HOL is not used the way Sledgehammer uses it, reconstructing external provers' answers
+through a kernel. It is used for something narrower and, for this project, more valuable: an
+INDEPENDENT SECOND FORMALISATION of the Horn certificate checker, written from the W3C
+specifications and the fixture data with the Lean deliberately unread, so that a definitional
+mistake shared by nobody could be caught. A machine-checked proof rules out a bad argument and
+does nothing about a bad definition, and a bad definition is invisible from inside a single
+formalisation by construction. The formalisation lives in `isabelle/`, builds with no `sorry`
+and no `oops`, and its checker is exported to executable code so it can be run over the same
+bytes the Lean reads.
 
-The version that would pay, and that remains open, is narrower: use Isabelle as an INDEPENDENT SECOND
-KERNEL for the statements we already prove in Lean, so that a bug in one kernel or in one
-formalisation does not go unnoticed. That is a replication exercise rather than an integration, and it
-should be judged on its own when the Lean side is stable.
+Then both verified checkers were run over 1,718 certificates. They disagreed on 47, all in the
+same direction, with none unexplained, and the cause was neither proof. Isabelle validates the
+binding list as a data structure; Lean turned any binding list into a total function with a
+silent default. On a certificate that binds one variable twice, first to a value that makes the
+step check and then to one that does not, Lean returned the absolute verdict and Isabelle
+refused. The defect was in the FORMAT, which never said what a repeated key means, and only a
+second implementation could have surfaced it. That gap is being closed by making the Lean refuse
+the shape, not by editing the Isabelle, since its independence is the asset.
 
-Nitpick, Isabelle's counterexample finder, belongs to the model-finder family above and would slot
-into the certified path the same way Mace4 does.
+The adversarial review of that comparison established four things about the Lean layer that the
+Lean's own build could never have shown, and they are the current work rather than a footnote:
+eight of the twenty-seven rules were assumed as primitive semantic conditions rather than
+derived, so the machine-checked content for those arms was close to nothing, and the Isabelle
+derives them; the Lean's model class is larger than the specification's, so non-entailment does
+not transfer outward to a conforming interpretation; the two checkers print the same verdict word
+for theorems over model classes nobody has ordered; and both sides' non-vacuity witnesses were
+vacuous exactly where their conditions are strongest. Each of those is a case of the layer
+claiming more than it had earned, which by this project's standards is the same category as a
+soundness bug.
+
+What remains declined is the wider use. Reconstructing Vampire or E refutations through
+Isabelle's kernel would give this project kernel-checked refutations, which it lacks, at the cost
+of a second proof assistant in the trust surface for every user rather than for a cross-check.
+That trade is still not being made, and the reasoning has not changed.
 
 ## Dedukti, and why not
 

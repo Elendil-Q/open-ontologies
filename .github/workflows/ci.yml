@@ -362,7 +362,21 @@ jobs:
         # are uncheckable and by decision 0005 an oracle opinion for ever, but
         # Mace4 is a FINITE MODEL FINDER and a finite model is exactly what
         # this layer certifies. The dead toolchain has a live half.
-        run: sudo apt-get update && sudo apt-get install -y z3 prover9
+        # `prover9` has no installation candidate on Ubuntu noble, which is what
+        # broke this job the first time it ran on main. LADR is built from the
+        # maintained fork instead, pinned to a commit, with -std=gnu89 because
+        # the source is K&R C and a current compiler otherwise rejects its
+        # implicit-int parameters as errors. The recipe was run locally before
+        # it was committed here. Only mace4 is installed: Prover9 itself is not
+        # used anywhere, by decision 0005.
+        run: |
+          set -euo pipefail
+          sudo apt-get update && sudo apt-get install -y z3
+          git clone -q https://github.com/laitep/ladr.git /tmp/ladr
+          git -C /tmp/ladr checkout -q 8317cb2dea069cd57723f76bdee7d6bd818103a7
+          make -C /tmp/ladr all XFLAGS="-std=gnu89" > /tmp/ladr-build.log 2>&1 || { tail -30 /tmp/ladr-build.log; exit 1; }
+          sudo install -m 755 /tmp/ladr/bin/mace4 /usr/local/bin/mace4
+          command -v z3 mace4
       - name: Check the first-order model certificates end to end
         # `lake build` already compiles these proofs, because `Fol` and
         # `oo-folmodel` are both in defaultTargets. What this leg adds is the

@@ -64,6 +64,12 @@ is a proxy that rises as the slice grows, so a retriever tuned on it learns to f
 than the right thing. Entailment preservation is the property, it is decidable here, and it
 carries a certificate per claim. See [decision 0007](docs/decisions/0007-a-slice-preserves-a-conclusion-or-it-does-not.md).
 
+The Lean is not the only checker. An independent formalisation of the same certificate checker
+in Isabelle/HOL, written from the W3C specifications with the Lean deliberately unread, lives in
+[isabelle/](isabelle/) and is run over the same bytes. On its first run it disagreed with the Lean
+on 47 of 1,718 certificates, all in the safe direction, and the cause was a gap in the certificate
+format that neither proof could see. A second kernel exists to catch what one cannot, and it did.
+
 The discipline matters more than the machinery, and it runs through all of it.
 
 A rule **you** supplied is an assumption the certificate carries, never a fact it establishes, so
