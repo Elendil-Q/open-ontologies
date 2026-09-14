@@ -1689,6 +1689,52 @@ mod tests {
     }
 
     #[test]
+    fn a_derivations_tsv_pipes_in_with_one_skipped_column() {
+        // The shape `reason --certificate` writes: the rule name, then the
+        // conclusion, then the premises. Only the conclusion is a goal, so the
+        // extra triples on the line must be ignored rather than read as three
+        // more goals.
+        let line = "rdfs9\t<http://ex.org/a>\t<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>\t                    <http://ex.org/C>\t<http://ex.org/a>\t                    <http://www.w3.org/1999/02/22-rdf-syntax-ns#type>\t<http://ex.org/A>\n";
+        let (goals, refused) = parse_goals_tsv(line, 1).unwrap();
+        assert!(refused.is_empty(), "{refused:?}");
+        assert_eq!(goals.len(), 1, "one line is one goal, not one per triple on it");
+        assert_eq!(goals[0].triple.2, "<http://ex.org/C>");
+        // And the caller's own bytes survive beside the canonical spelling.
+        assert!(goals[0].as_written.contains("http://ex.org/a"));
+    }
+
+    #[test]
+    fn a_short_tsv_line_is_refused_rather_than_padded() {
+        let (goals, refused) = parse_goals_tsv("<http://ex.org/a>\t<http://ex.org/p>\n", 0).unwrap();
+        assert!(goals.is_empty());
+        assert_eq!(refused[0].reason, GoalRefusal::Unparseable);
+    }
+
+    #[test]
+    fn goals_come_out_of_a_bgp_and_its_bindings_with_no_generator_trusted() {
+        // The strongest goal source: the query the answer was rendered from,
+        // with the answer's own bindings put back. Nothing here trusts a
+        // language model with anything.
+        let bgp = vec![
+            ("?x".to_string(), "<http://ex.org/p>".to_string(), "<http://ex.org/o>".to_string()),
+            ("?y".to_string(), "<http://ex.org/q>".to_string(), "?z".to_string()),
+        ];
+        let mut b = BTreeMap::new();
+        b.insert("x".to_string(), "<http://ex.org/a>".to_string());
+        b.insert("y".to_string(), "<http://ex.org/b>".to_string());
+        let (goals, refused) = goals_from_bindings(&bgp, &b).unwrap();
+        assert_eq!(goals.len(), 1, "only the fully bound pattern is askable: {goals:?}");
+        assert_eq!(goals[0].triple.0, "<http://ex.org/a>");
+        assert_eq!(
+            refused.len(),
+            1,
+            "an unbound variable is refused BY NAME rather than dropped: {refused:?}"
+        );
+        assert_eq!(refused[0].reason, GoalRefusal::Unparseable);
+        assert!(refused[0].as_written.contains("?z"), "{:?}", refused[0]);
+    }
+
+    #[test]
     fn an_empty_goal_set_is_an_error_not_a_green_report() {
         let g = loaded(SRC);
         let err = check_entailment_preservation(
