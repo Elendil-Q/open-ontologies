@@ -6,7 +6,7 @@
 
 **Architecture:** Tauri spawns the engine binary (`open-ontologies serve-http --port 8080`) as a supervised sidecar. Frontend talks to engine via MCP HTTP for graph operations. Chat goes through a Node.js Agent SDK sidecar (stdin/stdout) that connects to the same engine. One engine instance, two clients (frontend + Agent SDK).
 
-**Tech Stack:** Tauri v2, React 19, Vite, TypeScript, Cytoscape.js, @anthropic-ai/claude-agent-sdk, @modelcontextprotocol/sdk, Tailwind CSS, Zustand
+**Tech Stack:** Tauri v2, React 19, Vite, TypeScript, Cytoscape.js, @anthropic-ai/sdk, @modelcontextprotocol/sdk, Tailwind CSS, Zustand
 
 ---
 

@@ -1,0 +1,8 @@
+# sh:zeroOrMorePath is a transitive closure over the data graph and is the one SHACL
+# Core path form this development does not decide. It must be refused by name.
+<http://ex.org/S> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/ns/shacl#NodeShape> .
+<http://ex.org/S> <http://www.w3.org/ns/shacl#targetClass> <http://ex.org/Person> .
+<http://ex.org/S> <http://www.w3.org/ns/shacl#property> <http://ex.org/NameShape> .
+<http://ex.org/NameShape> <http://www.w3.org/ns/shacl#path> _:p .
+_:p <http://www.w3.org/ns/shacl#zeroOrMorePath> <http://ex.org/name> .
+<http://ex.org/NameShape> <http://www.w3.org/ns/shacl#minCount> "1"^^<http://www.w3.org/2001/XMLSchema#integer> .

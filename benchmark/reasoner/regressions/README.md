@@ -7,7 +7,10 @@ found that triggers the behaviour.
 
 **Found:** 2026-07-27, while repairing the LUBM benchmark harness.
 
-`owl:hasValue` introduces a nominal (`∃R.{o}`), the "O" in SHOIQ. Nominals
+`owl:hasValue` introduces a nominal (`∃R.{o}`), the "O" in SHOIQ. This
+reasoner has no nominal constructor: `Concept` in `src/tableaux.rs` has no such
+variant, and `parse_restriction` approximates `owl:hasValue` as `∃R.A` where `A`
+is an atomic concept named after the individual. Nominals
 break the tree-model property that ordinary subset blocking relies on, and the
 current tableaux implementation appears to have no nominal-aware blocking. Cost
 per additional nominal-bearing class is multiplicative, not additive:
@@ -71,6 +74,8 @@ ontologies. The fix is the NI-rule of Motik, Shearer and Horrocks, *Optimizing
 the Nominal Introduction Rule in (Hyper)Tableau Calculi*, which bounds root
 individual creation at `n` per `≤n R⁻.A` restriction instead of generating them
 freely. Separately, `update_blocking` implements ancestor **subset** blocking,
-while SHIQ and SHOIQ require **pairwise** blocking once inverse roles and number
+Pairwise blocking, the second prerequisite noted here, has since been
+implemented: see `is_pairwise_blocked` in `src/tableaux.rs`. The NI-rule is
+still outstanding.
 restrictions are present (Horrocks and Sattler). Both are prerequisites for any
 published performance claim on a real corpus.

@@ -1,0 +1,6 @@
+# A shape that reaches itself through sh:node. SHACL does not define the semantics
+# of recursive shapes, so the compiler must refuse rather than pick one.
+<http://ex.org/S> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/ns/shacl#NodeShape> .
+<http://ex.org/S> <http://www.w3.org/ns/shacl#targetClass> <http://ex.org/Person> .
+<http://ex.org/S> <http://www.w3.org/ns/shacl#node> <http://ex.org/T> .
+<http://ex.org/T> <http://www.w3.org/ns/shacl#node> <http://ex.org/S> .

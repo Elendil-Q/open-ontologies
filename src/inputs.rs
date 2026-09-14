@@ -262,6 +262,26 @@ pub struct OntoReasonInput {
     /// `onto_save` to a triple format cannot publish one. Default false, which
     /// keeps the historical behaviour. Not available for the `owl-dl` profile.
     pub inference_graph: Option<bool>,
+    /// Directory to write a derivation certificate to (`asserted.tsv` and
+    /// `derivations.tsv`). The Lean checker in `lean/` verifies it against a
+    /// machine-checked soundness theorem, so a run whose certificate checks
+    /// contains only entailed triples whatever this engine did. Not available
+    /// for `owl-dl`.
+    pub certificate_dir: Option<String>,
+    /// Path to a SUPPLIED Horn rule table in the `rules.tsv` format the Lean
+    /// checker reads (`name TAB bodyLength TAB (s TAB p TAB o)* TAB hs TAB hp
+    /// TAB ho`, a field beginning with `?` being a variable). When given, the
+    /// run evaluates THAT table to a fixpoint instead of a built-in profile,
+    /// and writes `rules.tsv`, `asserted.tsv` and `horn.tsv` to
+    /// `certificate_dir`, which is then required.
+    ///
+    /// Nothing is materialised, and the response states no verdict. A rule the
+    /// user supplied is an assumption nobody has checked, so what a checked
+    /// certificate establishes is truth in every model of the asserted graph
+    /// that ALSO satisfies those rules. `lake exe oo-horn check` is what
+    /// pronounces on that, and it distinguishes the built-in table from any
+    /// other. See docs/decisions/0003.
+    pub rules_file: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]

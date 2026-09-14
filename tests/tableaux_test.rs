@@ -949,7 +949,7 @@ fn test_dl_pizza_classification() {
 
 #[test]
 fn test_dl_description_logic_field() {
-    // Verify output contains "description_logic": "SHOIQ"
+    // Verify output contains "description_logic": "SHIQ"
     let store = Arc::new(GraphStore::new());
     store
         .load_turtle(
@@ -965,8 +965,8 @@ fn test_dl_description_logic_field() {
     let result = Reasoner::run(&store, "owl-dl", false).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
     assert_eq!(
-        parsed["description_logic"], "SHOIQ",
-        "Output must report description_logic as SHOIQ"
+        parsed["description_logic"], "SHIQ",
+        "Output must report description_logic as SHIQ"
     );
     assert_eq!(parsed["algorithm"], "tableaux");
     assert_eq!(parsed["profile_used"], "owl-dl");

@@ -237,12 +237,40 @@ impl BatchRunner {
     }
 
     fn exec_reason(&self, args: &[String]) -> Value {
-        use crate::reason::Reasoner;
+        use crate::reason::{InferenceTarget, Reasoner};
         let profile = Self::flag_value(args, "--profile")
-            .or_else(|| args.first().cloned())
+            .or_else(|| args.first().filter(|a| !a.starts_with("--")).cloned())
             .unwrap_or("rdfs".to_string());
-        let result = Reasoner::run(&self.graph, &profile, true)
-            .unwrap_or_else(|e| format!(r#"{{"error":"{}"}}"#, e));
+        let certificate = Self::flag_value(args, "--certificate");
+        let rules = Self::flag_value(args, "--rules");
+        // `--rules FILE` evaluates a SUPPLIED Horn table instead of a built-in
+        // profile and writes a certificate `oo-horn check` can verify. It needs
+        // somewhere to put that certificate: a run over rules nobody has
+        // checked reports nothing about what it proved, so without the
+        // certificate there would be nothing to check and the counts would
+        // stand on the engine's word alone.
+        let result = match (rules.as_deref(), certificate.as_deref()) {
+            (Some(rules_path), Some(dir)) => Reasoner::run_horn(
+                &self.graph,
+                std::path::Path::new(rules_path),
+                std::path::Path::new(dir),
+            )
+            .unwrap_or_else(|e| json!({"error": e.to_string()}).to_string()),
+            (Some(_), None) => json!({
+                "error": "reason --rules needs --certificate DIR. A run over a supplied rule \
+                          table states no verdict of its own: the certificate is the output, and \
+                          `lake exe oo-horn check` is what pronounces on it"
+            })
+            .to_string(),
+            (None, cert) => Reasoner::run_full(
+                &self.graph,
+                &profile,
+                true,
+                InferenceTarget::DefaultGraph,
+                cert.map(std::path::Path::new),
+            )
+            .unwrap_or_else(|e| format!(r#"{{"error":"{}"}}"#, e)),
+        };
         serde_json::from_str(&result).unwrap_or(json!({"raw": result}))
     }
 

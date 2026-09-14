@@ -1,0 +1,20 @@
+# Line endings for the certificate formats.
+#
+# `asserted.tsv`, `derivations.tsv`, `rules.tsv`, `horn.tsv` and the model and
+# refutation files are tab separated with LF endings, and their parsers REFUSE a
+# carriage return rather than strip one, because a CR inside a field would become
+# part of an RDF term and the certificate would then be about a term nobody
+# wrote. That refusal is deliberate and is what the error message says.
+#
+# Git's default on Windows checks text files out with CRLF, so without this the
+# committed fixtures arrive carrying exactly the character the parser exists to
+# reject, and the Windows CI leg fails on a file that is correct in the
+# repository. Pin the working-tree ending rather than loosening the parser: the
+# strictness is the feature.
+*.tsv text eol=lf
+*.nt  text eol=lf
+*.nq  text eol=lf
+
+# RDF serialisations, for the same reason: a stray CR changes a literal.
+*.ttl text eol=lf
+*.trig text eol=lf

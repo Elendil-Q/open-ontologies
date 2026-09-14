@@ -1,0 +1,8 @@
+# The `+` quantifier is outside the regular-expression subset the proved matcher
+# decides. The compiler must name the construct rather than drop the constraint or
+# approximate it.
+<http://ex.org/S> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/ns/shacl#NodeShape> .
+<http://ex.org/S> <http://www.w3.org/ns/shacl#targetClass> <http://ex.org/Person> .
+<http://ex.org/S> <http://www.w3.org/ns/shacl#property> <http://ex.org/NameShape> .
+<http://ex.org/NameShape> <http://www.w3.org/ns/shacl#path> <http://ex.org/name> .
+<http://ex.org/NameShape> <http://www.w3.org/ns/shacl#pattern> "^[A-Z]+$" .

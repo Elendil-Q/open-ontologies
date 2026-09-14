@@ -1216,7 +1216,7 @@ impl OpenOntologiesServer {
         result.to_string()
     }
 
-    #[tool(name = "onto_shacl", description = "Validate the loaded ontology data against SHACL shapes. Checks cardinality (minCount/maxCount), datatypes, and class constraints. Returns a conformance report with violations.")]
+    #[tool(name = "onto_shacl", description = "Validate the loaded ontology data against SHACL shapes. Checks the core constraint components written under `sh:property`, including `sh:minCount`, `sh:maxCount`, `sh:datatype`, `sh:class`, `sh:nodeKind`, `sh:pattern`, `sh:in`, `sh:hasValue`, `sh:or` and `sh:not`, plus `sh:sparql`. A constraint it cannot execute is listed in `skipped_constraints` and the verdict is null rather than true. Returns a conformance report with violations, `focus_nodes` and `unmatched_shapes`.")]
     async fn onto_shacl(&self, Parameters(input): Parameters<OntoShaclInput>) -> String {
         use crate::shacl::ShaclValidator;
         let shapes = if input.inline.unwrap_or(false) {
@@ -1398,7 +1398,7 @@ impl OpenOntologiesServer {
             .unwrap_or_else(|e| Self::err_json(format!("serialization: {}", e)))
     }
 
-    #[tool(name = "onto_classify_el", description = "Classify the loaded ontology in the OWL-EL fragment (#30). Materialises OWL-RL-ext entailments in a sandbox copy of the graph and emits every distinct subsumption `?sub rdfs:subClassOf ?super` (transitive closure, deduplicated, owl:Thing-trivial pairs removed). For deep SHOIQ subsumption, use `onto_dl_check` / `onto_dl_explain`.")]
+    #[tool(name = "onto_classify_el", description = "Classify the loaded ontology in the OWL-EL fragment (#30). Materialises OWL-RL-ext entailments in a sandbox copy of the graph and emits every distinct subsumption `?sub rdfs:subClassOf ?super` (transitive closure, deduplicated, owl:Thing-trivial pairs removed). For deep SHIQ subsumption, use `onto_dl_check` / `onto_dl_explain`.")]
     async fn onto_classify_el(&self) -> String {
         match crate::classify_el::classify(&self.graph) {
             Ok(r) => serde_json::to_string(&r)
@@ -1876,9 +1876,40 @@ impl OpenOntologiesServer {
         body.to_string()
     }
 
-    #[tool(name = "onto_reason", description = "Run inference over the loaded ontology. Profiles: 'rdfs' (subclass, domain/range), 'owl-rl' (+ transitive/symmetric/inverse, sameAs, equivalentClass), 'owl-rl-ext' (+ someValuesFrom, allValuesFrom, hasValue, intersectionOf, unionOf), 'owl-dl' (Full OWL2-DL SHOIQ tableaux: satisfiability, classification, qualified number restrictions with node merging, inverse/symmetric roles, functional properties, parallel agent-based classification, explanation traces, ABox reasoning). Materializes inferred triples. Set `inference_graph` to keep them in a separate graph, where nothing downstream can read an inference as an assertion and a Turtle/RDF-XML save cannot publish one.")]
+    #[tool(name = "onto_reason", description = "Run inference over the loaded ontology. Profiles: 'rdfs' (subclass, domain/range), 'owl-rl' (+ transitive/symmetric/inverse, sameAs, equivalentClass), 'owl-rl-ext' (+ someValuesFrom, allValuesFrom, hasValue, intersectionOf, unionOf), 'owl-dl' (SHIQ tableaux: satisfiability, classification, qualified number restrictions with node merging, inverse/symmetric roles, functional properties, parallel agent-based classification, explanation traces, ABox reasoning. Nominals are not implemented: owl:oneOf is not read and owl:hasValue is approximated as an atomic concept, so an ontology that uses either returns undetermined classes rather than a classification. Datatype ranges are skipped). Materializes inferred triples. Set `inference_graph` to keep them in a separate graph, where nothing downstream can read an inference as an assertion and a Turtle/RDF-XML save cannot publish one. Pass `rules_file` to evaluate a SUPPLIED Horn rule table instead of a built-in profile: it needs `certificate_dir`, materialises nothing, and writes a certificate the proved-sound Lean checker verifies with `lake exe oo-horn check`. The verdict comes from that checker and not from here, because rules you supply are assumed and never checked: a conclusion then holds in every model of the asserted graph that ALSO satisfies your rules.")]
     async fn onto_reason(&self, Parameters(input): Parameters<OntoReasonInput>) -> String {
         use crate::reason::Reasoner;
+        // A supplied Horn rule table takes a different path: it is evaluated
+        // instead of a built-in profile, it materialises nothing, and the
+        // response carries no verdict, because a rule the caller wrote is an
+        // assumption and `oo-horn check` is what pronounces on a certificate
+        // over it. Anything the caller asked for that this path cannot honour
+        // is refused rather than ignored in silence.
+        if let Some(rules_file) = input.rules_file.as_deref() {
+            let Some(dir) = input.certificate_dir.as_deref() else {
+                return serde_json::json!({
+                    "error": "rules_file needs certificate_dir. A run over a supplied rule table \
+                              states no verdict of its own: the certificate is the output, and \
+                              `lake exe oo-horn check` is what pronounces on it"
+                })
+                .to_string();
+            };
+            if input.materialize == Some(true) || input.inference_graph == Some(true) {
+                return serde_json::json!({
+                    "error": "rules_file does not materialise. A conclusion drawn under a rule \
+                              table nobody has checked holds only in models that satisfy that \
+                              table, so it is not written into the store; drop materialize / \
+                              inference_graph to run it"
+                })
+                .to_string();
+            }
+            return Reasoner::run_horn(
+                &self.graph,
+                std::path::Path::new(rules_file),
+                std::path::Path::new(dir),
+            )
+            .unwrap_or_else(Self::err_json);
+        }
         let profile = input.profile.as_deref().unwrap_or("rdfs");
         let materialize = input.materialize.unwrap_or(true);
         let target = if input.inference_graph.unwrap_or(false) {
@@ -1886,7 +1917,8 @@ impl OpenOntologiesServer {
         } else {
             crate::reason::InferenceTarget::DefaultGraph
         };
-        Reasoner::run_with_target(&self.graph, profile, materialize, target)
+        let dir = input.certificate_dir.as_deref().map(std::path::Path::new);
+        Reasoner::run_full(&self.graph, profile, materialize, target, dir)
             .unwrap_or_else(Self::err_json)
     }
 
@@ -2448,7 +2480,7 @@ impl OpenOntologiesServer {
         }
     }
 
-    #[tool(name = "onto_embed", description = "Generate text + structural Poincaré embeddings for all classes in the loaded ontology. Requires the embedding model (run `open-ontologies init` to download). Embeddings enable semantic search via onto_search and improve alignment accuracy.")]
+    #[tool(name = "onto_embed", description = "Generate text + structural Poincaré embeddings for all classes in the loaded ontology. Requires a build with --features embeddings, plus the model (run `open-ontologies init` to download it). Embeddings enable semantic search via onto_search and improve alignment accuracy.")]
     async fn onto_embed(&self, Parameters(input): Parameters<OntoEmbedInput>) -> String {
         #[cfg(not(feature = "embeddings"))]
         { let _ = input; return r#"{"error":"Compiled without embeddings feature. Rebuild with --features embeddings"}"#.to_string(); }
@@ -2559,7 +2591,7 @@ impl OpenOntologiesServer {
         } // cfg(feature = "embeddings")
     }
 
-    #[tool(name = "onto_hnsw_build", description = "Build (or rebuild) the HNSW cosine index over the loaded text embeddings with explicit `ef_construction` and `ef_search` parameters. Persists the index to SQLite by default so subsequent process restarts skip the rebuild. Use after onto_embed when you want to tune index quality vs. build/query time on larger ontologies. Default builder parameters are sensible for ontologies up to ~10k classes.")]
+    #[tool(name = "onto_hnsw_build", description = "Build (or rebuild) the HNSW cosine index over the loaded text embeddings with explicit `ef_construction` and `ef_search` parameters. Persists the index to SQLite by default so subsequent process restarts skip the rebuild. Use after onto_embed when you want to tune index quality vs. build/query time on larger ontologies. Default builder parameters are sensible for ontologies up to ~10k classes. Requires a build with --features embeddings.")]
     async fn onto_hnsw_build(&self, Parameters(input): Parameters<OntoHnswBuildInput>) -> String {
         #[cfg(not(feature = "embeddings"))]
         { let _ = input; return r#"{"error":"Compiled without embeddings feature. Rebuild with --features embeddings"}"#.to_string(); }
@@ -2858,6 +2890,6 @@ impl OpenOntologiesServer {
 impl ServerHandler for OpenOntologiesServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().enable_prompts().build())
-            .with_instructions("Open Ontologies: AI-native ontology engine — RDF/OWL/SPARQL MCP server with 43 tools and 6 workflow prompts for ontology engineering, validation, comparison, alignment, data ingestion, and exploration.")
+            .with_instructions("Open Ontologies: AI-native ontology engine, an RDF/OWL/SPARQL MCP server with 109 tools and 6 workflow prompts for ontology engineering, validation, comparison, alignment, data ingestion, and exploration. All 109 tools are advertised in a default build; 8 of them require an optional Cargo feature (embeddings, plugins, postgres or duckdb) and return an error without it.")
     }
 }

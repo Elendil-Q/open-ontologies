@@ -4,6 +4,119 @@ All notable changes to Open Ontologies are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Derivation certificates, checked by a proved-sound Lean checker.**
+  `reason --certificate DIR` (also `onto_reason`'s `certificate_dir` and batch
+  `reason --certificate`) writes `asserted.tsv` and `derivations.tsv`: every
+  inferred triple with the rule that produced it and the premises the rule
+  read, in a fixed order per rule. `lean/` holds a checker for that format
+  whose soundness is a machine-checked theorem, `OOCert.certificate_sound`,
+  with its axioms pinned by `#guard_msgs` so that a `sorry` fails the build: a
+  certificate it accepts contains only triples entailed by the asserted graph
+  under the RDF-based semantics of the twenty rules' vocabulary. Core Lean, no
+  Mathlib, no dependencies. A new CI job builds the proofs, certifies every
+  RDF file the repository ships, and appends forged lines the checker must
+  reject. `owl-dl` refuses the flag rather than pretending it has a rule
+  trace. See docs/lean-certificates.md and decision 0002.
+
+### Fixed
+- **`sh:sparql` ignored `sh:prefixes` and merged every `sh:declare` in the
+  shapes graph into one prologue.** A prefix bound to two namespaces emitted
+  two `PREFIX` lines, SPARQL took the last, and which one won was decided by
+  store row order: the constraint pointing at the loser matched nothing and the
+  run reported `conforms: true` with nothing in `skipped_constraints`. Two
+  shapes files that were the same RDF graph could give opposite verdicts. A
+  false clean, in the function the `#132` fix sits next to. Declarations are
+  now scoped per constraint through `sh:prefixes`, `owl:imports*` and
+  `sh:declare` as SHACL 5.2.1 says; a constraint that names no set keeps the
+  permissive whole-graph merge, but an ambiguous merge is refused with a
+  recorded reason rather than guessed.
+- **`sh:deactivated true` was ignored on a `sh:sparql` constraint node.** The
+  constraint ran, its rows were reported, and the run returned a confident
+  `conforms: false` where SHACL 5.3 says there are no results. The predicate
+  was already honoured on node shapes and property shapes. There was also no
+  unimplemented-predicate complement over constraint nodes at all, so any other
+  `sh:` predicate written there was invisible; there is one now.
+- **Any `sh:select`, `sh:pattern` or `sh:message` containing a typed or
+  language-tagged literal was truncated.** The helper that strips a literal's
+  quoting searched the whole string for `^^` and `"@` and cut there, so
+  `FILTER(?d < "2025-01-01"^^xsd:date)` was chopped mid-query. The constraint
+  then failed to parse and was recorded as unrunnable with an error blaming the
+  author, leaving `conforms: null`, zero violations and exit 0. Date and
+  numeric comparisons are the most common SPARQL constraints there are. The
+  value is now read with the RDF parser instead of by string surgery.
+- **A blank-node node shape applied every property shape in the file to its own
+  targets.** The shape was spliced into the query text, and `_:label` in a
+  SPARQL body is a non-distinguished variable, so `[] a sh:NodeShape` meant
+  "anything that has a property shape". Two such shapes with disjoint targets
+  reported conforming data as non-conforming. Shape terms are now bound by
+  substitution, the same mechanism `$this` pre-binding uses.
+- **`source_shape` named the enclosing node shape rather than the shape
+  carrying the constraint**, for all fifteen property-borne constraint sites.
+  Two property shapes on one path under one node shape therefore stayed
+  indistinguishable, which is the case #131 was filed about. pyshacl returns
+  the property shape and this now agrees. The node shape is still reported,
+  under `node_shape`.
+- **The reasoner was not a fixpoint of its own rule set.** Only the `rdf:type`,
+  `rdfs:subClassOf` and `rdfs:subPropertyOf` indices were rebuilt each
+  iteration; every schema index was filtered once out of the run-start
+  snapshot, so a schema triple the reasoner itself derived was never used and
+  running `reason` twice derived more than running it once. That matters most
+  for certificates: materialising turns one run's conclusions into the next
+  run's premises, so `asserted.tsv` could list the reasoner's own output as an
+  axiom.
+- **Four rules could conclude a triple with a literal subject.** `prp-symp`,
+  `prp-inv1`, `prp-inv2` and `eq-sym` take their conclusion's subject from an
+  object position, so a literal object produced a triple no serialisation can
+  express. Materialisation then failed on the whole batch, losing every
+  inference including the sound ones, at a line number that moved between runs
+  because it depends on hash iteration order.
+- **`cls-hv1` was not W3C's `cls-hv1`.** It was the composite of `cax-sco` and
+  `cls-hv1`: it required an explicit `rdfs:subClassOf` hop, so an individual
+  typed directly with the restriction derived nothing, while the certificate
+  put a W3C rule name in front of the reader. The W3C form is used now and
+  loses nothing, since the composite case is `rdfs9` followed by it.
+- **`rdfs3` dropped every range inference onto a blank node.** The guard
+  required an IRI when the invariant it needs is "not a literal", so a
+  blank-node value never got typed and `rdfs9` starved behind it.
+- **`oo-cert` exited 1 rather than the documented 2 when a certificate file
+  could not be read**, so a harness written to the contract reported an
+  unreadable file as a rejected certificate.
+- **The `lean` CI job could not pass.** The `lake --version` probe ran from the
+  crate root, the one directory with no `lean-toolchain` in its ancestry, and
+  `leanprover/lean-action` installs elan with no default toolchain. The probe
+  reported lake as missing and `OO_REQUIRE_FIXTURES=1` turned that into five
+  panics. Every local run was green because a developer machine has a default
+  toolchain.
+- **`sh:sparql` reported `conforms: true` when any single focus node
+  conformed (#132).** The author's SELECT was wrapped as a subquery under a
+  `VALUES ?this` clause. A subquery is evaluated bottom-up with no outer
+  variable in scope, so `$this` was unbound inside it, `FILTER NOT EXISTS`
+  asked whether ANY node matched, and one clean record hid every dirty one;
+  when every record failed the empty solution joined with all of them and the
+  count looked right. `$this` is now pre-bound per focus node through
+  Oxigraph's substitution, which is the mechanism SHACL-SPARQL 5.3.2
+  specifies. Blank-node focus nodes, previously excluded because VALUES
+  cannot name them, are evaluated. On the 39-shape case from the issue the
+  engine and pyshacl now agree exactly: 249 results, 245 distinct
+  record-shape pairs. A bound `?message` overrides `sh:message`, `?path`
+  becomes `result_path` and `?value` becomes `value`.
+- **Violations now name the shape and constraint component that produced
+  them (#131).** Every violation carries `source_shape` (the shape IRI),
+  `source_constraint_component` (the `sh:*ConstraintComponent` IRI) and
+  `result_path` wherever a path is known. Existing keys are unchanged.
+- **`owl-rl-ext` derived the converse of a subclass axiom.** `cls-svf1`
+  inferred `x rdf:type C` from `C rdfs:subClassOf ∃p.D`, `x p y` and
+  `y rdf:type D`, and treated `x p D`, with `D` the filler class IRI itself,
+  as a witness. Neither has a sound rule; both derivations are gone. The
+  `owl:equivalentClass` case that made the first look right is carried by
+  `rdfs9` over the `rdfs:subClassOf` triple `scm-eqc` emits. Found while
+  giving every rule a soundness proof for the certificate checker.
+- **Malformed `owl:intersectionOf` and `owl:unionOf` lists no longer fire the
+  class rules.** A list is read only when every node carries `rdf:first` and
+  `rdf:rest` and the chain reaches `rdf:nil`; the old lenient walk derived
+  from whatever it recovered.
+
 ## [1.3.0] - 2026-09-04
 
 > `v1.2.1` was tagged from inside this range (`5208de8`) without a version bump
@@ -97,8 +210,11 @@ All notable changes to Open Ontologies are documented here.
   predicate it inspects. A second complement now covers the shape node, with a
   whitelist of the predicates the validator reads there (the target forms,
   `sh:property`, `sh:sparql`) plus the annotation predicates, which are never
-  constraints, so any other `sh:` predicate lands in `skipped_constraints` and
-  the verdict becomes null. The shape is bound as a query variable and matched
+  constraints, so any other `sh:` predicate on a shape the `sh:targetClass`
+  discovery query returns lands in `skipped_constraints` and the verdict becomes
+  null. A shape whose only target is `sh:targetNode`, `sh:targetSubjectsOf` or
+  `sh:targetObjectsOf` is not returned by that query, so its node-level
+  constraints are still dropped without a record. The shape is bound as a query variable and matched
   to the discovered shape, not spliced into the query text: a shape written
   `[] a sh:NodeShape` is a blank node, and a blank-node label inside a SPARQL
   query is a wildcard, not a name. The complement runs once per shape rather
@@ -958,14 +1074,15 @@ results produced with 1.1.0 or earlier are not directly comparable.
 ## 1.1.0 — 2026-07-27
 
 ### Added
-- `claimcheck` module: compiled per-claim ontology-consistency verification.
+- `claimcheck` module (library only; no MCP tool and no CLI subcommand calls it): compiled per-claim ontology-consistency verification.
   Token-bitset engine (0.3 µs median per claim, 11M claims/s batched), sound
   two-hop disjointness join with witness extraction, three-valued verdicts
   (`Rejected` / `Undetermined` / `Consistent`), reasoner-backed residual tier
   (`ResidualOracle`) with verdict learn-back, closed-world vocabulary checks,
   and an assumed-disjointness WARN tier for zero-disjointness ontologies.
-  Correctness audited against HermiT: 0 disagreements over 78,884 exhaustive
-  class pairs (13 ontologies) and 793 adversarial structural claims.
+  Correctness audited against HermiT: 0 unsound rejections over 78,884
+  exhaustive class pairs (13 ontologies) and 793 adversarial structural
+  claims. The join is sound but incomplete, so this is not full agreement.
 - Offline compile tooling (`benchmark/reasoner/`): `CompileOntology` with six
   sound disjointness-propagation rules (restriction, functional, union,
   data-value, counting, dueling-universal idioms), `DisjointnessMatrix`,
@@ -1146,7 +1263,7 @@ results produced with 1.1.0 or earlier are not directly comparable.
 - Terraform-style lifecycle: plan, apply, lock, drift, enforce, monitor, lineage
 - Data pipeline: ingest, map, SHACL validate, reason, extend
 - Clinical crosswalks (ICD-10, SNOMED, MeSH)
-- OWL2-DL SHOIQ tableaux reasoner with parallel classification
+- SHIQ tableaux reasoner with parallel classification
 - Design pattern enforcement (generic, BORO, value_partition)
 - Version snapshots and rollback
 - Core ontology tools: validate, load, save, query, stats, diff, lint, convert, clear, pull, push, import

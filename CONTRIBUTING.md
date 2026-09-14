@@ -16,7 +16,7 @@ Thanks for your interest in contributing! This document explains how to get star
 **Requirements:**
 - Rust 1.85+ (edition 2024)
 - For PostgreSQL schema import: `libpq-dev`
-- For embeddings: models are downloaded automatically via `open-ontologies init`
+- For embeddings: build with `--features embeddings`, then run `open-ontologies init`, which downloads a 448 MB ONNX model and a 16 MB tokenizer
 
 **Build:**
 ```bash
@@ -47,12 +47,11 @@ The codebase is organized into domain modules under `src/`:
 |--------|---------|
 | `server.rs` | MCP server + tool/prompt implementations |
 | `inputs.rs` | Tool and prompt input structs (JsonSchema) |
-| `error.rs` | Typed error enum (`OntologyError`) |
 | `graph.rs` | Oxigraph triple store wrapper |
 | `ontology.rs` | Core RDF operations (validate, load, diff, lint) |
 | `state.rs` | SQLite state database (versions, feedback, locks) |
 | `config.rs` | TOML configuration loading |
-| `tableaux.rs` | OWL2-DL SHOIQ tableaux reasoner |
+| `tableaux.rs` | SHIQ tableaux reasoner |
 | `align.rs` | Cross-ontology alignment (7 weighted signals) |
 | `reason.rs` | RDFS/OWL-RL inference |
 | `ingest.rs` | Data format parsing (CSV, JSON, XLSX, Parquet, etc.) |

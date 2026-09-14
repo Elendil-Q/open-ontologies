@@ -2,6 +2,8 @@
 //! End-to-end test: load ontology → embed → search → align with embeddings.
 //! Only runs if the ONNX model is available.
 
+mod common;
+
 #[cfg(feature = "embeddings")]
 mod tests {
     use open_ontologies::graph::GraphStore;
@@ -21,7 +23,8 @@ mod tests {
     #[test]
     fn test_e2e_embed_search_align() {
         if !model_available() {
-            eprintln!("Skipping e2e: model not downloaded");
+            crate::common::skip_unless(false, "embedding model",
+                                "Run `open-ontologies init` first.");
             return;
         }
 

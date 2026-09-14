@@ -75,7 +75,7 @@ Claude dynamically decides the next tool call based on what the previous tool re
 | `onto_shacl` | To validate loaded data against SHACL shapes (cardinality, datatypes, classes) |
 | `onto_vocab_check` | To closed-world-check generated DATA: flags any predicate/class used that is not declared in the loaded ontology (hallucinated terms). Catches what open-world SHACL silently passes. Run on LLM-generated Turtle before `onto_load` |
 | `onto_defects` | BEFORE trusting any fact-level result, and on every marketplace pack before adopting it. Checks the ONTOLOGY against itself with no data present: `transitive_and_functional`, `symmetric_and_asymmetric`, `subclass_cycle`, `sub_property_cycle`, `disjoint_with_ancestor`, `inherited_disjoint`, `self_inverse`, `inverse_not_mutual`. A different question from `onto_dl_check`: a transitive functional property is satisfiable and is still a trap, because the pair manufactures contradictions the moment instances arrive. Each kind is listed at most 50 times, with the full total under `truncated` |
-| `onto_reason` | To run RDFS or OWL-RL inference, materializing inferred triples. Pass `inference_graph: true` to keep them in `https://open-ontologies.org/graph/inferred` instead of the default graph, so nothing downstream can read an inference as an assertion and `onto_save` to Turtle/RDF-XML cannot publish one. Default false (unchanged behaviour); not available for `owl-dl` |
+| `onto_reason` | To run RDFS or OWL-RL inference, materializing inferred triples. Pass `inference_graph: true` to keep them in `https://open-ontologies.org/graph/inferred` instead of the default graph, so nothing downstream can read an inference as an assertion and `onto_save` to Turtle/RDF-XML cannot publish one. Default false (unchanged behaviour); not available for `owl-dl`. Pass `certificate_dir` to also write a derivation certificate (`asserted.tsv` + `derivations.tsv`) that the proved-sound Lean checker in `lean/` verifies; see docs/lean-certificates.md |
 | `onto_reason_incremental` | After adding facts to an already-materialised graph. Derives the consequences of the ADDED triples only (semi-naive evaluation, joining the delta against the closure), so the cost tracks what changed rather than the size of the store: effectively instant against a 1.9M-triple store where full re-materialisation takes seconds. Refuses schema axioms (subClassOf, domain, range, inverseOf, equivalentClass) with an explanation, because those change what the whole store entails: run `onto_reason` for them |
 | `onto_extend` | To run the full pipeline: ingest → SHACL validate → reason in one call |
 | `onto_import_schema` | To import a PostgreSQL or DuckDB database schema as an OWL ontology (requires `postgres` and/or `duckdb` features). Auto-dispatches on connection-string scheme. |
@@ -181,7 +181,7 @@ When exploring or aligning ontologies using semantic embeddings:
 
 ### Setup
 
-1. Ensure the embedding model is downloaded (`open-ontologies init`)
+1. Confirm the server was built with `--features embeddings`, then run `open-ontologies init` to download the model. On a default build, every tool in this section returns `Compiled without embeddings feature`.
 2. Call `onto_load` to load the ontology
 3. Call `onto_embed` to generate text + structural embeddings for all classes
 

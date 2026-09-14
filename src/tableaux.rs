@@ -1,7 +1,11 @@
-//! OWL2-DL Tableaux Reasoner — SHOIQ with Agent-Based Classification
+//! SHIQ Tableaux Reasoner with Agent-Based Classification
 //!
 //! A native Rust implementation of a tableaux decision procedure for
-//! the SHOIQ Description Logic (the logical foundation of OWL2-DL).
+//! the SHIQ Description Logic: ALC extended with transitive roles, role
+//! hierarchies, inverse roles and qualified number restrictions. Nominals are
+//! not implemented, so this is a strict fragment of OWL 2 DL. `owl:oneOf` is
+//! not parsed, `owl:hasValue` is approximated as an atomic concept named after
+//! the individual, and datatype ranges are skipped.
 //!
 //! ## Description Logic Coverage
 //!
@@ -81,7 +85,9 @@ const OWL_ON_CLASS: &str = "<http://www.w3.org/2002/07/owl#onClass>";
 // ── Concept (Negation Normal Form) ──────────────────────────────────────
 
 /// Description Logic concept in NNF (Negation Normal Form).
-/// All negations pushed to atomic level. Supports SHOIQ.
+/// All negations pushed to atomic level. Covers SHIQ. There is no nominal
+/// constructor in this enum, so `owl:oneOf` has no representation and
+/// `owl:hasValue` is carried as an atomic concept named after the individual.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Concept {
     Top,
@@ -1202,6 +1208,15 @@ struct Tableau {
     tbox: Arc<ProcessedTBox>,
     trace: ExplanationTrace,
     budget: Budget,
+    /// Keep the completion graph of the branch that succeeded.
+    ///
+    /// The ⊔-rule explores a disjunct in a CLONE and returns `true` from the
+    /// clone's expansion without copying it back, so after a successful run
+    /// `self.nodes` is the state as it was BEFORE the last disjunction, not the
+    /// model that was found. Every existing caller reads only the boolean, so
+    /// this stays off by default and nothing changes; the model emitter turns it
+    /// on because it has to hand over the graph, not the verdict.
+    capture: bool,
 }
 
 impl Tableau {
@@ -1212,6 +1227,7 @@ impl Tableau {
             tbox,
             trace: ExplanationTrace::new(false),
             budget: Budget::default(),
+            capture: false,
         }
     }
 
@@ -1228,6 +1244,7 @@ impl Tableau {
             tbox,
             trace: ExplanationTrace::new(true),
             budget: Budget::default(),
+            capture: false,
         }
     }
 
@@ -1707,6 +1724,11 @@ impl Tableau {
                         let mut branch = self.clone();
                         branch.add_label(nid, disjunct.clone());
                         if branch.expand(depth + 1) {
+                            // Only the model emitter asks for the graph back. See
+                            // `Tableau::capture`.
+                            if self.capture {
+                                *self = branch;
+                            }
                             return true;
                         }
                         // Same here: an exhausted disjunct is not a refuted one.
@@ -1785,7 +1807,8 @@ impl Tableau {
         false
     }
 
-    /// Subset blocking: node blocked by ancestor with ⊇ labels.
+    /// Applies pairwise ancestor blocking to every node. See
+    /// `is_pairwise_blocked` for the condition.
     fn update_blocking(&mut self) {
         let mut node_ids: Vec<u32> = self.nodes.keys().copied().collect();
         // Sorted: HashMap iteration order is seeded per process, so an unsorted
@@ -1831,23 +1854,25 @@ impl Tableau {
     /// Note `=`, not `⊆`. This replaces the previous implementation, which used
     /// ancestor SUBSET blocking on the node label alone and ignored parents and
     /// edge labels entirely. That was adequate for ALC but unsound for the
-    /// SHOIQ this reasoner advertises.
+    /// SHIQ this reasoner implements.
     ///
     /// This is deliberately the classical ancestor variant rather than HermiT's
     /// "anywhere" blocking. Anywhere blocking yields smaller models but is a
     /// further optimisation on top of a correct base; get the base right first.
     fn is_pairwise_blocked(&self, s: u32) -> bool {
+        self.blocker_of(s).is_some()
+    }
+
+    /// The ancestor that blocks `s`, under the condition `is_pairwise_blocked`
+    /// documents. Split out so that the model emitter can fold a blocked node
+    /// into the node that blocks it, which is the only way a completion graph
+    /// with blocking becomes a finite interpretation. One condition, one place.
+    fn blocker_of(&self, s: u32) -> Option<u32> {
         // Only blockable successors can be blocked. A node with no parent is
         // a root and is never blocked.
-        let Some(s_parent) = self.nodes.get(&s).and_then(|n| n.parent) else {
-            return false;
-        };
-        let Some(s_node) = self.nodes.get(&s) else {
-            return false;
-        };
-        let Some(s_parent_node) = self.nodes.get(&s_parent) else {
-            return false;
-        };
+        let s_parent = self.nodes.get(&s).and_then(|n| n.parent)?;
+        let s_node = self.nodes.get(&s)?;
+        let s_parent_node = self.nodes.get(&s_parent)?;
 
         let s_labels = &s_node.labels;
         let s_parent_labels = &s_parent_node.labels;
@@ -1873,12 +1898,12 @@ impl Tableau {
                     && self.roles_between(t_parent, t) == s_down
                     && self.roles_between(t, t_parent) == s_up
                 {
-                    return true;
+                    return Some(t);
                 }
             }
             cur = t_node.parent;
         }
-        false
+        None
     }
 }
 
@@ -1900,6 +1925,31 @@ pub struct DlReasoner {
     /// Wall-clock cut-off applied to each individual satisfiability test.
     /// `None` means no time limit (the node/depth budgets still apply).
     deadline: Option<Instant>,
+    /// The axioms as the OWL parser read them, before `ProcessedTBox` absorbed,
+    /// rewrote and folded them. A model certificate is written against these, so
+    /// that what the checker verifies is the ontology's own axioms rather than
+    /// the reasoner's internal encoding of them.
+    source: Arc<AxiomSource>,
+}
+
+/// The parsed axioms, kept whole for the model emitter.
+///
+/// `ProcessedTBox` is a compilation target: it absorbs atomic left-hand sides
+/// into `concept_defs`, turns the rest into `¬C ⊔ D`, splits disjunctive
+/// left-hand sides and lifts domain and range out of the axiom list entirely.
+/// Certifying a model against THAT would certify the reasoner's encoding
+/// against itself. This is the input to that compilation, kept so the checker
+/// can be pointed at the axioms instead.
+struct AxiomSource {
+    axioms: Vec<(Concept, Concept)>,
+    disjoint_pairs: Vec<(Concept, Concept)>,
+    role_domains: Vec<(u32, Concept)>,
+    role_ranges: Vec<(u32, Concept)>,
+    sub_to_super: HashMap<u32, HashSet<u32>>,
+    transitive_roles: HashSet<u32>,
+    inverse_roles: HashMap<u32, u32>,
+    functional_roles: HashSet<u32>,
+    inv_functional_roles: HashSet<u32>,
 }
 
 impl DlReasoner {
@@ -1934,6 +1984,18 @@ impl DlReasoner {
             closure.insert(sub, seen);
         }
 
+        let source = Arc::new(AxiomSource {
+            axioms: result.axioms.clone(),
+            disjoint_pairs: result.disjoint_pairs.clone(),
+            role_domains: result.role_domains.clone(),
+            role_ranges: result.role_ranges.clone(),
+            sub_to_super: result.sub_to_super.clone(),
+            transitive_roles: result.transitive_roles.clone(),
+            inverse_roles: result.inverse_roles.clone(),
+            functional_roles: result.functional_roles.clone(),
+            inv_functional_roles: result.inv_functional_roles.clone(),
+        });
+
         let tbox = Arc::new(ProcessedTBox::new(
             &result.axioms,
             &result.disjoint_pairs,
@@ -1962,6 +2024,7 @@ impl DlReasoner {
             subclass_closure: closure,
             deadline: crate::runtime::tableaux_test_timeout_ms()
                 .map(|ms| Instant::now() + std::time::Duration::from_millis(ms)),
+            source,
         })
     }
 
@@ -2341,16 +2404,18 @@ impl DlReasoner {
                 .is_some_and(|subs| subs.contains(&asserted))
     }
 
-    pub fn check_abox(&self) -> ABoxResult {
-        if self.individual_types.is_empty() && self.individual_anon_types.is_empty() {
-            return ABoxResult {
-                consistent: true,
-                undecided: false,
-                individuals_checked: 0,
-                inferred_types: HashMap::new(),
-            };
-        }
-
+    /// Build the single tableau the ABox check runs on, with one node per named
+    /// individual and the asserted role assertions as edges.
+    ///
+    /// Extracted verbatim out of `check_abox` so the model emitter runs on the
+    /// SAME graph the consistency answer came from. Two copies of this setup
+    /// would let the certificate drift away from the verdict it is supposed to
+    /// certify, which is precisely the failure this whole layer exists to catch.
+    ///
+    /// Returns the tableau, the individual-to-node map, and the number of
+    /// individuals that carry a type (which is what `check_abox` reports, and
+    /// excludes nodes created only because a role assertion pointed at them).
+    fn build_abox_tableau(&self) -> (Tableau, HashMap<u32, u32>, usize) {
         // The ABox check builds ONE tableau containing every named individual,
         // so it is the largest single expansion the reasoner ever performs. It
         // must carry the same deadline as every other test, otherwise it is an
@@ -2444,6 +2509,22 @@ impl DlReasoner {
                 }
             }
         }
+
+
+        (tableau, ind_to_node, individuals_checked)
+    }
+
+    pub fn check_abox(&self) -> ABoxResult {
+        if self.individual_types.is_empty() && self.individual_anon_types.is_empty() {
+            return ABoxResult {
+                consistent: true,
+                undecided: false,
+                individuals_checked: 0,
+                inferred_types: HashMap::new(),
+            };
+        }
+
+        let (mut tableau, ind_to_node, individuals_checked) = self.build_abox_tableau();
 
         // Same three-valued discipline as everywhere else: exhausting the
         // budget is not a proof of inconsistency. Declaring an ABox
@@ -2600,7 +2681,7 @@ impl DlReasoner {
         let mut output = serde_json::json!({
             "profile_used": "owl-dl",
             "algorithm": "tableaux",
-            "description_logic": "SHOIQ",
+            "description_logic": "SHIQ",
             "consistent": consistent,
             "tbox_consistent": tbox_consistent,
             "named_classes": reasoner.named_classes.len(),
@@ -2630,6 +2711,51 @@ impl DlReasoner {
                 "total_time_ms": result.agents.total_time_ms,
             },
         });
+
+        // Opt-in model certificates. Off unless `OO_DL_MODEL_DIR` names a
+        // directory, so the default behaviour of `owl-dl` is exactly what it
+        // was. Only the POSITIVE answers are certified: an inconsistent TBox or
+        // an unsatisfiable class produces `Refuted` here, which means "no
+        // certificate", not "certified unsatisfiable".
+        if let Ok(root) = std::env::var("OO_DL_MODEL_DIR") {
+            let root = std::path::PathBuf::from(root);
+            let describe = |r: anyhow::Result<ModelOutcome>| match r {
+                Ok(o) => o.describe(),
+                Err(e) => format!("no certificate: {e}"),
+            };
+            // Per class as well as per ontology. TBox consistency is honestly
+            // witnessed by a single point with empty extensions, which really
+            // is what consistency means and is a weak-looking artefact; the
+            // per-class certificates are the informative ones, and the sweep
+            // that validated this layer used them.
+            let mut classes = serde_json::Map::new();
+            for (i, class) in reasoner.named_class_names().iter().enumerate() {
+                let sub = root.join("classes").join(i.to_string());
+                classes.insert(
+                    class.clone(),
+                    serde_json::json!(describe(reasoner.certify_class_satisfiable(class, &sub))),
+                );
+            }
+            let unmodelled = DlReasoner::unmodelled_constructs(graph);
+            output["model_certificate"] = serde_json::json!({
+                "dir": root.display().to_string(),
+                "tbox": describe(reasoner.certify_tbox_consistent(&root.join("tbox"))),
+                "abox": describe(reasoner.certify_abox_consistent(&root.join("abox"))),
+                "classes": classes,
+                "checker": "oo-dlmodel",
+                "theorem": "Dl.satisfiable_of_checkModel",
+                // The constructs below are IN THE GRAPH and NOT in the axioms
+                // the certificate is about, so where this list is non-empty the
+                // certificate describes a weaker axiom set than the ontology
+                // states. Read the verdict against this list, not on its own.
+                "certifies_a_weaker_axiom_set": !unmodelled.is_empty(),
+                "constructs_not_modelled": unmodelled
+                    .iter()
+                    .map(|(k, n)| serde_json::json!({"construct": k, "occurrences": n}))
+                    .collect::<Vec<_>>(),
+                "not_covered": "unsatisfiability and inconsistency carry no certificate",
+            });
+        }
 
         if !explanations.is_empty() {
             output["explanations"] = serde_json::json!(explanations);
@@ -2752,4 +2878,981 @@ pub struct ClassificationResult {
     pub unsatisfiable: Vec<u32>,
     pub equivalences: Vec<(u32, u32)>,
     pub inferred_subsumptions: usize,
+}
+
+// ── Model certificates ──────────────────────────────────────────────────
+//
+// Every verdict above is a bare verdict. A consumer who wants to know whether
+// the reasoner was right has to trust the reasoner. This section closes half of
+// that gap, and only half, deliberately.
+//
+// A tableaux run gives two kinds of answer and they are not equally hard to
+// certify. SATISFIABLE is easy: the procedure builds a completion graph, and a
+// completion graph either is a finite model or folds into one. A finite model is
+// a finite object, and checking that a finite interpretation satisfies a set of
+// axioms is decidable and provable. UNSATISFIABLE is hard: it needs the closed
+// tableau, every branch, every clash and the blocking argument, which is a
+// proof-checking problem and is not attempted here.
+//
+// So the positive answers carry a certificate and the negative ones do not. When
+// the reasoner reports a class unsatisfiable or an ontology inconsistent, it
+// still just says so, and the report says that plainly rather than blurring the
+// two.
+//
+// The certificate is two tab-separated files, `axioms.tsv` and `model.tsv`, read
+// by `oo-dlmodel` (`lean/DlMain.lean`). `lean/Dl/Syntax.lean` documents the
+// format and is the normative description of it. `Dl.satisfiable_of_checkModel`
+// is the machine-checked statement the exit code stands for: an interpretation
+// the checker accepts is a model, so the axiom set is satisfiable.
+//
+// Three things this does NOT do, stated here so no reader has to discover them:
+//
+//  1. The OWL parser is outside the theorem. The axioms written out are the
+//     axioms `OwlParser` read, not the ontology. A triple the parser ignores is
+//     absent from the certificate and the checker never sees it.
+//  2. Nothing is emitted for an answer that is not positive, and nothing is
+//     emitted when the completion graph cannot be turned into a finite
+//     interpretation. `ModelOutcome::Refused` says which, and no file is
+//     written. Emitting something that will not check would be worse than
+//     emitting nothing.
+//  3. The self-check below decides whether to emit. It is the same semantics
+//     `lean/Dl/Check.lean` implements, written twice on purpose: the Rust copy
+//     is a gate on the emitter, and the Lean copy is the one with the proof. A
+//     disagreement between them shows up as `oo-dlmodel` rejecting a certificate
+//     this side thought was fine, which is a failure, not a shrug.
+
+use std::path::Path;
+
+/// An axiom in the fragment `lean/Dl/` covers, over interned identifiers.
+#[derive(Clone, Debug)]
+enum DlAxiom {
+    Sub(Concept, Concept),
+    Disjoint(Concept, Concept),
+    Domain(u32, Concept),
+    Range(u32, Concept),
+    SubRole(u32, u32),
+    Trans(u32),
+    Sym(u32),
+    Inv(u32, u32),
+    InvFunc(u32),
+    Inst(u32, Concept),
+    Rel(u32, u32, u32),
+    Indiv(u32),
+    NonEmpty(Concept),
+}
+
+/// A folded completion graph: the node identifiers that survived, and the edges
+/// between them, each written `(source, role, target)`.
+type FoldedGraph = (Vec<u32>, Vec<(u32, u32, u32)>);
+
+/// A finite interpretation whose domain elements are tableau node identifiers.
+#[derive(Default)]
+struct FiniteModel {
+    dom: Vec<u32>,
+    domset: HashSet<u32>,
+    /// Atomic concept identifier → the nodes in its extension. Closed world on
+    /// atoms: a node is in `A` exactly when `Atom(A)` is in its label. That is
+    /// the canonical reading of a completion graph, and it is what makes the
+    /// negated atoms in the labels mean anything.
+    cext: HashMap<u32, HashSet<u32>>,
+    /// (role, source) → deduplicated targets.
+    rext: HashMap<(u32, u32), Vec<u32>>,
+    /// Individual identifier → the node that denotes it.
+    ind: HashMap<u32, u32>,
+}
+
+/// What `DlReasoner::certify_*` did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelOutcome {
+    /// `axioms.tsv` and `model.tsv` were written and pass the emitter's own
+    /// check. `oo-dlmodel` is what turns that into a verified statement.
+    Certified {
+        axioms: usize,
+        domain: usize,
+        edges: usize,
+    },
+    /// The reasoner PROVED the negative answer. There is no model to hand over,
+    /// and this layer says nothing about whether the proof is right.
+    Refuted,
+    /// A resource budget was hit. Nothing was proven either way.
+    Undetermined,
+    /// A positive answer was reached but the completion graph could not be
+    /// turned into a finite interpretation that satisfies the axioms. No file
+    /// was written. The string says why.
+    Refused(String),
+}
+
+impl ModelOutcome {
+    /// True only when files were written.
+    pub fn is_certified(&self) -> bool {
+        matches!(self, ModelOutcome::Certified { .. })
+    }
+
+    /// A one-line description, for logs and for the `owl-dl` JSON output.
+    pub fn describe(&self) -> String {
+        match self {
+            ModelOutcome::Certified {
+                axioms,
+                domain,
+                edges,
+            } => format!("certified: {axioms} axioms, {domain} elements, {edges} edges"),
+            ModelOutcome::Refuted => "no certificate: the answer was negative".to_string(),
+            ModelOutcome::Undetermined => "no certificate: the run was undetermined".to_string(),
+            ModelOutcome::Refused(why) => format!("no certificate: {why}"),
+        }
+    }
+}
+
+/// A name that survives the round trip through the two files.
+///
+/// The concept grammar is space-separated and the files are tab-separated, so a
+/// term carrying either would be read back as a different term. N-Triples IRIs
+/// and blank node labels never do. A literal can, and `owl:hasValue` is
+/// approximated here by an atomic concept named after the individual, which may
+/// be a literal. Refusing is the only honest answer for one of those.
+fn name_is_safe(s: &str) -> bool {
+    !s.is_empty() && !s.contains([' ', '\t', '\n', '\r'])
+}
+
+// ── Serialisation ───────────────────────────────────────────────────────
+
+fn write_concept(out: &mut String, interner: &Interner, c: &Concept) {
+    match c {
+        Concept::Top => out.push_str("top"),
+        Concept::Bottom => out.push_str("bot"),
+        Concept::Atom(a) => {
+            out.push_str("atom ");
+            out.push_str(interner.resolve(*a));
+        }
+        Concept::NegAtom(a) => {
+            out.push_str("not atom ");
+            out.push_str(interner.resolve(*a));
+        }
+        // `lean/Dl` has binary conjunction and disjunction, so the n-ary OWL
+        // constructors are folded right-associatively here. An empty list is the
+        // unit of the connective, which is how `RawConcept::to_nnf` already
+        // reads it.
+        Concept::And(cs) => write_nary(out, interner, cs, "and", &Concept::Top),
+        Concept::Or(cs) => write_nary(out, interner, cs, "or", &Concept::Bottom),
+        Concept::Exists(r, f) => {
+            out.push_str("some ");
+            out.push_str(interner.resolve(*r));
+            out.push(' ');
+            write_concept(out, interner, f);
+        }
+        Concept::ForAll(r, f) => {
+            out.push_str("all ");
+            out.push_str(interner.resolve(*r));
+            out.push(' ');
+            write_concept(out, interner, f);
+        }
+        Concept::MinCard(r, n, f) => {
+            out.push_str("min ");
+            out.push_str(&n.to_string());
+            out.push(' ');
+            out.push_str(interner.resolve(*r));
+            out.push(' ');
+            write_concept(out, interner, f);
+        }
+        Concept::MaxCard(r, n, f) => {
+            out.push_str("max ");
+            out.push_str(&n.to_string());
+            out.push(' ');
+            out.push_str(interner.resolve(*r));
+            out.push(' ');
+            write_concept(out, interner, f);
+        }
+    }
+}
+
+fn write_nary(out: &mut String, interner: &Interner, cs: &[Concept], op: &str, unit: &Concept) {
+    match cs.split_first() {
+        None => write_concept(out, interner, unit),
+        Some((head, [])) => write_concept(out, interner, head),
+        Some((head, rest)) => {
+            out.push_str(op);
+            out.push(' ');
+            write_concept(out, interner, head);
+            out.push(' ');
+            write_nary(out, interner, rest, op, unit);
+        }
+    }
+}
+
+fn concept_string(interner: &Interner, c: &Concept) -> String {
+    let mut s = String::new();
+    write_concept(&mut s, interner, c);
+    s
+}
+
+fn axiom_line(interner: &Interner, a: &DlAxiom) -> String {
+    let cs = |c: &Concept| concept_string(interner, c);
+    let r = |id: &u32| interner.resolve(*id).to_string();
+    match a {
+        DlAxiom::Sub(c, d) => format!("sub\t{}\t{}", cs(c), cs(d)),
+        DlAxiom::Disjoint(c, d) => format!("disjoint\t{}\t{}", cs(c), cs(d)),
+        DlAxiom::Domain(role, c) => format!("domain\t{}\t{}", r(role), cs(c)),
+        DlAxiom::Range(role, c) => format!("range\t{}\t{}", r(role), cs(c)),
+        DlAxiom::SubRole(a1, b1) => format!("subrole\t{}\t{}", r(a1), r(b1)),
+        DlAxiom::Trans(role) => format!("trans\t{}", r(role)),
+        DlAxiom::Sym(role) => format!("sym\t{}", r(role)),
+        DlAxiom::Inv(a1, b1) => format!("inv\t{}\t{}", r(a1), r(b1)),
+        DlAxiom::InvFunc(role) => format!("invfunc\t{}", r(role)),
+        DlAxiom::Inst(i, c) => format!("inst\t{}\t{}", r(i), cs(c)),
+        DlAxiom::Rel(a1, role, b1) => format!("rel\t{}\t{}\t{}", r(a1), r(role), r(b1)),
+        DlAxiom::Indiv(i) => format!("indiv\t{}", r(i)),
+        DlAxiom::NonEmpty(c) => format!("nonempty\t{}", cs(c)),
+    }
+}
+
+/// Every name a concept mentions, for the safety check.
+fn concept_names(interner: &Interner, c: &Concept, out: &mut Vec<String>) {
+    match c {
+        Concept::Top | Concept::Bottom => {}
+        Concept::Atom(a) | Concept::NegAtom(a) => out.push(interner.resolve(*a).to_string()),
+        Concept::And(cs) | Concept::Or(cs) => {
+            for c in cs {
+                concept_names(interner, c, out);
+            }
+        }
+        Concept::Exists(r, f) | Concept::ForAll(r, f) => {
+            out.push(interner.resolve(*r).to_string());
+            concept_names(interner, f, out);
+        }
+        Concept::MinCard(r, _, f) | Concept::MaxCard(r, _, f) => {
+            out.push(interner.resolve(*r).to_string());
+            concept_names(interner, f, out);
+        }
+    }
+}
+
+// ── The finite interpretation, and the check on it ──────────────────────
+
+impl FiniteModel {
+    fn successors(&self, role: u32, x: u32) -> &[u32] {
+        self.rext
+            .get(&(role, x))
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    fn in_class(&self, class: u32, x: u32) -> bool {
+        self.cext.get(&class).is_some_and(|s| s.contains(&x))
+    }
+
+    /// The same clauses as `Dl.sat` in `lean/Dl/Check.lean`. `rext` entries are
+    /// deduplicated when the model is built, so the counting cases compare
+    /// against a count of DISTINCT successors, which is what `Dl.AtLeast` and
+    /// `Dl.AtMost` mean.
+    fn sat(&self, c: &Concept, x: u32) -> bool {
+        match c {
+            Concept::Top => true,
+            Concept::Bottom => false,
+            Concept::Atom(a) => self.in_class(*a, x),
+            Concept::NegAtom(a) => !self.in_class(*a, x),
+            Concept::And(cs) => cs.iter().all(|d| self.sat(d, x)),
+            Concept::Or(cs) => cs.iter().any(|d| self.sat(d, x)),
+            Concept::Exists(r, f) => self.successors(*r, x).iter().any(|&y| self.sat(f, y)),
+            Concept::ForAll(r, f) => self.successors(*r, x).iter().all(|&y| self.sat(f, y)),
+            Concept::MinCard(r, n, f) => {
+                self.successors(*r, x).iter().filter(|&&y| self.sat(f, y)).count() >= *n as usize
+            }
+            Concept::MaxCard(r, n, f) => {
+                self.successors(*r, x).iter().filter(|&&y| self.sat(f, y)).count() <= *n as usize
+            }
+        }
+    }
+
+    /// The same clauses as `Dl.holds`.
+    fn holds(&self, a: &DlAxiom) -> bool {
+        match a {
+            DlAxiom::Sub(c, d) => self.dom.iter().all(|&x| !self.sat(c, x) || self.sat(d, x)),
+            DlAxiom::Disjoint(c, d) => {
+                self.dom.iter().all(|&x| !(self.sat(c, x) && self.sat(d, x)))
+            }
+            DlAxiom::Domain(r, c) => self
+                .dom
+                .iter()
+                .all(|&x| self.successors(*r, x).is_empty() || self.sat(c, x)),
+            DlAxiom::Range(r, c) => self
+                .dom
+                .iter()
+                .all(|&x| self.successors(*r, x).iter().all(|&y| self.sat(c, y))),
+            DlAxiom::SubRole(r, s) => self.dom.iter().all(|&x| {
+                self.successors(*r, x)
+                    .iter()
+                    .all(|y| self.successors(*s, x).contains(y))
+            }),
+            DlAxiom::Trans(r) => self.dom.iter().all(|&x| {
+                self.successors(*r, x).iter().all(|&y| {
+                    self.successors(*r, y)
+                        .iter()
+                        .all(|z| self.successors(*r, x).contains(z))
+                })
+            }),
+            DlAxiom::Sym(r) => self.dom.iter().all(|&x| {
+                self.successors(*r, x)
+                    .iter()
+                    .all(|&y| self.successors(*r, y).contains(&x))
+            }),
+            DlAxiom::Inv(r, s) => {
+                self.dom.iter().all(|&x| {
+                    self.successors(*r, x)
+                        .iter()
+                        .all(|&y| self.successors(*s, y).contains(&x))
+                }) && self.dom.iter().all(|&x| {
+                    self.successors(*s, x)
+                        .iter()
+                        .all(|&y| self.successors(*r, y).contains(&x))
+                })
+            }
+            DlAxiom::InvFunc(r) => self.dom.iter().all(|&y| {
+                self.dom
+                    .iter()
+                    .filter(|&&x| self.successors(*r, x).contains(&y))
+                    .count()
+                    <= 1
+            }),
+            DlAxiom::Inst(i, c) => self.ind.get(i).is_some_and(|&x| self.sat(c, x)),
+            DlAxiom::Rel(a1, r, b1) => match (self.ind.get(a1), self.ind.get(b1)) {
+                (Some(&x), Some(&y)) => self.successors(*r, x).contains(&y),
+                _ => false,
+            },
+            DlAxiom::Indiv(i) => self.ind.get(i).is_some_and(|x| self.domset.contains(x)),
+            DlAxiom::NonEmpty(c) => self.dom.iter().any(|&x| self.sat(c, x)),
+        }
+    }
+
+    /// The same clauses as `Dl.checkWF`. Returns the first failure.
+    fn well_formed(&self, axioms: &[DlAxiom]) -> Result<(), String> {
+        if self.dom.is_empty() {
+            return Err("the domain is empty".to_string());
+        }
+        for (class, members) in &self.cext {
+            if let Some(bad) = members.iter().find(|m| !self.domset.contains(m)) {
+                return Err(format!(
+                    "class {class} has member n{bad} outside the domain"
+                ));
+            }
+        }
+        for (&(role, from), targets) in &self.rext {
+            if !self.domset.contains(&from) {
+                return Err(format!("role {role} has an edge from n{from}, outside the domain"));
+            }
+            if let Some(bad) = targets.iter().find(|t| !self.domset.contains(t)) {
+                return Err(format!("role {role} has an edge to n{bad}, outside the domain"));
+            }
+        }
+        for a in axioms {
+            let inds: Vec<u32> = match a {
+                DlAxiom::Inst(i, _) | DlAxiom::Indiv(i) => vec![*i],
+                DlAxiom::Rel(x, _, y) => vec![*x, *y],
+                _ => vec![],
+            };
+            for i in inds {
+                match self.ind.get(&i) {
+                    Some(x) if self.domset.contains(x) => {}
+                    _ => {
+                        return Err(format!(
+                            "individual {i} has no denotation inside the domain"
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+// ── Reading a completion graph off a finished tableau ────────────────────
+
+impl Tableau {
+    /// Fold blocked nodes into the nodes that block them, and return the
+    /// surviving nodes with their labels and edges.
+    ///
+    /// A blocked node is never expanded, so its label can carry an `∃R.C` with
+    /// no `R`-successor: the completion graph as it stands is NOT an
+    /// interpretation. The standard repair is to send the edge that reaches the
+    /// blocked node to its blocker instead. Pairwise blocking requires the two
+    /// labels to be EQUAL, not merely included, so the redirect moves the edge
+    /// to a node carrying exactly the same constraints.
+    ///
+    /// That argument is why the fold is worth doing at all. It is not why the
+    /// result is trusted: the caller checks the folded interpretation against
+    /// the axioms and refuses to emit if it does not hold. SHIQ has no finite
+    /// model property, so for some inputs no fold can work, and refusing is the
+    /// correct outcome there rather than a bug.
+    fn folded_graph(&self) -> Result<FoldedGraph, String> {
+        let resolve = |mut n: u32| -> Result<u32, String> {
+            let mut steps = 0usize;
+            while let Some(b) = self.blocker_of(n) {
+                n = b;
+                steps += 1;
+                if steps > self.nodes.len() + 1 {
+                    return Err("a blocking chain did not terminate".to_string());
+                }
+            }
+            Ok(n)
+        };
+
+        let mut roots: Vec<u32> = self
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.parent.is_none())
+            .map(|(&id, _)| id)
+            .collect();
+        roots.sort_unstable();
+        if roots.is_empty() {
+            return Err("the completion graph has no root node".to_string());
+        }
+
+        let mut kept: Vec<u32> = Vec::new();
+        let mut seen: HashSet<u32> = HashSet::new();
+        let mut edges: Vec<(u32, u32, u32)> = Vec::new();
+        let mut queue: Vec<u32> = Vec::new();
+        for r in roots {
+            let r = resolve(r)?;
+            if seen.insert(r) {
+                kept.push(r);
+                queue.push(r);
+            }
+        }
+        while let Some(x) = queue.pop() {
+            let Some(node) = self.nodes.get(&x) else {
+                return Err(format!("node {x} is referenced but absent"));
+            };
+            let mut roles: Vec<u32> = node.edges.keys().copied().collect();
+            roles.sort_unstable();
+            for role in roles {
+                let mut targets: Vec<u32> = node.edges[&role].iter().copied().collect();
+                targets.sort_unstable();
+                for t in targets {
+                    let t = resolve(t)?;
+                    edges.push((x, role, t));
+                    if seen.insert(t) {
+                        kept.push(t);
+                        queue.push(t);
+                    }
+                }
+            }
+        }
+        kept.sort_unstable();
+        edges.sort_unstable();
+        edges.dedup();
+        Ok((kept, edges))
+    }
+}
+
+// ── Closing the role extensions ─────────────────────────────────────────
+
+/// Add every edge the role axioms force: super-roles, inverses (a symmetric role
+/// is its own inverse here) and transitive closure.
+///
+/// The completion graph carries only the edges the tableau rules created, and
+/// `Tableau::successors` reads the rest off the role hierarchy and the parent
+/// back-link as it goes. A finite interpretation has to carry them, because
+/// `subrole`, `inv`, `sym` and `trans` are axioms the checker will evaluate.
+///
+/// The cap is not a nicety. Closing a transitive role over a completion graph
+/// can square the edge count, and a certificate nobody can read is no better
+/// than none.
+fn close_roles(
+    src: &AxiomSource,
+    raw: &[(u32, u32, u32)],
+    cap: usize,
+) -> Result<HashSet<(u32, u32, u32)>, String> {
+    let mut super_of: HashMap<u32, HashSet<u32>> = HashMap::new();
+    for (&sub, sups) in &src.sub_to_super {
+        let mut seen: HashSet<u32> = HashSet::new();
+        let mut stack: Vec<u32> = sups.iter().copied().collect();
+        while let Some(x) = stack.pop() {
+            if seen.insert(x)
+                && let Some(next) = src.sub_to_super.get(&x)
+            {
+                stack.extend(next.iter().copied());
+            }
+        }
+        seen.remove(&sub);
+        super_of.insert(sub, seen);
+    }
+
+    let mut all: HashSet<(u32, u32, u32)> = raw.iter().copied().collect();
+    let mut work: Vec<(u32, u32, u32)> = all.iter().copied().collect();
+    while let Some((x, r, y)) = work.pop() {
+        if all.len() > cap {
+            return Err(format!(
+                "closing the role extensions passed {cap} edges; no finite interpretation \
+                 small enough to certify was produced"
+            ));
+        }
+        let mut add: Vec<(u32, u32, u32)> = Vec::new();
+        if let Some(sups) = super_of.get(&r) {
+            for &s in sups {
+                add.push((x, s, y));
+            }
+        }
+        if let Some(&inv) = src.inverse_roles.get(&r) {
+            add.push((y, inv, x));
+        }
+        if src.transitive_roles.contains(&r) {
+            for &(a, rr, b) in all.iter() {
+                if rr != r {
+                    continue;
+                }
+                if b == x {
+                    add.push((a, r, y));
+                }
+                if a == y {
+                    add.push((x, r, b));
+                }
+            }
+        }
+        for e in add {
+            if all.insert(e) {
+                work.push(e);
+            }
+        }
+    }
+    Ok(all)
+}
+
+// ── The public entry points ─────────────────────────────────────────────
+
+impl DlReasoner {
+    /// The TBox axioms, as the OWL parser read them, in the `lean/Dl` fragment.
+    fn tbox_axioms(&self) -> Vec<DlAxiom> {
+        let s = &self.source;
+        let mut out: Vec<DlAxiom> = Vec::new();
+        for (sub, sup) in &s.axioms {
+            out.push(DlAxiom::Sub(sub.clone(), sup.clone()));
+        }
+        for (a, b) in &s.disjoint_pairs {
+            out.push(DlAxiom::Disjoint(a.clone(), b.clone()));
+        }
+        for (r, c) in &s.role_domains {
+            out.push(DlAxiom::Domain(*r, c.clone()));
+        }
+        for (r, c) in &s.role_ranges {
+            out.push(DlAxiom::Range(*r, c.clone()));
+        }
+        let mut subrole: Vec<(u32, u32)> = Vec::new();
+        for (&sub, sups) in &s.sub_to_super {
+            for &sup in sups {
+                if sub != sup {
+                    subrole.push((sub, sup));
+                }
+            }
+        }
+        subrole.sort_unstable();
+        for (sub, sup) in subrole {
+            out.push(DlAxiom::SubRole(sub, sup));
+        }
+        let mut trans: Vec<u32> = s.transitive_roles.iter().copied().collect();
+        trans.sort_unstable();
+        for r in trans {
+            out.push(DlAxiom::Trans(r));
+        }
+        // `inverse_roles` holds both directions, and a symmetric role appears as
+        // its own inverse. Emit each pair once, and a symmetric role as `sym`,
+        // which is the same condition stated in the form a reader expects.
+        let mut invs: Vec<(u32, u32)> = s.inverse_roles.iter().map(|(&a, &b)| (a, b)).collect();
+        invs.sort_unstable();
+        for (a, b) in invs {
+            if a == b {
+                out.push(DlAxiom::Sym(a));
+            } else if a < b {
+                out.push(DlAxiom::Inv(a, b));
+            }
+        }
+        // A functional role is exactly `⊤ ⊑ ≤1 R.⊤`, so it needs no constructor
+        // of its own. Inverse functionality does: `≤1 R⁻.⊤` is not expressible
+        // as a concept unless `R` happens to have a named inverse.
+        let mut func: Vec<u32> = s.functional_roles.iter().copied().collect();
+        func.sort_unstable();
+        for r in func {
+            out.push(DlAxiom::Sub(
+                Concept::Top,
+                Concept::MaxCard(r, 1, Box::new(Concept::Top)),
+            ));
+        }
+        let mut invfunc: Vec<u32> = s.inv_functional_roles.iter().copied().collect();
+        invfunc.sort_unstable();
+        for r in invfunc {
+            out.push(DlAxiom::InvFunc(r));
+        }
+        out
+    }
+
+    /// The TBox axioms plus the ABox: class assertions, role assertions, and one
+    /// `indiv` line per named individual so that a model is forced to contain it.
+    fn abox_axioms(&self) -> Vec<DlAxiom> {
+        let mut out = self.tbox_axioms();
+        let mut inds: Vec<u32> = self.individual_types.keys().copied().collect();
+        for &i in self.individual_anon_types.keys() {
+            inds.push(i);
+        }
+        for &(a, _, b) in &self.role_assertions {
+            inds.push(a);
+            inds.push(b);
+        }
+        inds.sort_unstable();
+        inds.dedup();
+        for i in inds {
+            out.push(DlAxiom::Indiv(i));
+        }
+        let mut typed: Vec<(u32, Vec<u32>)> = self
+            .individual_types
+            .iter()
+            .map(|(&i, ts)| {
+                let mut v: Vec<u32> = ts.iter().copied().collect();
+                v.sort_unstable();
+                (i, v)
+            })
+            .collect();
+        typed.sort_unstable();
+        for (i, ts) in typed {
+            for t in ts {
+                out.push(DlAxiom::Inst(i, Concept::Atom(t)));
+            }
+        }
+        let mut anon: Vec<(u32, Vec<Concept>)> = self
+            .individual_anon_types
+            .iter()
+            .map(|(&i, cs)| (i, cs.clone()))
+            .collect();
+        anon.sort_unstable_by_key(|(i, _)| *i);
+        for (i, cs) in anon {
+            for c in cs {
+                out.push(DlAxiom::Inst(i, c));
+            }
+        }
+        let mut rels: Vec<(u32, u32, u32)> = self.role_assertions.clone();
+        rels.sort_unstable();
+        rels.dedup();
+        for (a, r, b) in rels {
+            out.push(DlAxiom::Rel(a, r, b));
+        }
+        out
+    }
+
+    /// Build the finite interpretation, check it here, and write the two files.
+    /// Nothing is written unless the check passes.
+    fn emit(
+        &self,
+        tableau: &Tableau,
+        ind_to_node: &HashMap<u32, u32>,
+        axioms: Vec<DlAxiom>,
+        dir: &Path,
+    ) -> anyhow::Result<ModelOutcome> {
+        let (kept, raw_edges) = match tableau.folded_graph() {
+            Ok(v) => v,
+            Err(e) => return Ok(ModelOutcome::Refused(e)),
+        };
+        if kept.is_empty() {
+            return Ok(ModelOutcome::Refused(
+                "the completion graph is empty, so there is no interpretation to hand over"
+                    .to_string(),
+            ));
+        }
+
+        let domset: HashSet<u32> = kept.iter().copied().collect();
+        let closed = match close_roles(&self.source, &raw_edges, 200_000) {
+            Ok(v) => v,
+            Err(e) => return Ok(ModelOutcome::Refused(e)),
+        };
+
+        let mut rext: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+        for (x, r, y) in closed {
+            if !domset.contains(&x) || !domset.contains(&y) {
+                return Ok(ModelOutcome::Refused(format!(
+                    "closing the role extensions produced an edge outside the folded domain \
+                     (n{x} to n{y}); the completion graph does not fold into a finite model"
+                )));
+            }
+            rext.entry((r, x)).or_default().push(y);
+        }
+        for v in rext.values_mut() {
+            v.sort_unstable();
+            v.dedup();
+        }
+
+        let mut cext: HashMap<u32, HashSet<u32>> = HashMap::new();
+        for &n in &kept {
+            let Some(node) = tableau.nodes.get(&n) else {
+                return Ok(ModelOutcome::Refused(format!("node {n} vanished")));
+            };
+            for label in &node.labels {
+                if let Concept::Atom(a) = label {
+                    cext.entry(*a).or_default().insert(n);
+                }
+            }
+        }
+
+        let mut ind: HashMap<u32, u32> = HashMap::new();
+        for (&i, &n) in ind_to_node {
+            // An individual whose node was folded away denotes the node it was
+            // folded into. Roots are never blocked, and every individual is a
+            // root, so in practice this is the identity; it is written out
+            // rather than assumed.
+            let mut cur = n;
+            let mut steps = 0usize;
+            while let Some(b) = tableau.blocker_of(cur) {
+                cur = b;
+                steps += 1;
+                if steps > tableau.nodes.len() + 1 {
+                    return Ok(ModelOutcome::Refused(
+                        "a blocking chain under a named individual did not terminate".to_string(),
+                    ));
+                }
+            }
+            if !domset.contains(&cur) {
+                return Ok(ModelOutcome::Refused(format!(
+                    "individual {} has no node in the folded domain",
+                    self.interner.resolve(i)
+                )));
+            }
+            ind.insert(i, cur);
+        }
+
+        let model = FiniteModel {
+            dom: kept.clone(),
+            domset,
+            cext,
+            rext,
+            ind,
+        };
+
+        // Every name that will appear in either file has to survive the round
+        // trip. `owl:hasValue` is approximated by an atom named after the
+        // individual, and that individual can be a literal with a space in it.
+        let mut names: Vec<String> = Vec::new();
+        for a in &axioms {
+            match a {
+                DlAxiom::Sub(c, d) | DlAxiom::Disjoint(c, d) => {
+                    concept_names(&self.interner, c, &mut names);
+                    concept_names(&self.interner, d, &mut names);
+                }
+                DlAxiom::Domain(r, c) | DlAxiom::Range(r, c) => {
+                    names.push(self.interner.resolve(*r).to_string());
+                    concept_names(&self.interner, c, &mut names);
+                }
+                DlAxiom::Inst(i, c) => {
+                    names.push(self.interner.resolve(*i).to_string());
+                    concept_names(&self.interner, c, &mut names);
+                }
+                DlAxiom::NonEmpty(c) => concept_names(&self.interner, c, &mut names),
+                DlAxiom::SubRole(x, y) | DlAxiom::Inv(x, y) => {
+                    names.push(self.interner.resolve(*x).to_string());
+                    names.push(self.interner.resolve(*y).to_string());
+                }
+                DlAxiom::Trans(r) | DlAxiom::Sym(r) | DlAxiom::InvFunc(r) => {
+                    names.push(self.interner.resolve(*r).to_string())
+                }
+                DlAxiom::Rel(x, r, y) => {
+                    names.push(self.interner.resolve(*x).to_string());
+                    names.push(self.interner.resolve(*r).to_string());
+                    names.push(self.interner.resolve(*y).to_string());
+                }
+                DlAxiom::Indiv(i) => names.push(self.interner.resolve(*i).to_string()),
+            }
+        }
+        for &(role, _) in model.rext.keys() {
+            names.push(self.interner.resolve(role).to_string());
+        }
+        for &class in model.cext.keys() {
+            names.push(self.interner.resolve(class).to_string());
+        }
+        if let Some(bad) = names.iter().find(|n| !name_is_safe(n)) {
+            return Ok(ModelOutcome::Refused(format!(
+                "the name {bad:?} carries whitespace, so it would not survive the \
+                 tab-and-space separated format; nothing was written"
+            )));
+        }
+
+        // The gate. A certificate that will not check is worse than no
+        // certificate, so the emitter runs the same semantics the checker does
+        // and refuses when it does not hold.
+        if let Err(why) = model.well_formed(&axioms) {
+            return Ok(ModelOutcome::Refused(format!(
+                "the folded completion graph is not a finite interpretation: {why}"
+            )));
+        }
+        if let Some(bad) = axioms.iter().find(|a| !model.holds(a)) {
+            return Ok(ModelOutcome::Refused(format!(
+                "the folded completion graph does not satisfy the axiom `{}`",
+                axiom_line(&self.interner, bad).replace('\t', " ")
+            )));
+        }
+
+        let mut axiom_text = String::new();
+        for a in &axioms {
+            axiom_text.push_str(&axiom_line(&self.interner, a));
+            axiom_text.push('\n');
+        }
+
+        let mut model_text = String::new();
+        for &n in &model.dom {
+            model_text.push_str(&format!("domain\tn{n}\n"));
+        }
+        let mut classes: Vec<(u32, Vec<u32>)> = model
+            .cext
+            .iter()
+            .map(|(&c, ms)| {
+                let mut v: Vec<u32> = ms.iter().copied().collect();
+                v.sort_unstable();
+                (c, v)
+            })
+            .collect();
+        classes.sort_unstable();
+        for (c, ms) in classes {
+            for m in ms {
+                model_text.push_str(&format!("class\t{}\tn{m}\n", self.interner.resolve(c)));
+            }
+        }
+        let mut edge_lines: Vec<(u32, u32, u32)> = Vec::new();
+        for (&(r, x), ys) in &model.rext {
+            for &y in ys {
+                edge_lines.push((x, r, y));
+            }
+        }
+        edge_lines.sort_unstable();
+        let edge_count = edge_lines.len();
+        for (x, r, y) in edge_lines {
+            model_text.push_str(&format!("edge\tn{x}\t{}\tn{y}\n", self.interner.resolve(r)));
+        }
+        let mut ind_lines: Vec<(u32, u32)> = model.ind.iter().map(|(&i, &n)| (i, n)).collect();
+        ind_lines.sort_unstable();
+        for (i, n) in ind_lines {
+            model_text.push_str(&format!("ind\t{}\tn{n}\n", self.interner.resolve(i)));
+        }
+
+        std::fs::create_dir_all(dir)?;
+        std::fs::write(dir.join("axioms.tsv"), axiom_text)?;
+        std::fs::write(dir.join("model.tsv"), model_text)?;
+
+        Ok(ModelOutcome::Certified {
+            axioms: axioms.len(),
+            domain: model.dom.len(),
+            edges: edge_count,
+        })
+    }
+
+    /// Certify that `class_iri` is satisfiable with respect to the TBox.
+    ///
+    /// The claim is written into the axiom set as `nonempty`, so a checker that
+    /// accepts the certificate has verified the reasoner's actual answer and not
+    /// merely that the TBox has some model. The ABox is NOT part of this
+    /// certificate: classification in this reasoner is a TBox question, the
+    /// completion graph has no named individuals in it, and pretending otherwise
+    /// would produce a certificate that cannot check.
+    pub fn certify_class_satisfiable(
+        &self,
+        class_iri: &str,
+        dir: &Path,
+    ) -> anyhow::Result<ModelOutcome> {
+        let Some(&cid) = self.interner.to_id.get(class_iri) else {
+            anyhow::bail!("no class named {class_iri} in this ontology");
+        };
+        let concept = Concept::Atom(cid);
+        let mut tableau = Tableau::with_deadline(Arc::clone(&self.tbox), self.deadline);
+        tableau.capture = true;
+        match tableau.decide(&concept) {
+            Verdict::Unsatisfiable => return Ok(ModelOutcome::Refuted),
+            Verdict::Unknown => return Ok(ModelOutcome::Undetermined),
+            Verdict::Satisfiable => {}
+        }
+        let mut axioms = self.tbox_axioms();
+        axioms.push(DlAxiom::NonEmpty(concept));
+        self.emit(&tableau, &HashMap::new(), axioms, dir)
+    }
+
+    /// Certify that the TBox is consistent.
+    ///
+    /// No `nonempty` line is needed: `Dl.WellFormed` already requires the domain
+    /// to be non-empty, so a model of the axiom set alone is exactly what TBox
+    /// consistency asserts.
+    /// The named classes, in the interner's order, so a caller can certify each
+    /// one. `run` uses it because TBox consistency alone is witnessed by a
+    /// single point with empty extensions, which is honest and uninformative.
+    pub fn named_class_names(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .named_classes
+            .iter()
+            .map(|id| self.interner.resolve(*id).to_string())
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// The OWL constructs present in the graph that this certificate layer does
+    /// not model, with a count of each.
+    ///
+    /// This matters more than it looks. The emitter certifies that a finite
+    /// interpretation satisfies THE AXIOMS IT EMITTED, and a construct the
+    /// parser does not recognise is absent from both sides. So an ontology
+    /// leaning on nominals, role chains, `owl:sameAs` or datatypes gets a
+    /// perfectly valid certificate about a WEAKER axiom set than the one it
+    /// actually states, and a reader who is not told that will draw a stronger
+    /// conclusion than the proof supports. Naming them in a source comment is
+    /// not enough: it has to be in the report, next to the verdict.
+    pub fn unmodelled_constructs(graph: &Arc<GraphStore>) -> Vec<(String, u64)> {
+        const NOT_MODELLED: [(&str, &str); 8] = [
+            ("owl:sameAs", "http://www.w3.org/2002/07/owl#sameAs"),
+            ("owl:differentFrom", "http://www.w3.org/2002/07/owl#differentFrom"),
+            ("owl:oneOf", "http://www.w3.org/2002/07/owl#oneOf"),
+            ("owl:hasValue", "http://www.w3.org/2002/07/owl#hasValue"),
+            ("owl:propertyChainAxiom", "http://www.w3.org/2002/07/owl#propertyChainAxiom"),
+            ("owl:hasKey", "http://www.w3.org/2002/07/owl#hasKey"),
+            ("owl:ReflexiveProperty", "http://www.w3.org/2002/07/owl#ReflexiveProperty"),
+            ("owl:IrreflexiveProperty", "http://www.w3.org/2002/07/owl#IrreflexiveProperty"),
+        ];
+        let mut found = Vec::new();
+        for (label, iri) in NOT_MODELLED {
+            let q = format!(
+                "SELECT (COUNT(*) AS ?n) WHERE {{ {{ ?s <{iri}> ?o }} UNION {{ ?s ?p <{iri}> }} }}"
+            );
+            let Ok(raw) = graph.sparql_select_union(&q) else { continue };
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else { continue };
+            let n = v["results"][0]["n"]
+                .as_str()
+                .and_then(|s| s.trim_matches('"').split('"').next())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
+            if n > 0 {
+                found.push((label.to_string(), n));
+            }
+        }
+        found
+    }
+
+    pub fn certify_tbox_consistent(&self, dir: &Path) -> anyhow::Result<ModelOutcome> {
+        let mut tableau = Tableau::with_deadline(Arc::clone(&self.tbox), self.deadline);
+        tableau.capture = true;
+        match tableau.decide(&Concept::Top) {
+            Verdict::Unsatisfiable => return Ok(ModelOutcome::Refuted),
+            Verdict::Unknown => return Ok(ModelOutcome::Undetermined),
+            Verdict::Satisfiable => {}
+        }
+        self.emit(&tableau, &HashMap::new(), self.tbox_axioms(), dir)
+    }
+
+    /// Certify that the ABox is consistent with the TBox.
+    pub fn certify_abox_consistent(&self, dir: &Path) -> anyhow::Result<ModelOutcome> {
+        if self.individual_types.is_empty() && self.individual_anon_types.is_empty() {
+            return Ok(ModelOutcome::Refused(
+                "this ontology has no ABox, so there is nothing to certify beyond the TBox"
+                    .to_string(),
+            ));
+        }
+        let (mut tableau, ind_to_node, _) = self.build_abox_tableau();
+        tableau.capture = true;
+        if !tableau.expand(0) {
+            return Ok(if tableau.budget.exhausted {
+                ModelOutcome::Undetermined
+            } else {
+                ModelOutcome::Refuted
+            });
+        }
+        self.emit(&tableau, &ind_to_node, self.abox_axioms(), dir)
+    }
 }

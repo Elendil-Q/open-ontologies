@@ -1,4 +1,4 @@
-"""Compile an OWL ontology into flat DuckDB tables — the Kalgera pattern.
+"""Compile an OWL ontology into flat DuckDB tables.
 
 The ontology stays the SPECIFICATION. Execution is native columnar SQL.
 

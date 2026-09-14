@@ -1,5 +1,6 @@
 use crate::graph::GraphStore;
 use oxigraph::io::{RdfFormat, RdfParser};
+use oxigraph::model::{Term, Variable};
 use oxigraph::sparql::{QueryResults, SparqlEvaluator};
 use oxigraph::store::Store;
 use std::collections::{HashMap, HashSet};
@@ -13,7 +14,10 @@ use std::sync::Arc;
 /// Supports the core constraints `sh:minCount`, `sh:maxCount`, `sh:datatype`,
 /// `sh:class`, `sh:pattern`, `sh:hasValue`, `sh:in`, `sh:nodeKind`, `sh:or`,
 /// `sh:not`, the inclusive and exclusive range bounds, and SPARQL-based
-/// constraints via `sh:sparql`.
+/// constraints via `sh:sparql`. Apart from `sh:or` and `sh:sparql`, those are
+/// read under `sh:property` only: the same predicate asserted directly on the
+/// node shape is not evaluated, and the whitelist at the node-shape complement
+/// below is what decides that.
 ///
 /// All four target forms select focus nodes: `sh:targetClass` (including the
 /// implicit class target), `sh:targetNode`, `sh:targetSubjectsOf` and
@@ -26,12 +30,24 @@ use std::sync::Arc;
 /// not evaluated), or on the node shape itself (`sh:closed`, `sh:deactivated`).
 /// A target that selects no nodes reaches the same null verdict by the other
 /// route, `unmatched_shapes`. Reporting success for rules that were never run is
-/// the one failure mode this validator must not have.
+/// the one failure mode this validator must not have, and one case of it is
+/// open. The node-shape complement only inspects shapes returned by the
+/// `sh:targetClass` discovery query, so a shape whose only target is
+/// `sh:targetNode`, `sh:targetSubjectsOf` or `sh:targetObjectsOf` has its
+/// node-level constraints dropped with no `skipped_constraints` entry and the
+/// verdict comes back true.
 pub struct ShaclValidator;
 
 impl ShaclValidator {
     /// Validate the data in `graph` against SHACL shapes (inline Turtle).
     /// Returns a JSON report: `{conforms, violation_count, violations[]}`.
+    ///
+    /// Every violation names the shape that produced it (`source_shape`), the
+    /// W3C constraint component (`source_constraint_component`) and, where a
+    /// path is known, `result_path`, so a report written as one shape per rule
+    /// can be read back as the findings table it is (#131). The keys that
+    /// predate those (`constraint`, `focus_node`, `message`, `severity`,
+    /// `path`) are unchanged.
     pub fn validate(graph: &Arc<GraphStore>, shapes_ttl: &str) -> anyhow::Result<String> {
         // 1. Parse shapes Turtle into a temporary store
         let shapes_store = Store::new()?;
@@ -139,6 +155,16 @@ impl ShaclValidator {
         // skipped, even one a later change starts to evaluate, because a
         // whitelist that tracks what is implemented drifts the first time
         // someone adds a constraint and forgets the list. `sh:deactivated` is
+        // The property-constraint family is exempt ONLY on a shape that carries
+        // `sh:path`, because only then is it evaluated, by the property
+        // machinery treating the shape as its own property shape. Exempting it
+        // unconditionally was a regression measured at once: twenty tests moved
+        // out of "undetermined" and into "wrong answer", because the validator
+        // stopped saying it had not evaluated a node-level `sh:datatype` and
+        // started reporting a clean run instead. The conformance ratchet caught
+        // it. A false clean is worse than an honest null, which is the whole
+        // reason the third answer exists.
+        //
         // deliberately absent: SHACL says a deactivated shape must not be
         // evaluated and this validator evaluates it anyway, so the predicate
         // is not implemented and must reach skipped like any other.
@@ -187,9 +213,17 @@ impl ShaclValidator {
         // undetermined. A constraint is by definition a predicate in the sh:
         // namespace; a predicate from any other namespace on a shape node is
         // an annotation or an axiom, never a constraint.
-        let discovered: HashSet<&str> = shapes
+        // Every shape that selects focus nodes by any of the four target
+        // forms, not just the two the `sh:targetClass` query returns. Built
+        // from `targets` for that reason: reading `shapes` here filtered out
+        // any shape targeted only by `sh:targetNode`, `sh:targetSubjectsOf` or
+        // `sh:targetObjectsOf`, so a constraint on such a shape that this
+        // validator does not evaluate was dropped with no `skipped_constraints`
+        // entry and the run returned `conforms: true`. Pinned by
+        // `tests/shacl_node_target_skip_test.rs`.
+        let discovered: HashSet<&str> = targets
             .iter()
-            .filter_map(|s| s.get("shape").map(String::as_str))
+            .map(|(shape, _, _)| shape.as_str())
             .collect();
         let unknown_on_node = query_solutions(
             &shapes_store,
@@ -203,7 +237,15 @@ impl ShaclValidator {
                     sh:targetObjectsOf, sh:property, sh:sparql, sh:or,
                     sh:message, sh:severity, sh:name, sh:description,
                     sh:order, sh:group
-                ) && !(?pred IN (sh:closed, sh:deactivated)
+                )
+                && !(EXISTS { ?shape sh:path ?_selfPathNC } && ?pred IN (
+                    sh:path, sh:minCount, sh:maxCount, sh:datatype, sh:class,
+                    sh:pattern, sh:hasValue, sh:in, sh:nodeKind, sh:not,
+                    sh:minLength, sh:maxLength, sh:lessThan, sh:lessThanOrEquals,
+                    sh:minInclusive, sh:maxInclusive, sh:minExclusive, sh:maxExclusive,
+                    sh:qualifiedValueShape, sh:qualifiedMinCount, sh:qualifiedMaxCount,
+                    sh:node
+                )) && !(?pred IN (sh:closed, sh:deactivated)
                     && isLiteral(?o) && datatype(?o) = xsd:boolean && ?o = false
                 ))
             }
@@ -250,14 +292,27 @@ impl ShaclValidator {
 
             // 3. Find property constraints for this shape
             let shape_iri = shape_term.clone();
+            // Bound into the queries below rather than spliced into their text.
+            // See `query_solutions_bound`: a blank node shape spliced as
+            // `_:label` is a wildcard, not a reference.
+            let shape_node = match shape_iri.parse::<Term>() {
+                Ok(t) => t,
+                Err(e) => {
+                    skipped.push(serde_json::json!({
+                        "shape": strip_angle_brackets(&shape_iri),
+                        "reason": format!("shape term could not be read back as a term: {e}"),
+                    }));
+                    continue;
+                }
+            };
 
-            let props = query_solutions(
+            let props = query_solutions_bound(
                 &shapes_store,
                 &format!(
                     r#"
                     PREFIX sh: <http://www.w3.org/ns/shacl#>
-                    SELECT ?prop ?path ?invPath ?minCount ?maxCount ?datatype ?class ?pattern ?hasValue ?nodeKind ?minInclusive ?maxInclusive ?minExclusive ?maxExclusive ?minLength ?maxLength ?lessThan ?lessThanOrEquals ?node ?message ?severity WHERE {{
-                        {} sh:property ?prop .
+                    SELECT ?shape ?prop ?path ?invPath ?minCount ?maxCount ?datatype ?class ?pattern ?hasValue ?nodeKind ?minInclusive ?maxInclusive ?minExclusive ?maxExclusive ?minLength ?maxLength ?lessThan ?lessThanOrEquals ?node ?message ?severity WHERE {{
+{}
                         ?prop sh:path ?path .
                         OPTIONAL {{ ?path sh:inversePath ?invPath }}
                         OPTIONAL {{ ?prop sh:class ?class }}
@@ -280,8 +335,10 @@ impl ShaclValidator {
                         OPTIONAL {{ ?prop sh:severity ?severity }}
                     }}
                     "#,
-                    shape_iri
+                    PROPERTY_SHAPES_OF
                 ),
+                "shape",
+                &shape_node,
             )?;
 
             // Any constraint predicate on a property shape that this implementation
@@ -289,15 +346,34 @@ impl ShaclValidator {
             // `sh:not` was invisible: it was never collected, never evaluated, and
             // never recorded, so a shape whose only constraint was `sh:not` returned
             // `conforms: true` over data that violated it.
-            let unknown = query_solutions(
+            //
+            // The target predicates and the shape-level constructs are listed
+            // alongside the property constraints because a shape carrying
+            // `sh:path` is now its own property shape, so this complement sees
+            // every predicate on it and not only the ones under `sh:property`.
+            // Without them a root property shape reported its own `sh:targetNode`
+            // as a constraint nobody implemented, which suppressed a verdict
+            // the validator had in fact reached.
+            //
+            // Restricted to the SHACL namespace, exactly as the node-shape
+            // complement above already is. A predicate from any other namespace
+            // on a shape is an annotation or an axiom, never a constraint, and
+            // treating one as unimplemented cost the verdict: a shapes graph
+            // that merely documented itself with `rdfs:label` came back
+            // `conforms: null` with the label recorded as a constraint this
+            // validator could not evaluate. Seven tests in the W3C suite turn
+            // on that alone. A false undetermined is not free; it teaches the
+            // reader to ignore null, which destroys the signal the third answer
+            // carries.
+            let unknown = query_solutions_bound(
                 &shapes_store,
                 &format!(
                     r#"
                     PREFIX sh: <http://www.w3.org/ns/shacl#>
-                    SELECT DISTINCT ?pred WHERE {{
-                        {} sh:property ?prop .
+                    SELECT DISTINCT ?shape ?pred WHERE {{
+{}
                         ?prop ?pred ?o .
-                        FILTER(?pred NOT IN (
+                        FILTER(STRSTARTS(STR(?pred), "http://www.w3.org/ns/shacl#") && ?pred NOT IN (
                             sh:path, sh:minCount, sh:maxCount, sh:datatype,
                             sh:class, sh:pattern, sh:hasValue, sh:message, sh:severity,
                             sh:minInclusive, sh:maxInclusive,
@@ -309,12 +385,15 @@ impl ShaclValidator {
                             sh:qualifiedMaxCount,
                             sh:node,
                             sh:name, sh:description, sh:order, sh:group,
-                            <http://www.w3.org/1999/02/22-rdf-syntax-ns#type>
+                            sh:targetClass, sh:targetNode, sh:targetSubjectsOf,
+                            sh:targetObjectsOf, sh:property, sh:sparql, sh:deactivated
                         ))
                     }}
                     "#,
-                    shape_iri
+                    PROPERTY_SHAPES_OF
                 ),
+                "shape",
+                &shape_node,
             )?;
             for row in &unknown {
                 if let Some(pred) = row.get("pred") {
@@ -343,14 +422,14 @@ impl ShaclValidator {
             // and the run came back CLEAN. Same defect in sh:in and sh:not.
             let mut or_alternatives: HashMap<String, Vec<String>> = HashMap::new();
             let mut or_unsupported: HashSet<String> = HashSet::new();
-            let or_rows = query_solutions(
+            let or_rows = query_solutions_bound(
                 &shapes_store,
                 &format!(
                     r#"
                     PREFIX sh: <http://www.w3.org/ns/shacl#>
                     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-                    SELECT ?prop ?path ?datatype ?class ?hasValue ?other WHERE {{
-                        {} sh:property ?prop .
+                    SELECT ?shape ?prop ?path ?datatype ?class ?hasValue ?other WHERE {{
+{}
                         ?prop sh:path ?path .
                         ?prop sh:or/rdf:rest*/rdf:first ?member .
                         OPTIONAL {{ ?member sh:datatype ?datatype }}
@@ -362,8 +441,10 @@ impl ShaclValidator {
                         }}
                     }}
                     "#,
-                    shape_iri
+                    PROPERTY_SHAPES_OF
                 ),
+                "shape",
+                &shape_node,
             )?;
             let mut or_paths: HashMap<String, String> = HashMap::new();
             for row in &or_rows {
@@ -421,14 +502,14 @@ impl ShaclValidator {
             // and 198 real violations were reported as a clean run.
             let mut not_clauses: HashMap<String, Vec<String>> = HashMap::new();
             let mut not_unsupported: HashSet<String> = HashSet::new();
-            let not_rows = query_solutions(
+            let not_rows = query_solutions_bound(
                 &shapes_store,
                 &format!(
                     r#"
                     PREFIX sh: <http://www.w3.org/ns/shacl#>
                     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-                    SELECT ?prop ?path ?datatype ?class ?hasValue ?pattern ?other WHERE {{
-                        {} sh:property ?prop .
+                    SELECT ?shape ?prop ?path ?datatype ?class ?hasValue ?pattern ?other WHERE {{
+{}
                         ?prop sh:path ?path .
                         ?prop sh:not ?inner .
                         OPTIONAL {{ ?inner sh:datatype ?datatype }}
@@ -443,8 +524,10 @@ impl ShaclValidator {
                         }}
                     }}
                     "#,
-                    shape_iri
+                    PROPERTY_SHAPES_OF
                 ),
+                "shape",
+                &shape_node,
             )?;
             let mut not_paths: HashMap<String, String> = HashMap::new();
             for row in &not_rows {
@@ -509,13 +592,13 @@ impl ShaclValidator {
             // and grouped by the member's printed term, the same way property
             // shapes are handled. That confines this form to one level: a member
             // that itself nests sh:node is not compiled, and says so.
-            let node_or_rows = query_solutions(
+            let node_or_rows = query_solutions_bound(
                 &shapes_store,
                 &format!(
                     r#"
                     PREFIX sh: <http://www.w3.org/ns/shacl#>
                     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-                    SELECT ?member ?path ?minCount ?maxCount ?class ?datatype ?nodeKind ?hasValue ?other WHERE {{
+                    SELECT ?shape ?member ?path ?minCount ?maxCount ?class ?datatype ?nodeKind ?hasValue ?other WHERE {{
                         {} sh:or/rdf:rest*/rdf:first ?member .
                         ?member sh:property ?prop .
                         ?prop sh:path ?path .
@@ -537,8 +620,10 @@ impl ShaclValidator {
                         }}
                     }}
                     "#,
-                    shape_term
+                    "?shape"
                 ),
+                "shape",
+                &shape_node,
             )?;
             if !node_or_rows.is_empty() {
                 let mut per_member: HashMap<String, Vec<String>> = HashMap::new();
@@ -651,12 +736,12 @@ impl ShaclValidator {
                             } else {
                                 node_message.clone()
                             };
-                            violations.push(serde_json::json!({
+                            violations.push(attribute(&shape_iri, &shape_iri, serde_json::json!({
                                 "severity": "Violation",
                                 "focus_node": strip_angle_brackets(focus),
                                 "constraint": "or",
                                 "message": msg,
-                            }));
+                            })));
                         }
                     }
                 }
@@ -675,14 +760,14 @@ impl ShaclValidator {
             // Binding ?prop keeps two blocks distinct even when they share a path
             // and a nested class, which DISTINCT over the other columns would fold
             // together.
-            let qualified_rows = query_solutions(
+            let qualified_rows = query_solutions_bound(
                 &shapes_store,
                 &format!(
                     r#"
                     PREFIX sh: <http://www.w3.org/ns/shacl#>
                     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-                    SELECT ?prop ?path ?class ?datatype ?hasValue ?other ?qmin ?qmax ?message ?severity WHERE {{
-                        {} sh:property ?prop .
+                    SELECT ?shape ?prop ?path ?class ?datatype ?hasValue ?other ?qmin ?qmax ?message ?severity WHERE {{
+{}
                         ?prop sh:path ?path ; sh:qualifiedValueShape ?q .
                         OPTIONAL {{ ?q sh:class ?class }}
                         OPTIONAL {{ ?q sh:datatype ?datatype }}
@@ -697,13 +782,16 @@ impl ShaclValidator {
                         OPTIONAL {{ ?prop sh:severity ?severity }}
                     }}
                     "#,
-                    shape_iri
+                    PROPERTY_SHAPES_OF
                 ),
+                "shape",
+                &shape_node,
             )?;
             for row in &qualified_rows {
                 let Some(path_raw) = row.get("path") else {
                     continue;
                 };
+                let q_shape = row.get("prop").cloned().unwrap_or_else(|| shape_iri.clone());
                 let q_path = strip_angle_brackets(path_raw);
                 let q_message = row.get("message").map(|m| strip_quotes(m)).unwrap_or_default();
                 let q_severity = row
@@ -775,13 +863,13 @@ impl ShaclValidator {
                         } else {
                             q_message.clone()
                         };
-                        violations.push(serde_json::json!({
+                        violations.push(attribute(&q_shape, &shape_iri, serde_json::json!({
                             "severity": q_severity,
                             "focus_node": strip_angle_brackets(focus),
                             "path": q_path,
                             "constraint": constraint,
                             "message": msg,
-                        }));
+                        })));
                     }
                 }
             }
@@ -789,20 +877,22 @@ impl ShaclValidator {
             // sh:in alternatives, collected per shape and keyed by path for the
             // same blank-node reason as sh:or above.
             let mut in_alternatives: HashMap<String, Vec<String>> = HashMap::new();
-            let in_rows = query_solutions(
+            let in_rows = query_solutions_bound(
                 &shapes_store,
                 &format!(
                     r#"
                     PREFIX sh: <http://www.w3.org/ns/shacl#>
                     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-                    SELECT ?prop ?path ?member WHERE {{
-                        {} sh:property ?prop .
+                    SELECT ?shape ?prop ?path ?member WHERE {{
+{}
                         ?prop sh:path ?path .
                         ?prop sh:in/rdf:rest*/rdf:first ?member .
                     }}
                     "#,
-                    shape_iri
+                    PROPERTY_SHAPES_OF
                 ),
+                "shape",
+                &shape_node,
             )?;
             for row in &in_rows {
                 if let (Some(p), Some(m)) = (row.get("prop"), row.get("member")) {
@@ -820,6 +910,11 @@ impl ShaclValidator {
                 // by this term; keying them by path merged sibling blocks into
                 // one and returned a clean run over data that broke both.
                 let prop_key = prop.get("prop").cloned();
+                // The shape that carries these constraints, for `source_shape`.
+                // A blank property shape reports its blank label, which is what
+                // pyshacl does and is still more identity than collapsing every
+                // sibling onto the node shape's IRI.
+                let constraint_shape = prop_key.clone().unwrap_or_else(|| shape_iri.clone());
                 let raw_path = match prop.get("path") {
                     Some(p) => strip_angle_brackets(p),
                     None => continue,
@@ -882,13 +977,13 @@ impl ShaclValidator {
                                 } else {
                                     message.clone()
                                 };
-                                violations.push(serde_json::json!({
+                                violations.push(attribute(&constraint_shape, &shape_iri, serde_json::json!({
                                     "severity": severity,
                                     "focus_node": strip_angle_brackets(focus),
                                     "path": path,
                                     "constraint": "minCount",
                                     "message": msg,
-                                }));
+                                })));
                             }
                         }
                     }
@@ -916,13 +1011,13 @@ impl ShaclValidator {
                             } else {
                                 message.clone()
                             };
-                            violations.push(serde_json::json!({
+                            violations.push(attribute(&constraint_shape, &shape_iri, serde_json::json!({
                                 "severity": severity,
                                 "focus_node": strip_angle_brackets(focus),
                                 "path": path,
                                 "constraint": "maxCount",
                                 "message": msg,
-                            }));
+                            })));
                         }
                     }
                 }
@@ -951,13 +1046,13 @@ impl ShaclValidator {
                             } else {
                                 message.clone()
                             };
-                            violations.push(serde_json::json!({
+                            violations.push(attribute(&constraint_shape, &shape_iri, serde_json::json!({
                                 "severity": severity,
                                 "focus_node": strip_angle_brackets(focus),
                                 "path": path,
                                 "constraint": "class",
                                 "message": msg,
-                            }));
+                            })));
                         }
                     }
                 }
@@ -1000,13 +1095,13 @@ impl ShaclValidator {
                             } else {
                                 message.clone()
                             };
-                            violations.push(serde_json::json!({
+                            violations.push(attribute(&constraint_shape, &shape_iri, serde_json::json!({
                                 "severity": severity,
                                 "focus_node": strip_angle_brackets(focus),
                                 "path": path,
                                 "constraint": "datatype",
                                 "message": msg,
-                            }));
+                            })));
                         }
                     }
                 }
@@ -1032,13 +1127,13 @@ impl ShaclValidator {
                             } else {
                                 message.clone()
                             };
-                            violations.push(serde_json::json!({
+                            violations.push(attribute(&constraint_shape, &shape_iri, serde_json::json!({
                                 "severity": severity,
                                 "focus_node": strip_angle_brackets(focus),
                                 "path": path,
                                 "constraint": "pattern",
                                 "message": msg,
-                            }));
+                            })));
                         }
                     }
                 }
@@ -1074,13 +1169,13 @@ impl ShaclValidator {
                             } else {
                                 message.clone()
                             };
-                            violations.push(serde_json::json!({
+                            violations.push(attribute(&constraint_shape, &shape_iri, serde_json::json!({
                                 "severity": severity,
                                 "focus_node": strip_angle_brackets(focus),
                                 "path": path,
                                 "constraint": "or",
                                 "message": msg,
-                            }));
+                            })));
                         }
                     }
                 }
@@ -1120,13 +1215,13 @@ impl ShaclValidator {
                             } else {
                                 message.clone()
                             };
-                            violations.push(serde_json::json!({
+                            violations.push(attribute(&constraint_shape, &shape_iri, serde_json::json!({
                                 "severity": severity,
                                 "focus_node": strip_angle_brackets(focus),
                                 "path": path,
                                 "constraint": constraint,
                                 "message": msg,
-                            }));
+                            })));
                         }
                     }
                 }
@@ -1163,13 +1258,13 @@ impl ShaclValidator {
                             } else {
                                 message.clone()
                             };
-                            violations.push(serde_json::json!({
+                            violations.push(attribute(&constraint_shape, &shape_iri, serde_json::json!({
                                 "severity": severity,
                                 "focus_node": strip_angle_brackets(focus),
                                 "path": path,
                                 "constraint": constraint,
                                 "message": msg,
-                            }));
+                            })));
                         }
                     }
                 }
@@ -1199,13 +1294,13 @@ impl ShaclValidator {
                                     } else {
                                         message.clone()
                                     };
-                                    violations.push(serde_json::json!({
+                                    violations.push(attribute(&constraint_shape, &shape_iri, serde_json::json!({
                                         "severity": severity,
                                         "focus_node": strip_angle_brackets(focus),
                                         "path": path,
                                         "constraint": "node",
                                         "message": msg,
-                                    }));
+                                    })));
                                 }
                             }
                         }
@@ -1241,13 +1336,13 @@ impl ShaclValidator {
                             } else {
                                 message.clone()
                             };
-                            violations.push(serde_json::json!({
+                            violations.push(attribute(&constraint_shape, &shape_iri, serde_json::json!({
                                 "severity": severity,
                                 "focus_node": strip_angle_brackets(focus),
                                 "path": path,
                                 "constraint": "not",
                                 "message": msg,
-                            }));
+                            })));
                         }
                     }
                 }
@@ -1272,13 +1367,13 @@ impl ShaclValidator {
                             } else {
                                 message.clone()
                             };
-                            violations.push(serde_json::json!({
+                            violations.push(attribute(&constraint_shape, &shape_iri, serde_json::json!({
                                 "severity": severity,
                                 "focus_node": strip_angle_brackets(focus),
                                 "path": path,
                                 "constraint": "in",
                                 "message": msg,
-                            }));
+                            })));
                         }
                     }
                 }
@@ -1317,13 +1412,13 @@ impl ShaclValidator {
                                     } else {
                                         message.clone()
                                     };
-                                    violations.push(serde_json::json!({
+                                    violations.push(attribute(&constraint_shape, &shape_iri, serde_json::json!({
                                         "severity": severity,
                                         "focus_node": strip_angle_brackets(focus),
                                         "path": path,
                                         "constraint": "nodeKind",
                                         "message": msg,
-                                    }));
+                                    })));
                                 }
                             }
                         }
@@ -1356,13 +1451,13 @@ impl ShaclValidator {
                             } else {
                                 message.clone()
                             };
-                            violations.push(serde_json::json!({
+                            violations.push(attribute(&constraint_shape, &shape_iri, serde_json::json!({
                                 "severity": severity,
                                 "focus_node": strip_angle_brackets(focus),
                                 "path": path,
                                 "constraint": "hasValue",
                                 "message": msg,
-                            }));
+                            })));
                         }
                     }
                 }
@@ -1400,13 +1495,13 @@ impl ShaclValidator {
                                 } else {
                                     message.clone()
                                 };
-                                violations.push(serde_json::json!({
+                                violations.push(attribute(&constraint_shape, &shape_iri, serde_json::json!({
                                     "severity": severity,
                                     "focus_node": strip_angle_brackets(focus),
                                     "path": path,
                                     "constraint": key,
                                     "message": msg,
-                                }));
+                                })));
                             }
                         }
                     }
@@ -1424,59 +1519,129 @@ impl ShaclValidator {
         for (shape_term, kind, target_value) in &targets {
             let this_pattern = target_pattern(kind, target_value, "this");
             let shape_iri = shape_term.clone();
+            let shape_node = match shape_iri.parse::<Term>() {
+                Ok(t) => t,
+                Err(e) => {
+                    skipped.push(serde_json::json!({
+                        "shape": strip_angle_brackets(&shape_iri),
+                        "constraint": "sparql",
+                        "reason": format!("shape term could not be read back as a term: {e}"),
+                    }));
+                    continue;
+                }
+            };
 
-            let constraints = query_solutions(
+            let constraints = query_solutions_bound(
                 &shapes_store,
                 &format!(
                     r#"
                     PREFIX sh: <http://www.w3.org/ns/shacl#>
-                    SELECT ?select ?message ?severity WHERE {{
+                    SELECT ?shape ?c ?select ?message ?severity ?deactivated WHERE {{
                         {} sh:sparql ?c .
                         ?c sh:select ?select .
                         OPTIONAL {{ ?c sh:message ?message }}
                         OPTIONAL {{ ?c sh:severity ?severity }}
+                        OPTIONAL {{ ?c sh:deactivated ?deactivated }}
                     }}
                     "#,
-                    shape_iri
+                    "?shape"
                 ),
+                "shape",
+                &shape_node,
             )?;
+
+            // A predicate on the constraint node that this validator does not
+            // implement has to reach `skipped_constraints` like any other, or
+            // the module's stated invariant ("every constraint is either
+            // executed or recorded") holds only for the places someone
+            // remembered. There was no complement over `sh:SPARQLConstraint`
+            // nodes at all, so any `sh:` predicate written there was invisible.
+            for row in &query_solutions_bound(
+                &shapes_store,
+                &format!(
+                    r#"
+                    PREFIX sh: <http://www.w3.org/ns/shacl#>
+                    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+                    SELECT DISTINCT ?shape ?pred WHERE {{
+                        {} sh:sparql ?c .
+                        ?c ?pred ?o .
+                        FILTER(STRSTARTS(STR(?pred), "http://www.w3.org/ns/shacl#") && ?pred NOT IN (
+                            sh:select, sh:message, sh:severity, sh:deactivated, sh:prefixes
+                        ))
+                    }}
+                    "#,
+                    "?shape"
+                ),
+                "shape",
+                &shape_node,
+            )? {
+                if let Some(pred) = row.get("pred") {
+                    skipped.push(serde_json::json!({
+                        "shape": strip_angle_brackets(&shape_iri),
+                        "constraint": strip_angle_brackets(pred),
+                        "reason": "predicate on a sh:sparql constraint node is not implemented; it was not evaluated",
+                    }));
+                }
+            }
             if constraints.is_empty() {
                 continue;
             }
 
-            // Focus nodes for this shape. Blank nodes are excluded because they
-            // cannot be named in a VALUES clause; excluding them is recorded
-            // rather than assumed harmless.
+            // Focus nodes for this shape, read back as terms. Blank nodes are
+            // included. They used to be excluded because a blank node cannot
+            // be named in a VALUES clause; there is no VALUES clause any more.
             let focus_rows = graph_sparql_select(
                 graph,
                 &format!("SELECT ?this WHERE {{ {this_pattern} }}"),
             )?;
-            let focus_nodes: Vec<String> = focus_rows
-                .iter()
-                .filter_map(|r| r.get("this"))
-                .filter(|t| t.starts_with('<'))
-                .cloned()
-                .collect();
-            let blank_focus = focus_rows.len() - focus_nodes.len();
-            if blank_focus > 0 {
-                skipped.push(serde_json::json!({
-                    "shape": strip_angle_brackets(&shape_iri),
-                    "reason": format!(
-                        "{} blank-node focus nodes excluded from sh:sparql evaluation (blank nodes cannot be bound in a VALUES clause)",
-                        blank_focus
-                    ),
-                }));
+            let mut focus_terms: Vec<Term> = Vec::new();
+            for row in &focus_rows {
+                let Some(t) = row.get("this") else { continue };
+                match t.parse::<Term>() {
+                    Ok(term) => focus_terms.push(term),
+                    Err(e) => skipped.push(serde_json::json!({
+                        "shape": strip_angle_brackets(&shape_iri),
+                        "constraint": "sparql",
+                        "reason": format!("focus node {t} could not be read back as a term: {e}"),
+                    })),
+                }
             }
-            if focus_nodes.is_empty() {
+            // Store iteration order is not a contract; the report's is.
+            focus_terms.sort_by_key(|t| t.to_string());
+            focus_terms.dedup();
+            if focus_terms.is_empty() {
                 continue;
             }
-
-            let prefix_block = sparql_prefix_block(&shapes_store)?;
 
             for constraint in &constraints {
                 let select_raw = match constraint.get("select") {
                     Some(s) => strip_quotes(s),
                     None => continue,
+                };
+                // SHACL 5.3: "There are no validation results if the
+                // SPARQL-based constraint has true as a value for the property
+                // sh:deactivated." The predicate was honoured on node shapes
+                // and on property shapes and ignored here, so a switched-off
+                // constraint ran anyway and the report came back with a
+                // confident `conforms: false` over conforming data. Read by
+                // value, so any lexical spelling of true counts.
+                if constraint
+                    .get("deactivated")
+                    .map(|d| strip_quotes(d).eq_ignore_ascii_case("true"))
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                let prefix_block = match sparql_prologue(&shapes_store, constraint.get("c"))? {
+                    Prologue::Declarations(block) => block,
+                    Prologue::Ambiguous(reason) => {
+                        skipped.push(serde_json::json!({
+                            "shape": strip_angle_brackets(&shape_iri),
+                            "constraint": "sparql",
+                            "reason": reason,
+                        }));
+                        continue;
+                    }
                 };
                 let message = constraint
                     .get("message")
@@ -1493,36 +1658,71 @@ impl ShaclValidator {
                     })
                     .unwrap_or_else(|| "Violation".to_string());
 
-                // SHACL pre-binds $this to the focus node. Rewrite it to the
-                // ordinary variable ?this and bind it through a VALUES clause,
-                // wrapping the author's SELECT as a subquery so that nothing is
-                // spliced into the middle of their query text.
-                let inner = select_raw.replace("$this", "?this");
-                // The author's own PREFIX and BASE declarations have to be lifted
-                // out of the subquery position and put where SPARQL allows them,
-                // or the wrapper cannot parse at all. See split_sparql_prologue.
-                let (author_prologue, inner_body) = split_sparql_prologue(&inner);
-                let values = focus_nodes.join(" ");
-                let wrapped = format!(
-                    "{prefix_block}{author_prologue}SELECT ?this WHERE \
-                     {{ VALUES ?this {{ {values} }} {{ {inner_body} }} }}"
-                );
-
-                match graph_sparql_select(graph, &wrapped) {
-                    Ok(rows) => {
-                        for row in &rows {
-                            if let Some(focus) = row.get("this") {
-                                let msg = if message.is_empty() {
-                                    "SPARQL constraint violated".to_string()
-                                } else {
-                                    message.clone()
-                                };
-                                violations.push(serde_json::json!({
+                // SHACL-SPARQL 5.3.2: `$this` is pre-bound to the focus node,
+                // one evaluation per node. Pre-binding is SPARQL substitution,
+                // so the term is in scope inside FILTER (NOT) EXISTS and inside
+                // subqueries, which is what makes a constraint written as
+                // `FILTER NOT EXISTS { $this ... }` mean "this node lacks" and
+                // not "every node lacks".
+                //
+                // The previous evaluation wrapped the author's SELECT as a
+                // subquery under a VALUES clause. A subquery is evaluated
+                // bottom-up with no outer variable in scope, so `$this` was
+                // unbound inside it, the filter asked whether ANY node matched
+                // the pattern, and the single empty solution either survived
+                // (joining with every focus node) or died (reporting none).
+                // One clean record therefore hid every dirty one (#132).
+                //
+                // `$this` and `?this` name the same variable in SPARQL, so the
+                // author's text runs as written, behind the prefixes the
+                // shapes graph declares. An author prologue of its own is
+                // legal after those: the grammar allows any number of
+                // PREFIX and BASE declarations in any order.
+                let query = format!("{prefix_block}{select_raw}");
+                if let Some(construct) = prebinding_violation(&select_raw, "this") {
+                    skipped.push(serde_json::json!({
+                        "shape": strip_angle_brackets(&shape_iri),
+                        "constraint": "sparql",
+                        "reason": format!(
+                            "SHACL 5.2.1 forbids {construct} in a query that is pre-bound, so this \
+                             constraint cannot be evaluated and the validator must refuse rather \
+                             than substitute into it"
+                        ),
+                    }));
+                    continue;
+                }
+                match graph.sparql_select_union_prebound(&query, "this", &focus_terms) {
+                    Ok(per_focus) => {
+                        for (focus, rows) in focus_terms.iter().zip(per_focus) {
+                            let focus_str = focus.to_string();
+                            for row in rows {
+                                // 5.3.2 again: a bound ?message overrides
+                                // sh:message, ?path is sh:resultPath and
+                                // ?value is sh:value.
+                                let msg = row
+                                    .get("message")
+                                    .map(|m| strip_quotes(m))
+                                    .filter(|m| !m.is_empty())
+                                    .unwrap_or_else(|| {
+                                        if message.is_empty() {
+                                            "SPARQL constraint violated".to_string()
+                                        } else {
+                                            message.clone()
+                                        }
+                                    });
+                                let mut v = serde_json::json!({
                                     "severity": severity,
-                                    "focus_node": strip_angle_brackets(focus),
+                                    "focus_node": strip_angle_brackets(&focus_str),
                                     "constraint": "sparql",
                                     "message": msg,
-                                }));
+                                });
+                                if let Some(p) = row.get("path") {
+                                    v["result_path"] = serde_json::json!(strip_angle_brackets(p));
+                                }
+                                if let Some(val) = row.get("value") {
+                                    v["value"] = serde_json::json!(strip_angle_brackets(val));
+                                }
+                                violations.push(attribute(&shape_iri, &shape_iri, v));
                             }
                         }
                     }
@@ -1571,6 +1771,24 @@ impl ShaclValidator {
         let nothing_matched = (!targets.is_empty() && focus_nodes_total == 0)
             || (targets.is_empty() && declared_any_shape);
 
+        // Deliberately NOT deduplicated, and this was measured before it was
+        // decided. One shape carrying two target declarations that select the
+        // same node does get checked twice, which inflates `violation_count`
+        // and `focus_nodes`. Collapsing identical results looked like the fix
+        // and is not: SHACL 5.3.2 emits one result per SPARQL solution, so a
+        // constraint returning several solutions for one focus node produces
+        // several results that are identical wherever the extra solution binds
+        // nothing this report carries. pyshacl emits those too. On the
+        // 39-shape corpus from issue #132 both engines return 249 results over
+        // 245 distinct (focus node, shape) pairs, and deduplicating took this
+        // engine to 245 and broke an exact agreement.
+        //
+        // The real fix for the double-checked node is to take the union of a
+        // shape's focus nodes across its target declarations rather than to
+        // walk targets, which is a change to the evaluation loop and not to
+        // the report. Until then the inflation is a documented limitation,
+        // because a wrong count is cheaper than a validator that drops results
+        // the specification says to emit.
         let mut report = serde_json::json!({
             "violation_count": violations.len(),
             "violations": violations,
@@ -1663,6 +1881,9 @@ impl ShaclValidator {
                 Some(s) => s.clone(),
                 None => continue,
             };
+            let Ok(shape_node) = shape_iri.parse::<Term>() else {
+                continue;
+            };
             let target_class = match shape.get("targetClass") {
                 Some(tc) => strip_angle_brackets(tc),
                 None => continue,
@@ -1681,20 +1902,22 @@ impl ShaclValidator {
                 }));
             }
 
-            let props = query_solutions(
+            let props = query_solutions_bound(
                 &shapes_store,
                 &format!(
                     r#"
                     PREFIX sh: <http://www.w3.org/ns/shacl#>
-                    SELECT ?prop ?path ?class ?datatype WHERE {{
-                        {} sh:property ?prop .
+                    SELECT ?shape ?prop ?path ?class ?datatype WHERE {{
+{}
                         ?prop sh:path ?path .
                         OPTIONAL {{ ?prop sh:class ?class }}
                         OPTIONAL {{ ?prop sh:datatype ?datatype }}
                     }}
                     "#,
-                    shape_iri
+                    PROPERTY_SHAPES_OF
                 ),
+                "shape",
+                &shape_node,
             )?;
 
             let mut prop_reports: Vec<serde_json::Value> = Vec::new();
@@ -1784,6 +2007,71 @@ impl ShaclValidator {
 
 /// Run a SPARQL SELECT against a temporary shapes `Store` and return results
 /// as a vec of maps (variable name -> string value).
+/// Matches the property shapes of `?shape`: the ones hanging under
+/// `sh:property`, and the shape ITSELF when it carries `sh:path`.
+///
+/// A shape can be its own property shape. `ex:R a sh:PropertyShape ;
+/// sh:targetNode ex:a ; sh:path ex:name ; sh:minCount 1` is a complete, legal
+/// shapes graph, and it is what the W3C suite's `core/path` tests are built
+/// from. Every discovery query here looked only under `sh:property`, so such a
+/// shape was selected as a target, contributed its focus node to the count, and
+/// then had every one of its constraints dropped: `conforms: true`, no
+/// violations, nothing in `skipped_constraints`, nothing in `unmatched_shapes`.
+/// A false clean, and the module's own documentation had flagged it as the one
+/// open case of exactly the failure this file exists to prevent. Twelve tests in
+/// the W3C suite turn on it.
+const PROPERTY_SHAPES_OF: &str = r#"
+                        { ?shape sh:property ?prop . }
+                        UNION
+                        { ?shape sh:path ?_selfPath . BIND(?shape AS ?prop) }"#;
+
+/// Run a query against the shapes graph with `var` pre-bound to `term`.
+///
+/// The shape being examined used to be spliced into the query text. For an
+/// IRI that is harmless; for a shape written `[] a sh:NodeShape` the printed
+/// term is `_:label`, and a blank node label in a SPARQL query body is a
+/// NON-DISTINGUISHED VARIABLE, not a reference to that node. `_:b0 sh:property
+/// ?prop` therefore means "anything that has a property shape", so every blank
+/// node shape in a file collected every property shape in that file and
+/// applied all of them to its own targets. Two `[] a sh:NodeShape` blocks with
+/// disjoint targets reported conforming data as non-conforming.
+///
+/// Substitution binds a term, and a blank node is a term. This is the same
+/// mechanism `$this` pre-binding uses for focus nodes, applied to the other
+/// place this validator was splicing terms into query text.
+fn query_solutions_bound(
+    store: &Store,
+    query: &str,
+    var: &str,
+    term: &Term,
+) -> anyhow::Result<Vec<HashMap<String, String>>> {
+    let prepared = SparqlEvaluator::new()
+        .parse_query(query)?
+        .substitute_variable(Variable::new(var)?, term.clone());
+    match prepared.on_store(store).execute()? {
+        QueryResults::Solutions(solutions) => {
+            let vars: Vec<String> = solutions
+                .variables()
+                .iter()
+                .map(|v| v.as_str().to_string())
+                .collect();
+            let mut rows = Vec::new();
+            for solution in solutions {
+                let solution = solution?;
+                let mut row = HashMap::new();
+                for v in &vars {
+                    if let Some(t) = solution.get(v.as_str()) {
+                        row.insert(v.clone(), t.to_string());
+                    }
+                }
+                rows.push(row);
+            }
+            Ok(rows)
+        }
+        _ => Ok(Vec::new()),
+    }
+}
+
 fn query_solutions(
     store: &Store,
     query: &str,
@@ -1816,7 +2104,7 @@ fn query_solutions(
     }
 }
 
-/// Run a SPARQL SELECT against the main `GraphStore` and return results
+/// Run a SPARQL SELECT ?shape against the main `GraphStore` and return results
 /// as a vec of maps, using the existing `sparql_select` JSON output.
 ///
 /// Every data-side query in this module runs over the union of every graph in
@@ -2166,57 +2454,6 @@ fn datatype_is_indistinguishable_in_store(datatype: &str) -> bool {
     )
 }
 
-/// Split a SPARQL query into its prologue (PREFIX and BASE declarations, with any
-/// leading comments) and the body that follows.
-///
-/// SPARQL permits PREFIX and BASE only in the prologue, at the very start of a
-/// query. SHACL pre-binds `$this`, and this validator binds it by wrapping the
-/// author's SELECT as a subquery under a VALUES clause, which puts any prologue
-/// the author wrote into a position where it cannot parse and takes the whole
-/// query down with it. Hoisting it to the front of the wrapper is the fix.
-///
-/// Declaring prefixes inside `sh:select` is the portable way to write a SPARQL
-/// constraint and is what pyshacl accepts. All seven `sh:sparql` constraints in
-/// the banking vertical were being reported as unrunnable for this reason alone,
-/// found by the differential run against pyshacl rather than by any unit test.
-fn split_sparql_prologue(query: &str) -> (String, &str) {
-    let mut prologue = String::new();
-    let mut rest = query;
-    loop {
-        let trimmed = rest.trim_start();
-        if let Some(line) = trimmed.strip_prefix('#') {
-            // A comment carries no meaning to the parser but may carry a lot to
-            // a reader, so it is moved rather than dropped.
-            let end = line.find('\n').map(|i| i + 2).unwrap_or(trimmed.len());
-            prologue.push_str(&trimmed[..end]);
-            rest = &trimmed[end..];
-            continue;
-        }
-        let lower = trimmed.to_ascii_lowercase();
-        let keyword_len = if lower.starts_with("prefix") {
-            6
-        } else if lower.starts_with("base") {
-            4
-        } else {
-            return (prologue, trimmed);
-        };
-        // Require a separator after the keyword so an identifier merely starting
-        // with those letters is not mistaken for a declaration.
-        match trimmed[keyword_len..].chars().next() {
-            Some(c) if c.is_whitespace() || c == '<' => {}
-            _ => return (prologue, trimmed),
-        }
-        // Every declaration ends at the closing '>' of its IRI.
-        match trimmed.find('>') {
-            Some(i) => {
-                prologue.push_str(&trimmed[..=i]);
-                prologue.push('\n');
-                rest = &trimmed[i + 1..];
-            }
-            None => return (prologue, trimmed),
-        }
-    }
-}
 
 /// The SPARQL pattern selecting the focus nodes of one target, bound to `var`.
 ///
@@ -2265,6 +2502,177 @@ fn count_focus_nodes(graph: &Arc<GraphStore>, focus_pattern: &str) -> anyhow::Re
         .unwrap_or(0))
 }
 
+/// The construct in `query` that SHACL forbids under pre-binding, if any.
+///
+/// SHACL 5.2.1 restricts what a `sh:sparql` SELECT may contain, because
+/// pre-binding is substitution and substitution is not sound through every
+/// SPARQL operator. A conforming processor must REPORT A FAILURE rather than
+/// evaluate such a query. This validator substituted unconditionally, so it
+/// ran them and returned a confident answer: the same false-clean class as
+/// #132, in the same function, and invisible to any proof about this code
+/// because the rule lives in the specification rather than in the program.
+/// The W3C suite ships five tests (`unsupported-sparql-001` to `-005`) that
+/// exist only to check a validator refuses.
+///
+/// The scan is lexical, and deliberately conservative: it skips string
+/// literals, IRIs and comments so that a `MINUS` inside a message cannot
+/// trigger it, and where it is unsure it refuses. Refusing is the safe
+/// direction here, because a refusal is `conforms: null` with a reason, which
+/// no consumer can read as a pass.
+fn prebinding_violation(query: &str, var: &str) -> Option<String> {
+    // Blank out anything a keyword could hide inside, keeping the length so
+    // that word boundaries still line up.
+    let mut scrubbed = String::with_capacity(query.len());
+    let mut chars = query.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' | '\'' => {
+                scrubbed.push(' ');
+                let quote = c;
+                for d in chars.by_ref() {
+                    scrubbed.push(if d == '\n' { '\n' } else { ' ' });
+                    if d == quote {
+                        break;
+                    }
+                }
+            }
+            '<' => {
+                scrubbed.push(' ');
+                for d in chars.by_ref() {
+                    scrubbed.push(' ');
+                    if d == '>' {
+                        break;
+                    }
+                }
+            }
+            '#' => {
+                scrubbed.push(' ');
+                for d in chars.by_ref() {
+                    scrubbed.push(if d == '\n' { '\n' } else { ' ' });
+                    if d == '\n' {
+                        break;
+                    }
+                }
+            }
+            other => scrubbed.push(other),
+        }
+    }
+    let upper = scrubbed.to_ascii_uppercase();
+    let has_word = |w: &str| -> bool {
+        let mut from = 0;
+        while let Some(i) = upper[from..].find(w) {
+            let at = from + i;
+            let before_ok = at == 0
+                || !upper[..at]
+                    .chars()
+                    .next_back()
+                    .map(|c| c.is_alphanumeric() || c == '_' || c == '?' || c == '$')
+                    .unwrap_or(false);
+            let after = upper[at + w.len()..].chars().next();
+            let after_ok = after.map(|c| !c.is_alphanumeric() && c != '_').unwrap_or(true);
+            if before_ok && after_ok {
+                return true;
+            }
+            from = at + w.len();
+        }
+        false
+    };
+    if has_word("MINUS") {
+        return Some("MINUS".to_string());
+    }
+    if has_word("SERVICE") {
+        return Some("SERVICE".to_string());
+    }
+    // A VALUES clause or a BIND that touches the pre-bound variable.
+    let marks = [format!("?{var}"), format!("${var}")];
+    if let Some(i) = upper.find("VALUES")
+        && marks.iter().any(|m| {
+            upper[i..]
+                .split_once('{')
+                .map(|(head, _)| head.to_ascii_uppercase().contains(&m.to_ascii_uppercase()))
+                .unwrap_or(false)
+        })
+    {
+        return Some(format!("VALUES over the pre-bound variable {marks:?}"));
+    }
+    let mut from = 0;
+    while let Some(i) = upper[from..].find(" AS ") {
+        let at = from + i + 4;
+        let rest = upper[at..].trim_start();
+        if marks.iter().any(|m| rest.starts_with(&m.to_ascii_uppercase())) {
+            return Some(format!("BIND or expression assigning to {marks:?}"));
+        }
+        from = at;
+    }
+    // A sub-SELECT that does not project the pre-bound variable cannot receive
+    // the substitution, so the outer binding silently does not reach it.
+    if let Some(first) = upper.find("SELECT") {
+        let mut from = first + 6;
+        while let Some(i) = upper[from..].find("SELECT") {
+            let at = from + i;
+            let head = match upper[at..].find("WHERE") {
+                Some(w) => &upper[at..at + w],
+                None => &upper[at..],
+            };
+            if !head.contains('*') && !marks.iter().any(|m| head.contains(&m.to_ascii_uppercase())) {
+                return Some("a sub-SELECT that does not project the pre-bound variable".to_string());
+            }
+            from = at + 6;
+        }
+    }
+    None
+}
+
+/// Name the shape and the constraint component that produced a violation.
+///
+/// The W3C validation report vocabulary carries `sh:sourceShape` and
+/// `sh:sourceConstraintComponent` on every result so that a consumer can tell
+/// which rule fired. Without them a report written as one shape per rule, the
+/// natural form of a findings table, could only be attributed by parsing an
+/// identifier back out of `sh:message` (#131). `result_path` mirrors `path`
+/// under the vocabulary's name wherever a path is known; the keys consumers
+/// already read are left as they were.
+///
+/// `source_shape` is the shape that CARRIES the constraint, which for a
+/// constraint under `sh:property` is the property shape and not the node shape
+/// containing it. That distinction is the whole point of the field: two
+/// property shapes on one path under one node shape are exactly the case #131
+/// was filed about, and naming the node shape for both leaves them as
+/// indistinguishable as they were before. pyshacl returns the property shape
+/// here, and this now agrees with it. The enclosing node shape is still
+/// reported, under `node_shape`, because it is what selected the focus node
+/// and a consumer that wants to group by rule set needs it.
+fn attribute(source_shape: &str, node_shape: &str, mut v: serde_json::Value) -> serde_json::Value {
+    v["source_shape"] = serde_json::Value::String(strip_angle_brackets(source_shape));
+    v["node_shape"] = serde_json::Value::String(strip_angle_brackets(node_shape));
+    let constraint = v["constraint"].as_str().unwrap_or("").to_string();
+    v["source_constraint_component"] =
+        serde_json::Value::String(constraint_component(&constraint));
+    if v.get("result_path").is_none()
+        && let Some(path) = v.get("path").cloned()
+    {
+        v["result_path"] = path;
+    }
+    v
+}
+
+/// The `sh:*ConstraintComponent` IRI for the short constraint name a violation
+/// carries in `constraint`. Every W3C core component is the parameter name with
+/// its first letter capitalised, except SPARQL.
+fn constraint_component(constraint: &str) -> String {
+    let local = constraint.strip_prefix("sh:").unwrap_or(constraint);
+    let name = if local.eq_ignore_ascii_case("sparql") {
+        "SPARQL".to_string()
+    } else {
+        let mut chars = local.chars();
+        match chars.next() {
+            Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            None => String::new(),
+        }
+    };
+    format!("http://www.w3.org/ns/shacl#{name}ConstraintComponent")
+}
+
 fn strip_angle_brackets(s: &str) -> String {
     let s = s.trim();
     if s.starts_with('<') && s.ends_with('>') {
@@ -2274,23 +2682,33 @@ fn strip_angle_brackets(s: &str) -> String {
     }
 }
 
-/// Trim quotes and handle typed literals like `"1"^^<http://...>`.
+/// The lexical value of a term the store printed.
+///
+/// The store renders terms in N-Triples form, so a literal arrives quoted, with
+/// its escapes still written as escapes and its datatype or language tag
+/// appended. Recovering the value is the parser's job, not string surgery's.
+///
+/// The previous implementation searched the WHOLE string for `^^` and for `"@`
+/// and truncated there, so any value that CONTAINED those two characters was
+/// cut. A SHACL-SPARQL constraint comparing against a typed literal, which is
+/// to say most date and numeric constraints anyone writes
+/// (`FILTER(?d < "2025-01-01"^^xsd:date)`), was chopped mid-query, failed to
+/// parse, and was recorded as a constraint that could not be executed with a
+/// parse error that blamed the author. The verdict then came back `null` with
+/// zero violations and exit 0, so the rule most likely to be written was the
+/// rule most likely never to run. `sh:pattern` and `sh:message` were corrupted
+/// by the same mechanism. Pinned by `tests/shacl_literal_value_test.rs`.
 fn strip_quotes(s: &str) -> String {
     let s = s.trim();
-    // Handle typed literals: "value"^^<datatype>
-    let s = if let Some(idx) = s.find("^^") {
-        &s[..idx]
-    } else {
-        s
-    };
-    // Handle language-tagged literals: "value"@en
-    let s = if let Some(idx) = s.find("\"@") {
-        &s[..idx + 1]
-    } else {
-        s
-    };
-    let s = s.trim_matches('"');
-    unescape_literal(s)
+    match s.parse::<Term>() {
+        Ok(Term::Literal(lit)) => lit.value().to_string(),
+        // An IRI or a blank node has no quoting to undo.
+        Ok(_) => s.to_string(),
+        // Not a term at all. Keep the old best-effort reading rather than
+        // return the input untouched, because a caller that parsed a number
+        // out of it still needs the quotes gone.
+        Err(_) => unescape_literal(s.trim_matches('"')),
+    }
 }
 
 /// Undo the N-Triples escaping that Oxigraph applies when rendering a literal
@@ -2339,30 +2757,95 @@ fn unescape_literal(s: &str) -> String {
 
 /// Build a SPARQL PREFIX block from any `sh:declare` blocks in the shapes graph.
 ///
-/// SHACL lets a `sh:sparql` constraint reference prefixed names and point at its
-/// prefix declarations with `sh:prefixes`. Rather than resolve that pointer
-/// strictly, every declaration present in the shapes graph is collected, which is
-/// permissive but never wrong: an unused PREFIX line changes no result, whereas a
-/// missing one turns an executable constraint into an unevaluated one.
-fn sparql_prefix_block(shapes_store: &Store) -> anyhow::Result<String> {
-    let rows = query_solutions(
-        shapes_store,
-        r#"
-        PREFIX sh: <http://www.w3.org/ns/shacl#>
-        SELECT ?prefix ?namespace WHERE {
-            ?decl sh:prefix ?prefix ; sh:namespace ?namespace .
-        }
-        "#,
-    )?;
-    let mut block = String::new();
+/// What a resolved prefix prologue can be.
+enum Prologue {
+    /// PREFIX lines, sorted so that one shapes graph always yields one prologue.
+    Declarations(String),
+    /// One prefix bound to two namespaces in the set that applies here. Running
+    /// the constraint would mean guessing which binding the author meant, and
+    /// guessing wrong returns a clean report over data that violates the rule.
+    Ambiguous(String),
+}
+
+/// The PREFIX prologue for one `sh:sparql` constraint.
+///
+/// SHACL 5.2.1 scopes a constraint's prefix declarations: they are the ones
+/// reachable from its own `sh:prefixes` values, through `owl:imports*` and
+/// `sh:declare`. This used to merge EVERY `sh:declare` in the shapes graph and
+/// never read `sh:prefixes` at all, which is a false-clean generator. Two
+/// declaration sets binding one prefix to different namespaces emitted two
+/// `PREFIX p:` lines; SPARQL takes the last, the winner was decided by store
+/// row order, and the constraint pointing at the loser matched nothing and
+/// reported `conforms: true` with no `skipped_constraints` entry. Two shapes
+/// files that are the same RDF graph could give opposite verdicts.
+///
+/// So: when the constraint says which declarations it wants, use exactly those.
+/// When it does not, keep the permissive whole-graph merge, because shapes in
+/// the wild rely on it, but refuse to guess when that merge is ambiguous. A
+/// refusal is `conforms: null` and a recorded reason, which is the failure
+/// direction this module exists to keep.
+fn sparql_prologue(
+    shapes_store: &Store,
+    constraint_term: Option<&String>,
+) -> anyhow::Result<Prologue> {
+    let scoped = constraint_term.map(|c| {
+        format!(
+            r#"
+            PREFIX sh: <http://www.w3.org/ns/shacl#>
+            PREFIX owl: <http://www.w3.org/2002/07/owl#>
+            SELECT DISTINCT ?prefix ?namespace WHERE {{
+                {c} sh:prefixes ?ont .
+                ?ont owl:imports* ?src .
+                ?src sh:declare ?decl .
+                ?decl sh:prefix ?prefix ; sh:namespace ?namespace .
+            }}
+            "#
+        )
+    });
+    let mut rows = match &scoped {
+        Some(q) => query_solutions(shapes_store, q)?,
+        None => Vec::new(),
+    };
+    // No `sh:prefixes`, or one that resolves to nothing: fall back to the whole
+    // shapes graph, which is what every shapes file written against this engine
+    // so far has relied on.
+    if rows.is_empty() {
+        rows = query_solutions(
+            shapes_store,
+            r#"
+            PREFIX sh: <http://www.w3.org/ns/shacl#>
+            SELECT DISTINCT ?prefix ?namespace WHERE {
+                ?decl sh:prefix ?prefix ; sh:namespace ?namespace .
+            }
+            "#,
+        )?;
+    }
+
+    let mut bindings: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
     for row in &rows {
         if let (Some(prefix), Some(namespace)) = (row.get("prefix"), row.get("namespace")) {
-            block.push_str(&format!(
-                "PREFIX {}: <{}>\n",
-                strip_quotes(prefix),
-                strip_angle_brackets(&strip_quotes(namespace))
-            ));
+            bindings
+                .entry(strip_quotes(prefix))
+                .or_default()
+                .insert(strip_angle_brackets(&strip_quotes(namespace)));
         }
     }
-    Ok(block)
+    if let Some((prefix, namespaces)) = bindings.iter().find(|(_, ns)| ns.len() > 1) {
+        return Ok(Prologue::Ambiguous(format!(
+            "prefix {}: is declared with {} different namespaces ({}) in the declarations that \
+             apply to this constraint, so the query cannot be resolved without guessing. Point the \
+             constraint at one declaration set with sh:prefixes.",
+            prefix,
+            namespaces.len(),
+            namespaces.iter().cloned().collect::<Vec<_>>().join(", ")
+        )));
+    }
+    let mut block = String::new();
+    for (prefix, namespaces) in &bindings {
+        for namespace in namespaces {
+            block.push_str(&format!("PREFIX {prefix}: <{namespace}>\n"));
+        }
+    }
+    Ok(Prologue::Declarations(block))
 }

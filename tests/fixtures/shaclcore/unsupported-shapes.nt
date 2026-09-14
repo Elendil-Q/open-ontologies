@@ -1,0 +1,9 @@
+# sh:prefixes is a SHACL term with no Core constraint meaning that this compiler has
+# not implemented. The per-shape guard must refuse the whole shape rather than walk
+# past a parameter it does not recognise: that guard is the only thing standing
+# between "I checked everything" and "I checked what I happened to know".
+<http://ex.org/S> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/ns/shacl#NodeShape> .
+<http://ex.org/S> <http://www.w3.org/ns/shacl#targetClass> <http://ex.org/Person> .
+<http://ex.org/S> <http://www.w3.org/ns/shacl#property> <http://ex.org/NameShape> .
+<http://ex.org/NameShape> <http://www.w3.org/ns/shacl#path> <http://ex.org/name> .
+<http://ex.org/NameShape> <http://www.w3.org/ns/shacl#prefixes> <http://ex.org/decl> .

@@ -38,7 +38,26 @@ jobs:
       - name: Build
         run: cargo build
       - name: Test
-        run: cargo test
+        run: cargo test -- --nocapture 2>&1 | tee cargo-test.log
+      - name: Report tests that skipped for a missing fixture
+        # Some tests need data this repository does not carry, so they skip
+        # rather than fail. A skip reports `ok`, which means a green run can
+        # hide a suite that quietly shrank. This does not fail the build; it
+        # prints the count and the names so a shrinking suite is visible in the
+        # log instead of invisible in a pass. tests/common/mod.rs emits the
+        # marker, and OO_REQUIRE_FIXTURES=1 turns each skip into a failure for
+        # any job that is supposed to supply the fixtures.
+        #
+        # `shell: bash` because the matrix includes Windows, where a `run:`
+        # block defaults to PowerShell and this one is a bash script. It failed
+        # the whole Windows leg on the line it was written to be harmless on,
+        # contradicting the "does not fail the build" above. The runner ships
+        # bash, so naming it is the whole fix.
+        shell: bash
+        run: |
+          n=$(grep -c 'SKIPPED_FIXTURE:' cargo-test.log || true)
+          echo "$n test(s) skipped for a missing fixture"
+          grep 'SKIPPED_FIXTURE:' cargo-test.log | sort -u || true
       - name: Clippy
         run: cargo clippy -- -D warnings
       - name: Audit
@@ -180,10 +199,49 @@ jobs:
         # a hand-written list would not: `sql` implies postgres + duckdb.
         run: bash scripts/check-test-collection.sh cargo-test.log "${{ matrix.flags }}"
 
+  # The README describes the SHACL validator as differentially tested against
+  # pyshacl. tools/shacl_differential.py has existed since August and was
+  # referenced by no workflow and no Makefile target, so nothing ran it, no
+  # result was ever committed, and the claim rested on a run somebody did once
+  # by hand. A verification procedure nobody executes is the same defect as a
+  # test that returns early: it reports assurance that did not happen.
+  #
+  # The oracle exits 1 on a FALSE_CLEAN, meaning we said conforms where pyshacl
+  # said not, which is the one failure this validator must never have. That is
+  # what gates here. Disagreements in the other direction and undetermined
+  # verdicts are printed and uploaded, not failed on, because they are a work
+  # list rather than a defect.
+  shacl-differential:
+    timeout-minutes: 30
+    name: SHACL differential vs pyshacl
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pyshacl
+        run: pip install pyshacl
+      - name: Build the binary the oracle drives
+        run: cargo build --release
+      - name: Run the differential over the case-study corpus
+        run: |
+          python3 tools/shacl_differential.py \
+            --discover case-studies \
+            --json shacl-differential.json
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shacl-differential
+          path: shacl-differential.json
+
   # `python/` (open-ontologies-lite) has its own test suite and its own release
   # workflow, and until now nothing ran the tests. `python-release.yml` goes
   # straight from `uv build` to `pypa/gh-action-pypi-publish` on a `py-v*` tag,
-  # so every wheel published to PyPI so far was published without its 15 tests
+  # so every wheel published to PyPI so far was published without its tests
   # having executed once. Same shape of gap as #67, one subpackage over.
   #
   # Kept in CI rather than bolted onto the release workflow: a test that only
@@ -232,3 +290,95 @@ jobs:
       - name: Type-check
         working-directory: studio
         run: npx tsc --noEmit
+
+  # The Lean certificate layer. `lean/` holds a checker for the reasoner's
+  # derivation certificates with a machine-checked soundness proof. Building
+  # that directory IS the proof check: the `#guard_msgs` axiom tripwire in
+  # OOCert/Soundness.lean fails the build on any `sorry`. The Rust test then
+  # certifies every ontology this repository ships through the built checker
+  # and proves the checker can also say no. OO_REQUIRE_FIXTURES=1 turns the
+  # "no lake installed" skip into a failure, so this job cannot pass by not
+  # running.
+  lean:
+    timeout-minutes: 45
+    name: lean / certificate checker
+    runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: lean
+          build: true
+          test: false
+          lint: false
+          use-github-cache: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Certify every shipped ontology through the proved checker
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test lean_certificate_test -- --nocapture
+      - name: Check the verified SHACL Core evaluator against the W3C suite
+        # This job used to run a bare `lake build` while `Shacl` was not a
+        # default target, so the SHACL proofs did not compile at the commit
+        # that carried them and this gate was green over them. The lakefile now
+        # forces every target into the default set and this step measures the
+        # verified evaluator, so both halves of that failure are closed.
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test shacl_core_verified_test -- --nocapture
+      - name: Check the description-logic model certificates
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test dl_model_certificate_test -- --nocapture
+      - name: Check the refutation certificates
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test lean_refutation_test -- --nocapture
+      - name: Check the mixed certificate layer
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test lean_mixed_certificate_test -- --nocapture
+      - name: Check the generic Horn-rule layer, and that a user rule cannot earn the absolute verdict
+        # The five legs here are not interchangeable. Four of them prove the
+        # checker rejects a specific forgery; the fifth proves that a
+        # certificate over rules the user supplied reports a DIFFERENT verdict
+        # from one over the built-ins. That last one is the difference between
+        # a verification layer and a device for laundering an assumption into a
+        # fact, and it is the reason this job exists rather than being folded
+        # into the line above.
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test lean_horn_certificate_test -- --nocapture
+
+  # The official W3C SHACL test suite, as a ratchet.
+  #
+  # `shacl-differential` above compares this engine against pyshacl on OUR
+  # corpus, which measures agreement with one other implementation on data we
+  # chose. This measures conformance against the Working Group's own suite on
+  # data they chose, which is the only number that can be quoted outside this
+  # repository. The two are complementary and neither replaces the other.
+  #
+  # The gate is monotone, not pass-all: PASS may not drop, FAIL may not rise,
+  # and no named PASS may regress against tests/w3c_shacl_baseline.json. The
+  # engine passes 32 of 120 today and pretending otherwise would be exactly the
+  # silent success this repository keeps finding elsewhere. See the module docs
+  # in tests/w3c_shacl_conformance_test.rs.
+  #
+  # Cheap by construction: no Python, no network, no release build. The suite is
+  # vendored under tests/w3c-shacl/ (632 KB, W3C Software and Document License)
+  # so the job is offline and deterministic. OO_REQUIRE_FIXTURES=1 turns the
+  # "suite missing" skip into a failure, so it cannot pass by not running.
+  w3c-shacl:
+    timeout-minutes: 15
+    name: SHACL conformance vs the W3C suite
+    runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run the suite and hold the ratchet
+        run: |
+          set -o pipefail
+          OO_REQUIRE_FIXTURES=1 cargo test --test w3c_shacl_conformance_test -- --nocapture \
+            2>&1 | tee w3c-shacl-conformance.log
+      - name: Upload the per-test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w3c-shacl-conformance
+          path: w3c-shacl-conformance.log

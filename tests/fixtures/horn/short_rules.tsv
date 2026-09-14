@@ -1,0 +1,3 @@
+rdfs2	2	?s	?p	?o	?p	<http://www.w3.org/2000/01/rdf-schema#domain>	?c	?s	<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>	?c
+rdfs3	2	?s	?p	?o	?p	<http://www.w3.org/2000/01/rdf-schema#range>	?c	?o	<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>	?c
+rdfs5	2	?a	<http://www.w3.org/2000/01/rdf-schema#subPropertyOf>	?b	?b	<http://www.w3.org/2000/01/rdf-schema#subPropertyOf>	?c	?a	<http://www.w3.org/2000/01/rdf-schema#subPropertyOf>	?c

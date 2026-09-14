@@ -1,6 +1,5 @@
 use std::io::Cursor;
 use std::path::Path;
-use std::sync::Mutex;
 
 use oxigraph::io::{JsonLdProfileSet, RdfFormat, RdfParser, RdfSerializer};
 use oxigraph::model::*;
@@ -59,8 +58,15 @@ impl SparqlAuth {
 }
 
 /// In-memory RDF graph store backed by Oxigraph.
+///
+/// The store is held directly rather than behind a `Mutex`. Oxigraph's `Store`
+/// is already `Send + Sync` and synchronises internally, so the mutex added
+/// nothing but serialisation: every SPARQL read across all 109 tools queued
+/// behind one lock even though the reads do not conflict. It also meant
+/// fourteen `lock().unwrap()` sites, each of which turned a panic anywhere in
+/// the process into a poisoned lock and a second panic in every later request.
 pub struct GraphStore {
-    store: Mutex<Store>,
+    store: Store,
 }
 
 impl Default for GraphStore {
@@ -72,7 +78,7 @@ impl Default for GraphStore {
 impl GraphStore {
     pub fn new() -> Self {
         Self {
-            store: Mutex::new(Store::new().expect("Failed to create Oxigraph store")),
+            store: Store::new().expect("Failed to create Oxigraph store"),
         }
     }
 
@@ -95,18 +101,16 @@ impl GraphStore {
                 path.display()
             )
         })?;
-        Ok(Self {
-            store: Mutex::new(store),
-        })
+        Ok(Self { store })
     }
 
     pub fn triple_count(&self) -> usize {
-        let store = self.store.lock().unwrap();
+        let store = &self.store;
         store.len().unwrap_or(0)
     }
 
     pub fn load_turtle(&self, ttl: &str, base_iri: Option<&str>) -> anyhow::Result<usize> {
-        let store = self.store.lock().unwrap();
+        let store = &self.store;
         let reader = Cursor::new(ttl.as_bytes());
         let mut parser = RdfParser::from_format(RdfFormat::Turtle);
         if let Some(base) = base_iri {
@@ -136,7 +140,7 @@ impl GraphStore {
 
     /// Load RDF content with an optional base IRI for resolving relative IRIs.
     pub fn load_content_with_base(&self, content: &str, format: RdfFormat, base_iri: Option<&str>) -> anyhow::Result<usize> {
-        let store = self.store.lock().unwrap();
+        let store = &self.store;
         let reader = Cursor::new(content.as_bytes());
         let mut parser = RdfParser::from_format(format);
         if let Some(base) = base_iri {
@@ -159,7 +163,7 @@ impl GraphStore {
     pub fn load_file(&self, path: &str) -> anyhow::Result<usize> {
         let content = std::fs::read_to_string(path)?;
         let format = Self::detect_format_sniffed(path, &content);
-        let store = self.store.lock().unwrap();
+        let store = &self.store;
         let reader = Cursor::new(content.as_bytes());
 
         // A document's own location is its default base, per RFC 3986. Without
@@ -220,7 +224,7 @@ impl GraphStore {
         }
         let store = Self::new();
         {
-            let inner = store.store.lock().unwrap();
+            let inner = &store.store;
             let base = std::fs::canonicalize(path_hint)
                 .ok()
                 .and_then(|abs| abs.to_str().map(|s| format!("file://{s}")));
@@ -305,17 +309,72 @@ impl GraphStore {
         self.select_with_dataset(query, true)
     }
 
+    /// Run a SELECT once per term, with `var` pre-bound to that term, over the
+    /// union dataset. Returns the solutions per term, in the order given.
+    ///
+    /// Pre-binding is SPARQL substitution, the mechanism SHACL-SPARQL
+    /// specifies for `$this` (section 5.3.2): the term is in scope everywhere
+    /// in the query, inside `FILTER (NOT) EXISTS` and inside subqueries. A
+    /// `VALUES` join is not the same thing. A subquery is evaluated bottom-up
+    /// with no outer variable in scope, so a constraint wrapped that way ran
+    /// with `$this` unbound, asked whether ANY node matched, and one clean
+    /// record hid every dirty one (#132).
+    ///
+    /// The query is parsed once; each term gets its own substitution and
+    /// execution. The pre-bound variable is present in every returned row
+    /// whether or not the author projected it.
+    pub fn sparql_select_union_prebound(
+        &self,
+        query: &str,
+        var: &str,
+        terms: &[Term],
+    ) -> anyhow::Result<Vec<Vec<std::collections::HashMap<String, String>>>> {
+        let store = &self.store;
+        let mut prepared = SparqlEvaluator::new().parse_query(query)?;
+        prepared.dataset_mut().set_default_graph_as_union();
+        let variable = Variable::new(var)?;
+        let mut out = Vec::with_capacity(terms.len());
+        for term in terms {
+            let bound = prepared
+                .clone()
+                .substitute_variable(variable.clone(), term.clone());
+            let QueryResults::Solutions(solutions) = bound.on_store(store).execute()? else {
+                anyhow::bail!("pre-bound evaluation needs a SELECT query");
+            };
+            let vars: Vec<String> = solutions
+                .variables()
+                .iter()
+                .map(|v| v.as_str().to_string())
+                .collect();
+            let mut rows = Vec::new();
+            for solution in solutions {
+                let solution = solution?;
+                let mut row = std::collections::HashMap::new();
+                for v in &vars {
+                    if let Some(t) = solution.get(v.as_str()) {
+                        row.insert(v.clone(), t.to_string());
+                    }
+                }
+                row.entry(var.to_string())
+                    .or_insert_with(|| term.to_string());
+                rows.push(row);
+            }
+            out.push(rows);
+        }
+        Ok(out)
+    }
+
     fn select_with_dataset(
         &self,
         query: &str,
         union_default_graph: bool,
     ) -> anyhow::Result<String> {
-        let store = self.store.lock().unwrap();
+        let store = &self.store;
         let mut prepared = SparqlEvaluator::new().parse_query(query)?;
         if union_default_graph {
             prepared.dataset_mut().set_default_graph_as_union();
         }
-        match prepared.on_store(&store).execute()? {
+        match prepared.on_store(store).execute()? {
             QueryResults::Solutions(solutions) => {
                 let vars: Vec<String> = solutions
                     .variables()
@@ -354,7 +413,7 @@ impl GraphStore {
     /// Run a SPARQL UPDATE (INSERT/DELETE) against the store.
     /// Returns the number of new triples (delta).
     pub fn sparql_update(&self, update: &str) -> anyhow::Result<usize> {
-        let store = self.store.lock().unwrap();
+        let store = &self.store;
         let before = store.len()?;
         store.update(update)?;
         let after = store.len()?;
@@ -384,13 +443,12 @@ impl GraphStore {
         use oxigraph::model::dataset::{CanonicalizationAlgorithm, CanonicalizationHashAlgorithm};
         use oxigraph::model::Dataset;
 
-        let store = self.store.lock().unwrap();
+        let store = &self.store;
         let mut dataset = Dataset::new();
         for quad in store.iter() {
             let q = quad?;
             dataset.insert(&q);
         }
-        drop(store);
 
         dataset.canonicalize(CanonicalizationAlgorithm::Rdfc10 {
             hash_algorithm: CanonicalizationHashAlgorithm::Sha256,
@@ -398,7 +456,7 @@ impl GraphStore {
 
         let new_gs = GraphStore::new();
         {
-            let new_store = new_gs.store.lock().unwrap();
+            let new_store = &new_gs.store;
             for quad in dataset.iter() {
                 new_store.insert(quad)?;
             }
@@ -407,7 +465,7 @@ impl GraphStore {
     }
 
     pub fn serialize(&self, format: &str) -> anyhow::Result<String> {
-        let store = self.store.lock().unwrap();
+        let store = &self.store;
         let rdf_format = Self::parse_format(format)?;
         // Dataset formats carry the graph name; every other format is a single
         // RDF graph. `serialize_triple` drops the graph name, flattening a quad
@@ -450,7 +508,7 @@ impl GraphStore {
     }
 
     pub fn get_stats(&self) -> anyhow::Result<String> {
-        let store = self.store.lock().unwrap();
+        let store = &self.store;
         let total = store.len()?;
 
         // Count classes: explicit type declarations + implicit (subClassOf subjects/objects,
@@ -490,7 +548,7 @@ impl GraphStore {
         let count_from_query = |q: &str| -> usize {
             let Ok(prepared) = SparqlEvaluator::new().parse_query(q) else { return 0 };
             let Ok(QueryResults::Solutions(solutions)) = prepared
-                .on_store(&store)
+                .on_store(store)
                 .execute()
             else { return 0 };
             let Some(Ok(row)) = solutions.into_iter().next() else { return 0 };
@@ -537,7 +595,7 @@ impl GraphStore {
     }
 
     pub fn clear(&self) -> anyhow::Result<()> {
-        let store = self.store.lock().unwrap();
+        let store = &self.store;
         store.clear()?;
         Ok(())
     }
@@ -557,7 +615,7 @@ impl GraphStore {
     }
 
     fn load_lines(&self, content: &str, format: RdfFormat) -> anyhow::Result<usize> {
-        let store = self.store.lock().unwrap();
+        let store = &self.store;
         let reader = Cursor::new(content.as_bytes());
         let parser = RdfParser::from_format(format).for_reader(reader);
         let mut count = 0;
@@ -652,7 +710,7 @@ impl GraphStore {
 
     /// Extract all triples as (subject, predicate, object) string tuples.
     pub fn all_triples(&self) -> anyhow::Result<Vec<(String, String, String)>> {
-        let store = self.store.lock().unwrap();
+        let store = &self.store;
         let mut triples = Vec::new();
         for quad in store.iter() {
             let quad = quad?;

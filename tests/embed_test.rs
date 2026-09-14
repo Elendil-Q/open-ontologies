@@ -1,3 +1,5 @@
+mod common;
+
 #[cfg(feature = "embeddings")]
 mod tests {
     use open_ontologies::embed::TextEmbedder;
@@ -19,7 +21,8 @@ mod tests {
         let tokenizer_path = model_dir.join("tokenizer.json");
 
         if !model_path.exists() {
-            eprintln!("Skipping: model not downloaded. Run `open-ontologies init` first.");
+            crate::common::skip_unless(false, "embedding model",
+                                "Run `open-ontologies init` first.");
             return;
         }
 
@@ -45,7 +48,8 @@ mod tests {
         let tokenizer_path = model_dir.join("tokenizer.json");
 
         if !model_path.exists() {
-            eprintln!("Skipping: model not downloaded.");
+            crate::common::skip_unless(false, "embedding model",
+                                "Run `open-ontologies init` first.");
             return;
         }
 

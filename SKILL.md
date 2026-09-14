@@ -2,7 +2,7 @@
 name: open-ontologies
 version: "0.5.1"
 description: >
-  AI-native ontology engineering using 50+ MCP tools backed by an in-memory Oxigraph triple store.
+  AI-native ontology engineering using 109 MCP tools backed by an in-memory Oxigraph triple store.
   Build, validate, query, and govern RDF/OWL ontologies with a generate-validate-iterate loop.
   Use when building ontologies, knowledge graphs, RDF data, SPARQL queries, BORO/4D modeling,
   SHACL validation, clinical terminology mapping, ingesting from CSV/JSON/Parquet/XLSX or
@@ -25,7 +25,9 @@ metadata:
         - name: open-ontologies
           description: >
             Oxigraph-backed MCP server providing all onto_* tools.
-            Install: cargo install open-ontologies OR download binary from
+            Install: cargo install --git
+            https://github.com/fabio-rovai/open-ontologies OR download a
+            binary from
             https://github.com/fabio-rovai/open-ontologies/releases
           config:
             command: open-ontologies
@@ -56,7 +58,7 @@ AI-native ontology engineering. Generate OWL/RDF directly, validate with MCP too
 
 This skill requires the **Open Ontologies MCP server** to provide the `onto_*` tools.
 
-**Install:** `cargo install open-ontologies` or download from [GitHub releases](https://github.com/fabio-rovai/open-ontologies/releases)
+**Install:** `cargo install --git https://github.com/fabio-rovai/open-ontologies --features embeddings,plugins,sql`, or download from [GitHub releases](https://github.com/fabio-rovai/open-ontologies/releases), which ships the default feature set without embeddings, SQL or plugins. The crate is not on crates.io yet, so plain `cargo install open-ontologies` does not work
 
 **MCP config** (add to `.mcp.json` or Claude settings):
 ```json
@@ -189,11 +191,11 @@ For aligning two ontologies:
 | `onto_marketplace` | Browse / install standard ontologies from the curated catalogue |
 | `onto_dl_check` | Check `subClass ⊑ superClass` via DL tableaux |
 | `onto_dl_explain` | Explain why a class is unsatisfiable (DL clash trace) |
-| `onto_embed` | Generate text + Poincaré structural embeddings for all classes |
+| `onto_embed` | Generate text + Poincaré structural embeddings for all classes. Requires a build with `--features embeddings`; returns an error otherwise |
 | `onto_search` | Natural-language query → most-similar classes |
 | `onto_similarity` | Cosine + Poincaré distance between two IRIs |
-| `onto_import_schema` | Introspect PostgreSQL or DuckDB schema → generate OWL classes/properties/cardinality |
-| `onto_sql_ingest` | Run SQL `SELECT` against PostgreSQL or DuckDB → RDF (DuckDB enables federation over CSV/Parquet/JSON/HTTPFS/postgres-scanner via its extensions) |
+| `onto_import_schema` | Introspect PostgreSQL or DuckDB schema → generate OWL classes/properties/cardinality. Requires a build with `--features postgres` or `--features duckdb` |
+| `onto_sql_ingest` | Run SQL `SELECT` against PostgreSQL or DuckDB → RDF (DuckDB enables federation over CSV/Parquet/JSON/HTTPFS/postgres-scanner via its extensions). Requires a build with `--features postgres` or `--features duckdb` |
 
 ## Usage Examples
 

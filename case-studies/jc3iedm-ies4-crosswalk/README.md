@@ -20,11 +20,14 @@ A production crosswalk would need:
 
 ## Why this exists
 
-Per the May 2026 IES4 ecosystem research (recorded in [memory](../../../../.claude/projects/-Users-fabio/memory/) under `project_open_ontologies_v0_2.md`):
+No public JC3IEDM to IES4 crosswalk was findable as of May 2026. The two models
+are shaped differently: JC3IEDM is entity-relationship and operational C2, while
+IES4 is 4D-ontological and intelligence-shaped, so a mapping has to reconcile two
+modelling traditions rather than rename fields.
 
-> No public JC3IEDM ↔ IES4 crosswalk exists as of May 2026. JC3IEDM is ER-shaped and operational-C2; IES4 is 4D-ontological and intelligence-shaped. A crosswalk is almost certainly being built privately inside the IES Working Group (FMN Spiral 3 land-C2 profile is the natural pull) but nothing public.
-
-This case study fills the public gap with a documented sketch. It can be cited as Open Ontologies' contribution to UK/NATO defence-modelling discussions.
+This case study fills that public gap with a documented sketch. It describes only
+what is in this repository, and it makes no claim about work anyone else may or
+may not be doing.
 
 ## Methodology
 

@@ -5,7 +5,7 @@ description: Build, validate, and govern RDF/OWL ontologies using the Open Ontol
 
 # Ontology Engineering Workflow
 
-You have access to the Open Ontologies MCP server, which provides 50+ tools for AI-native ontology engineering backed by an in-memory Oxigraph triple store.
+You have access to the Open Ontologies MCP server, which provides 109 tools for AI-native ontology engineering backed by an in-memory Oxigraph triple store. All 109 are available in a default build, but 8 require an optional Cargo feature and return an error without it: four need `embeddings`, two need `plugins`, and two need `postgres` or `duckdb`.
 
 ## Core Workflow
 
@@ -82,7 +82,7 @@ When applying an ontology to external data:
 
 ## Semantic Search and Embeddings
 
-After loading, generate embeddings to enable natural-language search:
+After loading, generate embeddings to enable natural-language search. This requires a server built with `--features embeddings`; on a default build the three tools below return `Compiled without embeddings feature`.
 
 - `onto_embed` — generate text + Poincaré structural embeddings for every class. Honours `[embeddings] provider = "local" | "openai"` and the `OPEN_ONTOLOGIES_EMBEDDINGS_*` env vars.
 - `onto_search` — natural-language query → most-similar classes (`mode: "text" | "structure" | "product"`).

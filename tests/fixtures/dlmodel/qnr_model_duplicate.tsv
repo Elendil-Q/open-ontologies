@@ -1,0 +1,9 @@
+domain	c
+domain	p1
+domain	p2
+class	<http://ex.org/Committee>	c
+class	<http://ex.org/Person>	p1
+class	<http://ex.org/Person>	p2
+edge	c	<http://ex.org/hasMember>	p1
+edge	c	<http://ex.org/hasMember>	p1
+edge	p1	<http://ex.org/memberOf>	c

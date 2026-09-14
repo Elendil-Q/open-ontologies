@@ -21,9 +21,21 @@ const OWL_HAS_VALUE: &str = "<http://www.w3.org/2002/07/owl#hasValue>";
 const OWL_ON_PROPERTY: &str = "<http://www.w3.org/2002/07/owl#onProperty>";
 const OWL_INTERSECTION: &str = "<http://www.w3.org/2002/07/owl#intersectionOf>";
 const OWL_UNION: &str = "<http://www.w3.org/2002/07/owl#unionOf>";
+const OWL_ONEOF: &str = "<http://www.w3.org/2002/07/owl#oneOf>";
 const RDF_FIRST: &str = "<http://www.w3.org/1999/02/22-rdf-syntax-ns#first>";
 const RDF_REST: &str = "<http://www.w3.org/1999/02/22-rdf-syntax-ns#rest>";
 const RDF_NIL: &str = "<http://www.w3.org/1999/02/22-rdf-syntax-ns#nil>";
+
+/// A triple over interned ids.
+type Fact = (u32, u32, u32);
+
+/// One line of a certificate: the rule, what it concluded, and the premises
+/// it read, in the order `lean/OOCert/Rules.lean` documents for that rule.
+struct Derivation {
+    rule: &'static str,
+    conclusion: Fact,
+    premises: Vec<Fact>,
+}
 
 /// Intern strings to u32 IDs for efficient reasoning.
 struct Interner {
@@ -59,9 +71,45 @@ impl Interner {
 /// Profiles:
 ///   "rdfs"       — RDFS rules (subclass, domain/range, subproperty)
 ///   "owl-rl"     — RDFS + core OWL-RL (transitive, symmetric, inverse,
-///                  sameAs, equivalentClass/Property)
+///                  sameAs, equivalentClass/Property) + the schema rules that
+///                  move a domain or a range along the class and property
+///                  hierarchies (scm-dom1, scm-dom2, scm-rng1, scm-rng2)
 ///   "owl-rl-ext" — All above + someValuesFrom, allValuesFrom, hasValue,
-///                  intersectionOf, unionOf
+///                  intersectionOf (both directions), unionOf, oneOf, and the
+///                  four rules that order two restrictions by their filler or
+///                  by their property (scm-svf1, scm-svf2, scm-avf1, scm-avf2)
+///
+/// Twenty-nine rule ids in all, every one of them with an arm in
+/// `lean/OOCert/Rules.lean` and a lemma in `lean/OOCert/Soundness.lean`. A rule
+/// the checker cannot prove sound is a rule this file does not run: that is the
+/// contract, and `tests/lean_certificate_test.rs` walks the whole corpus to
+/// enforce it.
+///
+/// What is deliberately NOT here, with the reason, because "not implemented" and
+/// "not sound" are different statements and a reader is owed which one applies:
+///
+///   * `eq-ref` is sound and useless. It asserts `owl:sameAs` reflexivity for
+///     every term in every position. Measured on the largest file this
+///     repository ships, `benchmark/oaei/data/anatomy/human.owl`, that is
+///     17,194 triples of no consequence added to a graph of 35,354. It would
+///     also put a derivation into the empty-graph case that
+///     `OOCert.not_everything_is_entailed` depends on staying empty.
+///   * The `eq-rep-s`, `eq-rep-p`, `eq-rep-o` family is sound and quadratic in
+///     the size of a `owl:sameAs` clique. Counted by SPARQL over every RDF file
+///     this repository tracks that parses and is under the size cap, the corpus
+///     contains ZERO `owl:sameAs` triples, so the cost is certain and the
+///     benefit here is nothing at all. Three files mention `sameAs` inside an
+///     `rdfs:comment` and none of them asserts one.
+///   * `scm-cls`, `scm-op` and `scm-dp` are sound and emit reflexive trivia
+///     (`c rdfs:subClassOf c`, `c owl:equivalentClass c`) of exactly the kind
+///     the `a != b` guards elsewhere in this file exist to suppress.
+///   * The `dt-*` family needs a datatype VALUE space. `OOCert.Semantics`
+///     reads a literal as its N-Triples spelling and says so, so there is no
+///     condition here for those rules to be sound against.
+///   * Nothing concludes `false`. The profile's inconsistency rules need a
+///     certificate format that can carry a refutation, which this format
+///     cannot.
+///
 /// The graph materialised inferences are written to when the caller asks for
 /// them to be kept apart from what was asserted.
 pub const INFERRED_GRAPH: &str = "https://open-ontologies.org/graph/inferred";
@@ -100,8 +148,43 @@ impl Reasoner {
         materialize: bool,
         target: InferenceTarget,
     ) -> anyhow::Result<String> {
+        Self::run_full(graph, profile, materialize, target, None)
+    }
+
+    /// Run the forward-chaining reasoner and, when `certificate_dir` is given,
+    /// write a derivation certificate beside the result.
+    ///
+    /// The certificate is two tab-separated files: `asserted.tsv`, every
+    /// triple the run started from, and `derivations.tsv`, one line per
+    /// inferred triple naming the rule that produced it and the premises the
+    /// rule read. `lean/` holds a checker for that format whose soundness is a
+    /// machine-checked theorem (`OOCert.certificate_sound`): a certificate it
+    /// accepts contains only triples entailed by the asserted graph under the
+    /// RDF-based semantics of the vocabulary the rules use. The engine's own
+    /// correctness is therefore not the thing a consumer has to trust; the
+    /// checker's is, and the checker is a few hundred lines with a proof.
+    ///
+    /// The first thing the checker caught was in this file: `cls-svf1` used
+    /// to derive membership in a subclass from membership in its restriction
+    /// superclass, the converse of the axiom
+    /// (tests/reason_rl_ext_soundness_test.rs).
+    ///
+    /// Not available for `owl-dl`: the tableaux path has no rule trace.
+    pub fn run_full(
+        graph: &Arc<GraphStore>,
+        profile: &str,
+        materialize: bool,
+        target: InferenceTarget,
+        certificate_dir: Option<&std::path::Path>,
+    ) -> anyhow::Result<String> {
         // Delegate OWL-DL to tableaux reasoner
         if profile == "owl-dl" {
+            if certificate_dir.is_some() {
+                anyhow::bail!(
+                    "the owl-dl tableaux path emits no derivation certificate; \
+                     run rdfs, owl-rl or owl-rl-ext for a certified run"
+                );
+            }
             if target == InferenceTarget::Inferred {
                 // Say so rather than materialise into the default graph while
                 // the caller believes the inferences were kept apart.
@@ -134,112 +217,167 @@ impl Reasoner {
         let rdfs_subclass = interner.intern(RDFS_SUBCLASS);
         let rdfs_subprop = interner.intern(RDFS_SUBPROP);
         let owl_sameas = interner.intern(OWL_SAMEAS);
-
-        // Pre-extract static schema relations
-        let domain_map: Vec<(u32, u32)> = facts.iter()
-            .filter(|&&(_, p, _)| p == interner.intern(RDFS_DOMAIN))
-            .map(|&(s, _, o)| (s, o)).collect();
-        let range_map: Vec<(u32, u32)> = facts.iter()
-            .filter(|&&(_, p, _)| p == interner.intern(RDFS_RANGE))
-            .map(|&(s, _, o)| (s, o)).collect();
-        let transitive_set: HashSet<u32> = facts.iter()
-            .filter(|&&(_, p, o)| p == rdf_type && o == interner.intern(OWL_TRANSITIVE))
-            .map(|&(s, _, _)| s).collect();
-        let symmetric_set: HashSet<u32> = facts.iter()
-            .filter(|&&(_, p, o)| p == rdf_type && o == interner.intern(OWL_SYMMETRIC))
-            .map(|&(s, _, _)| s).collect();
-        let inverse_pairs: Vec<(u32, u32)> = facts.iter()
-            .filter(|&&(_, p, _)| p == interner.intern(OWL_INVERSE))
-            .map(|&(s, _, o)| (s, o)).collect();
-        let equiv_class: Vec<(u32, u32)> = facts.iter()
-            .filter(|&&(_, p, _)| p == interner.intern(OWL_EQUIV_CLASS))
-            .map(|&(s, _, o)| (s, o)).collect();
-        let equiv_prop: Vec<(u32, u32)> = facts.iter()
-            .filter(|&&(_, p, _)| p == interner.intern(OWL_EQUIV_PROP))
-            .map(|&(s, _, o)| (s, o)).collect();
-
-        // OWL restriction structures (for owl-rl-ext)
+        // Every well-known id is interned once, before the loop, so the
+        // schema indices below can be rebuilt from the closure each iteration
+        // without borrowing the interner mutably inside it.
+        let rdfs_domain = interner.intern(RDFS_DOMAIN);
+        let rdfs_range = interner.intern(RDFS_RANGE);
+        let owl_transitive = interner.intern(OWL_TRANSITIVE);
+        let owl_symmetric = interner.intern(OWL_SYMMETRIC);
+        let owl_inverse = interner.intern(OWL_INVERSE);
+        let owl_equiv_class = interner.intern(OWL_EQUIV_CLASS);
+        let owl_equiv_prop = interner.intern(OWL_EQUIV_PROP);
         let owl_on_property = interner.intern(OWL_ON_PROPERTY);
         let owl_some_values = interner.intern(OWL_SOME_VALUES);
         let owl_all_values = interner.intern(OWL_ALL_VALUES);
         let owl_has_value = interner.intern(OWL_HAS_VALUE);
-
-        let mut restr_prop: HashMap<u32, u32> = HashMap::new();
-        let mut restr_svf: HashMap<u32, u32> = HashMap::new();
-        let mut restr_avf: HashMap<u32, u32> = HashMap::new();
-        let mut restr_hv: HashMap<u32, u32> = HashMap::new();
-
-        if include_ext {
-            for &(s, p, o) in &facts {
-                if p == owl_on_property { restr_prop.insert(s, o); }
-                if p == owl_some_values { restr_svf.insert(s, o); }
-                if p == owl_all_values { restr_avf.insert(s, o); }
-                if p == owl_has_value { restr_hv.insert(s, o); }
-            }
-        }
-
-        // svf_rules: (property, filler_class, restriction_node)
-        let svf_rules: Vec<(u32, u32, u32)> = restr_svf.iter()
-            .filter_map(|(&r, &filler)| restr_prop.get(&r).map(|&prop| (prop, filler, r)))
-            .collect();
-        // hv_rules: (property, value, restriction_node)
-        let hv_rules: Vec<(u32, u32, u32)> = restr_hv.iter()
-            .filter_map(|(&r, &val)| restr_prop.get(&r).map(|&prop| (prop, val, r)))
-            .collect();
-        // avf_rules: (property, filler_class, restriction_node)
-        let _avf_rules: Vec<(u32, u32, u32)> = restr_avf.iter()
-            .filter_map(|(&r, &filler)| restr_prop.get(&r).map(|&prop| (prop, filler, r)))
-            .collect();
-
-        // Parse RDF lists for intersectionOf/unionOf
-        let mut intersection_classes: Vec<(u32, Vec<u32>)> = Vec::new();
-        let mut union_classes: Vec<(u32, Vec<u32>)> = Vec::new();
-        if include_ext {
-            let rdf_first = interner.intern(RDF_FIRST);
-            let rdf_rest = interner.intern(RDF_REST);
-            let rdf_nil = interner.intern(RDF_NIL);
-            let owl_intersection = interner.intern(OWL_INTERSECTION);
-            let owl_union = interner.intern(OWL_UNION);
-
-            let first_map: HashMap<u32, u32> = facts.iter()
-                .filter(|&&(_, p, _)| p == rdf_first)
-                .map(|&(s, _, o)| (s, o)).collect();
-            let rest_map: HashMap<u32, u32> = facts.iter()
-                .filter(|&&(_, p, _)| p == rdf_rest)
-                .map(|&(s, _, o)| (s, o)).collect();
-
-            let walk_list = |head: u32| -> Vec<u32> {
-                let mut items = Vec::new();
-                let mut cur = head;
-                for _ in 0..100 {
-                    if cur == rdf_nil { break; }
-                    if let Some(&item) = first_map.get(&cur) { items.push(item); }
-                    cur = *rest_map.get(&cur).unwrap_or(&rdf_nil);
-                }
-                items
-            };
-
-            for &(s, p, o) in &facts {
-                if p == owl_intersection {
-                    let items = walk_list(o);
-                    if !items.is_empty() { intersection_classes.push((s, items)); }
-                }
-                if p == owl_union {
-                    let items = walk_list(o);
-                    if !items.is_empty() { union_classes.push((s, items)); }
-                }
-            }
-        }
+        let owl_intersection = interner.intern(OWL_INTERSECTION);
+        let owl_union = interner.intern(OWL_UNION);
+        let owl_oneof = interner.intern(OWL_ONEOF);
+        let rdf_first = interner.intern(RDF_FIRST);
+        let rdf_rest = interner.intern(RDF_REST);
+        let rdf_nil = interner.intern(RDF_NIL);
 
         // ── Fixpoint iteration ──────────────────────────────────────
-        let mut triple_set: HashSet<(u32, u32, u32)> = facts.iter().copied().collect();
+        let mut triple_set: HashSet<Fact> = facts.iter().copied().collect();
         let initial_size = triple_set.len();
         let mut iterations = 0;
+
+        // Certificate bookkeeping. A conclusion is recorded the first time it
+        // is derived and never again, so the certificate has exactly one line
+        // per inferred triple and `derivations.len() == inferred_count` is an
+        // invariant the tests pin. Nothing here runs unless a certificate was
+        // asked for: the hot path pays one branch per candidate triple.
+        let certify = certificate_dir.is_some();
+        let mut derivations: Vec<Derivation> = Vec::new();
+        let mut recorded: HashSet<Fact> = HashSet::new();
 
         loop {
             iterations += 1;
             let before = triple_set.len();
-            let mut new: Vec<(u32, u32, u32)> = Vec::new();
+            let mut new: Vec<Fact> = Vec::new();
+
+            // Schema indices, rebuilt from the closure on every iteration.
+            //
+            // These used to be filtered ONCE out of the pre-loop snapshot while
+            // only the three data indices below were rebuilt, so the run was
+            // not a fixpoint of its own rule set: a `rdfs:domain` triple that
+            // the reasoner itself derived, by rdfs7 over a subproperty of
+            // rdfs:domain or by scm-eqp, was never used, and running `reason` a
+            // second time derived more than running it once. The number of runs
+            // needed was the length of the longest chain of such rules, not two.
+            //
+            // For certificates that mattered more than for query answers.
+            // Materialising turns run N's conclusions into run N+1's premises,
+            // so `asserted.tsv` could list the reasoner's own output as an
+            // axiom with nothing marking it as derived, and the soundness
+            // theorem is conditional on the assertions. Reaching the fixpoint
+            // in one run is what makes a single certificate the whole story.
+            //
+            // The cost is a constant factor on a scan the loop already does.
+            let domain_map: Vec<(u32, u32)> = triple_set.iter()
+                .filter(|&&(_, p, _)| p == rdfs_domain)
+                .map(|&(s, _, o)| (s, o)).collect();
+            let range_map: Vec<(u32, u32)> = triple_set.iter()
+                .filter(|&&(_, p, _)| p == rdfs_range)
+                .map(|&(s, _, o)| (s, o)).collect();
+            let transitive_set: HashSet<u32> = triple_set.iter()
+                .filter(|&&(_, p, o)| p == rdf_type && o == owl_transitive)
+                .map(|&(s, _, _)| s).collect();
+            let symmetric_set: HashSet<u32> = triple_set.iter()
+                .filter(|&&(_, p, o)| p == rdf_type && o == owl_symmetric)
+                .map(|&(s, _, _)| s).collect();
+            let inverse_pairs: Vec<(u32, u32)> = triple_set.iter()
+                .filter(|&&(_, p, _)| p == owl_inverse)
+                .map(|&(s, _, o)| (s, o)).collect();
+            let equiv_class: Vec<(u32, u32)> = triple_set.iter()
+                .filter(|&&(_, p, _)| p == owl_equiv_class)
+                .map(|&(s, _, o)| (s, o)).collect();
+            let equiv_prop: Vec<(u32, u32)> = triple_set.iter()
+                .filter(|&&(_, p, _)| p == owl_equiv_prop)
+                .map(|&(s, _, o)| (s, o)).collect();
+
+            // OWL restriction structures and RDF lists (owl-rl-ext only).
+            let mut restr_prop: HashMap<u32, u32> = HashMap::new();
+            let mut restr_svf: HashMap<u32, u32> = HashMap::new();
+            let mut restr_hv: HashMap<u32, u32> = HashMap::new();
+            let mut intersection_classes: Vec<(u32, u32, Vec<Fact>, Vec<u32>)> = Vec::new();
+            let mut union_classes: Vec<(u32, u32, Vec<Fact>, Vec<u32>)> = Vec::new();
+            let mut oneof_classes: Vec<(u32, u32, Vec<Fact>, Vec<u32>)> = Vec::new();
+            let mut svf_rules: Vec<(u32, u32, u32)> = Vec::new();
+            let mut hv_rules: Vec<(u32, u32, u32)> = Vec::new();
+            let mut avf_rules: Vec<(u32, u32, u32)> = Vec::new();
+            if include_ext {
+                let mut restr_avf: HashMap<u32, u32> = HashMap::new();
+                for &(s, p, o) in triple_set.iter() {
+                    if p == owl_on_property { restr_prop.insert(s, o); }
+                    if p == owl_some_values { restr_svf.insert(s, o); }
+                    if p == owl_all_values { restr_avf.insert(s, o); }
+                    if p == owl_has_value { restr_hv.insert(s, o); }
+                }
+                avf_rules = restr_avf.iter()
+                    .filter_map(|(&r, &filler)| restr_prop.get(&r).map(|&prop| (prop, filler, r)))
+                    .collect();
+                svf_rules = restr_svf.iter()
+                    .filter_map(|(&r, &filler)| restr_prop.get(&r).map(|&prop| (prop, filler, r)))
+                    .collect();
+                hv_rules = restr_hv.iter()
+                    .filter_map(|(&r, &val)| restr_prop.get(&r).map(|&prop| (prop, val, r)))
+                    .collect();
+
+                // A list is read only when it is well formed: every node carries
+                // the rdf:first and rdf:rest the certificate checker will look
+                // for, and the chain reaches rdf:nil. It used to be read
+                // leniently and the class rules fired on whatever came back. The
+                // checker has no rule for a list it cannot walk, so the reasoner
+                // no longer derives from one either; deriving less from
+                // malformed input is the sound direction. Each entry keeps the
+                // head node and the chain triples so a certificate can cite them.
+                let first_map: HashMap<u32, u32> = triple_set.iter()
+                    .filter(|&&(_, p, _)| p == rdf_first)
+                    .map(|&(s, _, o)| (s, o)).collect();
+                let rest_map: HashMap<u32, u32> = triple_set.iter()
+                    .filter(|&&(_, p, _)| p == rdf_rest)
+                    .map(|&(s, _, o)| (s, o)).collect();
+                let walk_list = |head: u32| -> Option<(Vec<Fact>, Vec<u32>)> {
+                    let mut chain = Vec::new();
+                    let mut items = Vec::new();
+                    let mut cur = head;
+                    // Bounded so that a cyclic rdf:rest cannot spin.
+                    for _ in 0..100_000 {
+                        if cur == rdf_nil {
+                            return Some((chain, items));
+                        }
+                        let item = *first_map.get(&cur)?;
+                        let next = *rest_map.get(&cur)?;
+                        chain.push((cur, rdf_first, item));
+                        chain.push((cur, rdf_rest, next));
+                        items.push(item);
+                        cur = next;
+                    }
+                    None
+                };
+                for &(s, p, o) in triple_set.iter() {
+                    if p == owl_intersection
+                        && let Some((chain, items)) = walk_list(o)
+                        && !items.is_empty()
+                    {
+                        intersection_classes.push((s, o, chain, items));
+                    }
+                    if p == owl_union
+                        && let Some((chain, items)) = walk_list(o)
+                        && !items.is_empty()
+                    {
+                        union_classes.push((s, o, chain, items));
+                    }
+                    if p == owl_oneof
+                        && let Some((chain, items)) = walk_list(o)
+                        && !items.is_empty()
+                    {
+                        oneof_classes.push((s, o, chain, items));
+                    }
+                }
+            }
 
             // Build per-iteration indices
             let type_idx: Vec<(u32, u32)> = triple_set.iter()
@@ -258,6 +396,17 @@ impl Reasoner {
                 sub_to_super.entry(sub).or_default().push(sup);
             }
 
+            // Every rule goes through this. It pushes the candidate and, when a
+            // certificate was asked for, records the first derivation of each
+            // triple not already in the closure, with the premises in the
+            // order the checker expects for that rule.
+            let mut emit = |t: Fact, rule: &'static str, premises: &[Fact]| {
+                if certify && !triple_set.contains(&t) && recorded.insert(t) {
+                    derivations.push(Derivation { rule, conclusion: t, premises: premises.to_vec() });
+                }
+                new.push(t);
+            };
+
             // ── RDFS rules ──────────────────────────────────────────
 
             // rdfs9: x type sub, sub subClassOf super → x type super
@@ -265,7 +414,8 @@ impl Reasoner {
                 if let Some(supers) = sub_to_super.get(&sub) {
                     for &sup in supers {
                         if sub != sup {
-                            new.push((x, rdf_type, sup));
+                            emit((x, rdf_type, sup), "rdfs9",
+                                &[(x, rdf_type, sub), (sub, rdfs_subclass, sup)]);
                         }
                     }
                 }
@@ -276,7 +426,8 @@ impl Reasoner {
                 if let Some(cs) = sub_to_super.get(&b) {
                     for &c in cs {
                         if a != b && b != c && a != c {
-                            new.push((a, rdfs_subclass, c));
+                            emit((a, rdfs_subclass, c), "rdfs11",
+                                &[(a, rdfs_subclass, b), (b, rdfs_subclass, c)]);
                         }
                     }
                 }
@@ -284,16 +435,24 @@ impl Reasoner {
 
             // rdfs2: s p o, p domain class → s type class
             for &(prop, cls) in &domain_map {
-                for &(s, p, _) in &triple_set.iter().collect::<Vec<_>>() {
-                    if *p == prop { new.push((*s, rdf_type, cls)); }
+                for &(s, p, o) in triple_set.iter() {
+                    if p == prop {
+                        emit((s, rdf_type, cls), "rdfs2", &[(s, p, o), (prop, rdfs_domain, cls)]);
+                    }
                 }
             }
 
             // rdfs3: s p o, p range class → o type class (IRI only)
             for &(prop, cls) in &range_map {
-                for &(_, p, o) in &triple_set.iter().collect::<Vec<_>>() {
-                    if *p == prop && interner.resolve(*o).starts_with('<') {
-                        new.push((*o, rdf_type, cls));
+                for &(s, p, o) in triple_set.iter() {
+                    // The guard has to exclude LITERALS, which cannot be the
+                    // subject of the conclusion, and nothing else. Requiring an
+                    // IRI also dropped every range inference onto a blank node,
+                    // so a blank-node value never got typed, rdfs9 starved
+                    // behind it, and a SHACL shape targeting that class found
+                    // no focus nodes. rdfs2 twelve lines up has no such guard.
+                    if p == prop && !interner.resolve(o).starts_with('"') {
+                        emit((o, rdf_type, cls), "rdfs3", &[(s, p, o), (prop, rdfs_range, cls)]);
                     }
                 }
             }
@@ -307,7 +466,8 @@ impl Reasoner {
                 if let Some(cs) = subp_to_super.get(&b) {
                     for &c in cs {
                         if a != b && b != c && a != c {
-                            new.push((a, rdfs_subprop, c));
+                            emit((a, rdfs_subprop, c), "rdfs5",
+                                &[(a, rdfs_subprop, b), (b, rdfs_subprop, c)]);
                         }
                     }
                 }
@@ -316,15 +476,28 @@ impl Reasoner {
             // rdfs7: s sub o, sub subPropertyOf super → s super o
             for &(sub, sup) in &subprop_idx {
                 if sub != sup {
-                    for &(s, p, o) in &triple_set.iter().collect::<Vec<_>>() {
-                        if *p == sub { new.push((*s, sup, *o)); }
+                    for &(s, p, o) in triple_set.iter() {
+                        if p == sub {
+                            emit((s, sup, o), "rdfs7", &[(s, sub, o), (sub, rdfs_subprop, sup)]);
+                        }
                     }
                 }
             }
 
+            // Four rules below conclude a triple whose SUBJECT comes from an
+            // object position, so a literal object would produce a triple no
+            // RDF serialisation can express. The materialiser then failed on
+            // the whole batch with "The subject of a triple must be an IRI or a
+            // blank node", at a line number that moved between runs because it
+            // depends on hash iteration order, and every inference from that
+            // run was lost. OWL 2 RL scopes prp-symp, prp-inv1, prp-inv2 and
+            // eq-sym to what can legally appear as a subject; this is that
+            // scope, made explicit. Pinned by `tests/reason_literal_subject_test.rs`.
+            let is_literal = |id: u32| interner.resolve(id).starts_with('"');
+
             // ── OWL-RL rules ────────────────────────────────────────
             if include_owl {
-                // Transitive: x P y, y P z → x P z
+                // prp-trp: x P y, y P z → x P z
                 for &tp in &transitive_set {
                     let pairs: Vec<(u32, u32)> = triple_set.iter()
                         .filter(|&&(_, p, _)| p == tp)
@@ -336,50 +509,135 @@ impl Reasoner {
                     for &(x, y) in &pairs {
                         if let Some(zs) = by_subj.get(&y) {
                             for &z in zs {
-                                if x != z { new.push((x, tp, z)); }
+                                if x != z {
+                                    emit((x, tp, z), "prp-trp",
+                                        &[(tp, rdf_type, owl_transitive), (x, tp, y), (y, tp, z)]);
+                                }
                             }
                         }
                     }
                 }
 
-                // Symmetric: s P o → o P s
+                // prp-symp: s P o → o P s
                 for &sp in &symmetric_set {
-                    let to_add: Vec<_> = triple_set.iter()
-                        .filter(|&&(_, p, _)| p == sp)
-                        .map(|&(s, _, o)| (o, sp, s)).collect();
-                    new.extend(to_add);
+                    for &(s, p, o) in triple_set.iter() {
+                        if p == sp && !is_literal(o) {
+                            emit((o, sp, s), "prp-symp", &[(sp, rdf_type, owl_symmetric), (s, sp, o)]);
+                        }
+                    }
                 }
 
-                // Inverse: s P o, P inverseOf Q → o Q s (both directions)
+                // prp-inv1, prp-inv2: s P o, P inverseOf Q → o Q s (both directions)
                 for &(p, q) in &inverse_pairs {
-                    let fwd: Vec<_> = triple_set.iter()
-                        .filter(|&&(_, pred, _)| pred == p)
-                        .map(|&(s, _, o)| (o, q, s)).collect();
-                    let rev: Vec<_> = triple_set.iter()
-                        .filter(|&&(_, pred, _)| pred == q)
-                        .map(|&(s, _, o)| (o, p, s)).collect();
-                    new.extend(fwd);
-                    new.extend(rev);
+                    for &(s, pred, o) in triple_set.iter() {
+                        if is_literal(o) {
+                            continue;
+                        }
+                        if pred == p {
+                            emit((o, q, s), "prp-inv1", &[(p, owl_inverse, q), (s, p, o)]);
+                        }
+                        if pred == q {
+                            emit((o, p, s), "prp-inv2", &[(p, owl_inverse, q), (s, q, o)]);
+                        }
+                    }
                 }
 
-                // sameAs: symmetry + transitivity
-                let sameas: Vec<(u32, u32)> = triple_set.iter()
-                    .filter(|&&(_, p, _)| p == owl_sameas)
-                    .map(|&(s, _, o)| (s, o)).collect();
-                for &(a, b) in &sameas {
-                    new.push((b, owl_sameas, a));
+                // eq-sym: sameAs symmetry
+                for &(s, p, o) in triple_set.iter() {
+                    if p == owl_sameas && !is_literal(o) {
+                        emit((o, owl_sameas, s), "eq-sym", &[(s, owl_sameas, o)]);
+                    }
                 }
 
-                // equivalentClass → bidirectional subClassOf
+                // scm-eqc1, scm-eqc2: equivalentClass → bidirectional subClassOf
+                // Both conclusions are W3C scm-eqc1, which licenses two of them
+                // from one premise. The second used to be emitted as "scm-eqc2",
+                // which is a DIFFERENT W3C rule: it concludes owl:equivalentClass
+                // from two subClassOf triples, the opposite direction. An auditor
+                // reading that id and looking it up found the wrong rule, which
+                // is precisely what the cls-hv1 comment below forbids. Emitting
+                // both steps under the rule that licenses them also frees the
+                // name for the real scm-eqc2 when it is implemented.
                 for &(a, b) in &equiv_class {
-                    new.push((a, rdfs_subclass, b));
-                    new.push((b, rdfs_subclass, a));
+                    emit((a, rdfs_subclass, b), "scm-eqc1", &[(a, owl_equiv_class, b)]);
+                    emit((b, rdfs_subclass, a), "scm-eqc1", &[(a, owl_equiv_class, b)]);
                 }
 
-                // equivalentProperty → bidirectional subPropertyOf
+                // scm-eqp1, scm-eqp2: equivalentProperty → bidirectional subPropertyOf
+                // Same for scm-eqp1 and the name scm-eqp2.
                 for &(a, b) in &equiv_prop {
-                    new.push((a, rdfs_subprop, b));
-                    new.push((b, rdfs_subprop, a));
+                    emit((a, rdfs_subprop, b), "scm-eqp1", &[(a, owl_equiv_prop, b)]);
+                    emit((b, rdfs_subprop, a), "scm-eqp1", &[(a, owl_equiv_prop, b)]);
+                }
+
+                // scm-dom1, scm-dom2, scm-rng1, scm-rng2: a declared domain or
+                // range moved along the class and the property hierarchy.
+                //
+                // These four add no ANSWERS. Everything they license at the
+                // instance level is already reachable: rdfs2 over the original
+                // domain gives `s rdf:type c1` and rdfs9 carries it up to `c2`,
+                // which is what scm-dom1 followed by rdfs2 gives, and scm-dom2
+                // is rdfs7 up to the superproperty followed by rdfs2. What they
+                // add is the SCHEMA those answers are consequences of. A
+                // consumer reading the materialised graph for "what is the
+                // domain of this property" saw the declaration and not its
+                // consequences, and a second reasoner run over the output
+                // derived them, so the output was not a fixpoint of the
+                // profile.
+                //
+                // They also fire on schema alone, so unlike almost everything
+                // else in the extended profile they fire on a schema-only file
+                // with no instances at all, which is most of this repository's
+                // corpus.
+
+                // scm-dom1: p rdfs:domain c1, c1 subClassOf c2 → p rdfs:domain c2
+                for &(p, c1) in &domain_map {
+                    if let Some(supers) = sub_to_super.get(&c1) {
+                        for &c2 in supers {
+                            if c1 != c2 {
+                                emit((p, rdfs_domain, c2), "scm-dom1",
+                                    &[(p, rdfs_domain, c1), (c1, rdfs_subclass, c2)]);
+                            }
+                        }
+                    }
+                }
+
+                // scm-dom2: p2 rdfs:domain c, p1 subPropertyOf p2 → p1 rdfs:domain c
+                for &(p1, p2) in &subprop_idx {
+                    if p1 == p2 {
+                        continue;
+                    }
+                    for &(pd, c) in &domain_map {
+                        if pd == p2 {
+                            emit((p1, rdfs_domain, c), "scm-dom2",
+                                &[(p2, rdfs_domain, c), (p1, rdfs_subprop, p2)]);
+                        }
+                    }
+                }
+
+                // scm-rng1: p rdfs:range c1, c1 subClassOf c2 → p rdfs:range c2
+                for &(p, c1) in &range_map {
+                    if let Some(supers) = sub_to_super.get(&c1) {
+                        for &c2 in supers {
+                            if c1 != c2 {
+                                emit((p, rdfs_range, c2), "scm-rng1",
+                                    &[(p, rdfs_range, c1), (c1, rdfs_subclass, c2)]);
+                            }
+                        }
+                    }
+                }
+
+                // scm-rng2: p2 rdfs:range c, p1 subPropertyOf p2 → p1 rdfs:range c
+                for &(p1, p2) in &subprop_idx {
+                    if p1 == p2 {
+                        continue;
+                    }
+                    for &(pr, c) in &range_map {
+                        if pr == p2 {
+                            emit((p1, rdfs_range, c), "scm-rng2",
+                                &[(p2, rdfs_range, c), (p1, rdfs_subprop, p2)]);
+                        }
+                    }
                 }
             }
 
@@ -391,8 +649,21 @@ impl Reasoner {
                     inst_types.entry(x).or_default().insert(cls);
                 }
 
-                // cls-svf1: x P y, y type filler, restriction(P, svf=filler),
-                //           class subClassOf restriction → x type class
+                // cls-svf1: x P y, y type filler, restriction(P, svf=filler)
+                //           → x type restriction
+                //
+                // Two derivations this rule used to make are gone, both found
+                // when every rule had to correspond to one the Lean checker
+                // can prove sound (tests/reason_rl_ext_soundness_test.rs):
+                //   * `x type C` for every `C rdfs:subClassOf restriction`.
+                //     That is the converse of the axiom. Membership in a
+                //     superclass never gives membership in a subclass; the
+                //     equivalentClass case that made it look right is carried
+                //     by rdfs9 over the subClassOf triple scm-eqc emits.
+                //   * `x type restriction` from `x P filler`, where the
+                //     object is the filler class IRI itself. A class in
+                //     object position is a resource, not an instance of
+                //     itself.
                 for &(prop, filler, restr) in &svf_rules {
                     let prop_pairs: Vec<(u32, u32)> = triple_set.iter()
                         .filter(|&&(_, p, _)| p == prop)
@@ -402,57 +673,279 @@ impl Reasoner {
                         .filter(|&&(_, cls)| cls == filler)
                         .map(|&(inst, _)| inst).collect();
 
-                    // Classes whose superclass is this restriction
-                    let parent_classes: Vec<u32> = subclass_idx.iter()
-                        .filter(|&&(_, sup)| sup == restr)
-                        .map(|&(sub, _)| sub).collect();
-
                     for &(x, y) in &prop_pairs {
-                        if filler_insts.contains(&y) || y == filler {
-                            new.push((x, rdf_type, restr));
-                            for &cls in &parent_classes {
-                                new.push((x, rdf_type, cls));
-                            }
+                        if filler_insts.contains(&y) {
+                            emit((x, rdf_type, restr), "cls-svf1", &[
+                                (restr, owl_on_property, prop),
+                                (restr, owl_some_values, filler),
+                                (x, prop, y),
+                                (y, rdf_type, filler),
+                            ]);
                         }
                     }
                 }
 
-                // cls-hv: x type class, class subClassOf restriction(P, hasValue v) → x P v
-                // and:    x P v, restriction(P, hasValue v) → x type restriction
+                // cls-avf: x type restriction(P, allValuesFrom c), x P y
+                //          → y type c
+                //
+                // The restriction was parsed and the parse was thrown away, so
+                // 123 owl:allValuesFrom axioms across six shipped files licensed
+                // nothing. It is the cheapest missing rule in the OWL 2 RL
+                // profile on both axes: the Rust is the cls-svf1 loop with the
+                // premises the other way round, and the semantic condition is
+                // the mirror of `svf`.
+                for &(prop, filler, restr) in &avf_rules {
+                    let in_restr: HashSet<u32> = type_idx.iter()
+                        .filter(|&&(_, cls)| cls == restr)
+                        .map(|&(inst, _)| inst).collect();
+                    if in_restr.is_empty() {
+                        continue;
+                    }
+                    for &(x, p, y) in triple_set.iter() {
+                        if p == prop && in_restr.contains(&x) {
+                            emit((y, rdf_type, filler), "cls-avf", &[
+                                (restr, owl_on_property, prop),
+                                (restr, owl_all_values, filler),
+                                (x, rdf_type, restr),
+                                (x, prop, y),
+                            ]);
+                        }
+                    }
+                }
+
+                // cls-hv1: x type restriction(P, hasValue v) → x P v
+                // cls-hv2: x P v, restriction(P, hasValue v) → x type restriction
+                //
+                // The rule emitted under the name `cls-hv1` used to be the
+                // composite of `cax-sco` and W3C `cls-hv1`: it demanded an
+                // explicit `k rdfs:subClassOf r` hop and fired on `x type k`,
+                // so an individual typed with the restriction DIRECTLY derived
+                // nothing. The engine reached the restriction class by its own
+                // rdfs9 and then refused to use it, and a certificate could
+                // carry `rdfs9  <k> rdf:type <R>` right next to a cls-hv1 step
+                // that ignored it. Putting a W3C rule name in front of an
+                // auditor obliges the rule to be that rule. The W3C form is
+                // used here and loses nothing: the composite case is rdfs9
+                // followed by this.
                 for &(prop, val, restr) in &hv_rules {
-                    let parent_classes: Vec<u32> = subclass_idx.iter()
-                        .filter(|&&(_, sup)| sup == restr)
-                        .map(|&(sub, _)| sub).collect();
-
-                    for &cls in &parent_classes {
-                        for &(x, c) in &type_idx {
-                            if c == cls {
-                                new.push((x, prop, val));
-                            }
+                    for &(x, c) in &type_idx {
+                        if c == restr {
+                            emit((x, prop, val), "cls-hv1", &[
+                                (restr, owl_on_property, prop),
+                                (restr, owl_has_value, val),
+                                (x, rdf_type, restr),
+                            ]);
                         }
                     }
-                    for &(s, p, o) in &triple_set.iter().collect::<Vec<_>>() {
-                        if *p == prop && *o == val {
-                            new.push((*s, rdf_type, restr));
+                    for &(s, p, o) in triple_set.iter() {
+                        if p == prop && o == val {
+                            emit((s, rdf_type, restr), "cls-hv2", &[
+                                (restr, owl_on_property, prop),
+                                (restr, owl_has_value, val),
+                                (s, prop, val),
+                            ]);
                         }
                     }
                 }
 
-                // cls-int: x type ALL members → x type intersection class
-                for (cls, members) in &intersection_classes {
-                    for &(x, _) in &type_idx {
-                        if let Some(x_types) = inst_types.get(&x)
-                            && members.iter().all(|m| x_types.contains(m)) {
-                                new.push((x, rdf_type, *cls));
+                // scm-svf1, scm-svf2, scm-avf1, scm-avf2: two restrictions
+                // ordered by their fillers or by their properties.
+                //
+                // These are the rules that reach subsumptions no instance-level
+                // rule can. `cls-svf1` needs an individual with a witness before
+                // it says anything, and a schema-only ontology has none, so a
+                // pizza-style file full of restrictions licensed nothing at all
+                // from them. These four run on the schema.
+                //
+                // Two indices per restriction kind: (property, filler) → the
+                // restrictions with both, and property → its (filler,
+                // restriction) pairs. The first is the lookup and the second is
+                // the scan, which keeps each rule linear in the hierarchy it
+                // walks rather than quadratic in the restriction count.
+                let mut svf_by_pf: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+                let mut svf_by_filler: HashMap<u32, Vec<(u32, u32)>> = HashMap::new();
+                let mut svf_by_prop: HashMap<u32, Vec<(u32, u32)>> = HashMap::new();
+                for &(prop, filler, restr) in &svf_rules {
+                    svf_by_pf.entry((prop, filler)).or_default().push(restr);
+                    svf_by_filler.entry(filler).or_default().push((prop, restr));
+                    svf_by_prop.entry(prop).or_default().push((filler, restr));
+                }
+                let mut avf_by_pf: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+                let mut avf_by_filler: HashMap<u32, Vec<(u32, u32)>> = HashMap::new();
+                let mut avf_by_prop: HashMap<u32, Vec<(u32, u32)>> = HashMap::new();
+                for &(prop, filler, restr) in &avf_rules {
+                    avf_by_pf.entry((prop, filler)).or_default().push(restr);
+                    avf_by_filler.entry(filler).or_default().push((prop, restr));
+                    avf_by_prop.entry(prop).or_default().push((filler, restr));
+                }
+
+                // scm-svf1: c1 svf y1, c1 onProperty p, c2 svf y2,
+                //           c2 onProperty p, y1 subClassOf y2 → c1 subClassOf c2
+                for &(y1, y2) in &subclass_idx {
+                    let Some(ones) = svf_by_filler.get(&y1) else { continue };
+                    for &(p, r1) in ones {
+                        let Some(twos) = svf_by_pf.get(&(p, y2)) else { continue };
+                        for &r2 in twos {
+                            if r1 != r2 {
+                                emit((r1, rdfs_subclass, r2), "scm-svf1", &[
+                                    (r1, owl_some_values, y1),
+                                    (r1, owl_on_property, p),
+                                    (r2, owl_some_values, y2),
+                                    (r2, owl_on_property, p),
+                                    (y1, rdfs_subclass, y2),
+                                ]);
                             }
+                        }
+                    }
+                }
+
+                // scm-svf2: c1 svf y, c1 onProperty p1, c2 svf y,
+                //           c2 onProperty p2, p1 subPropertyOf p2 → c1 subClassOf c2
+                for &(p1, p2) in &subprop_idx {
+                    let Some(ones) = svf_by_prop.get(&p1) else { continue };
+                    for &(y, r1) in ones {
+                        let Some(twos) = svf_by_pf.get(&(p2, y)) else { continue };
+                        for &r2 in twos {
+                            if r1 != r2 {
+                                emit((r1, rdfs_subclass, r2), "scm-svf2", &[
+                                    (r1, owl_some_values, y),
+                                    (r1, owl_on_property, p1),
+                                    (r2, owl_some_values, y),
+                                    (r2, owl_on_property, p2),
+                                    (p1, rdfs_subprop, p2),
+                                ]);
+                            }
+                        }
+                    }
+                }
+
+                // scm-avf1: the same shape with owl:allValuesFrom, and the same
+                // direction: a wider filler makes a wider class.
+                for &(y1, y2) in &subclass_idx {
+                    let Some(ones) = avf_by_filler.get(&y1) else { continue };
+                    for &(p, r1) in ones {
+                        let Some(twos) = avf_by_pf.get(&(p, y2)) else { continue };
+                        for &r2 in twos {
+                            if r1 != r2 {
+                                emit((r1, rdfs_subclass, r2), "scm-avf1", &[
+                                    (r1, owl_all_values, y1),
+                                    (r1, owl_on_property, p),
+                                    (r2, owl_all_values, y2),
+                                    (r2, owl_on_property, p),
+                                    (y1, rdfs_subclass, y2),
+                                ]);
+                            }
+                        }
+                    }
+                }
+
+                // scm-avf2: c1 avf y, c1 onProperty p1, c2 avf y,
+                //           c2 onProperty p2, p1 subPropertyOf p2
+                //           → c2 subClassOf c1
+                //
+                // THE CONCLUSION IS THE OTHER WAY ROUND. The W3C table reads
+                // `T(?c2, rdfs:subClassOf, ?c1)` where scm-svf2 reads
+                // `T(?c1, rdfs:subClassOf, ?c2)`, because a universal
+                // restriction is antitone in its property: `all p2 y` has more
+                // values to constrain than `all p1 y`, so it is the smaller
+                // class. Writing it the way scm-svf2 is written gives a step no
+                // model supports, and `OOCert.the_natural_avf2_direction_is_not_entailed`
+                // is the refutation.
+                for &(p1, p2) in &subprop_idx {
+                    let Some(ones) = avf_by_prop.get(&p1) else { continue };
+                    for &(y, r1) in ones {
+                        let Some(twos) = avf_by_pf.get(&(p2, y)) else { continue };
+                        for &r2 in twos {
+                            if r1 != r2 {
+                                emit((r2, rdfs_subclass, r1), "scm-avf2", &[
+                                    (r1, owl_all_values, y),
+                                    (r1, owl_on_property, p1),
+                                    (r2, owl_all_values, y),
+                                    (r2, owl_on_property, p2),
+                                    (p1, rdfs_subprop, p2),
+                                ]);
+                            }
+                        }
+                    }
+                }
+
+                // cls-int1: x type ALL members → x type intersection class
+                for (cls, head, chain, members) in &intersection_classes {
+                    for (&x, x_types) in &inst_types {
+                        if members.iter().all(|m| x_types.contains(m)) {
+                            let premises: Vec<Fact> = if certify {
+                                let mut v = vec![(*cls, owl_intersection, *head)];
+                                v.extend(chain.iter().copied());
+                                v.extend(members.iter().map(|&m| (x, rdf_type, m)));
+                                v
+                            } else {
+                                Vec::new()
+                            };
+                            emit((x, rdf_type, *cls), "cls-int1", &premises);
+                        }
+                    }
+                }
+
+                // cls-int2: x type intersection class → x type EVERY member
+                //
+                // The mirror of cls-int1, and the only high-count rule in the
+                // measured gap that produces genuinely new instance typings
+                // rather than schema. One step per member, each repeating the
+                // constructor triple and the chain, because a certificate step
+                // carries one conclusion.
+                for (cls, head, chain, members) in &intersection_classes {
+                    for &(x, c) in &type_idx {
+                        if c != *cls {
+                            continue;
+                        }
+                        let premises: Vec<Fact> = if certify {
+                            let mut v = vec![(*cls, owl_intersection, *head)];
+                            v.extend(chain.iter().copied());
+                            v.push((x, rdf_type, *cls));
+                            v
+                        } else {
+                            Vec::new()
+                        };
+                        for &m in members {
+                            emit((x, rdf_type, m), "cls-int2", &premises);
+                        }
+                    }
+                }
+
+                // cls-oo: every member of an owl:oneOf list is an instance of
+                // the enumerated class. The only rule here with no instance
+                // premise at all: an enumeration types its members on schema
+                // alone. A literal member is skipped for the same reason the
+                // four rules above skip one, since it would be the subject of
+                // the conclusion.
+                for (cls, head, chain, members) in &oneof_classes {
+                    let premises: Vec<Fact> = if certify {
+                        let mut v = vec![(*cls, owl_oneof, *head)];
+                        v.extend(chain.iter().copied());
+                        v
+                    } else {
+                        Vec::new()
+                    };
+                    for &m in members {
+                        if !is_literal(m) {
+                            emit((m, rdf_type, *cls), "cls-oo", &premises);
+                        }
                     }
                 }
 
                 // cls-uni: x type ANY member → x type union class
-                for (cls, members) in &union_classes {
+                for (cls, head, chain, members) in &union_classes {
                     for &(x, c) in &type_idx {
                         if members.contains(&c) {
-                            new.push((x, rdf_type, *cls));
+                            let premises: Vec<Fact> = if certify {
+                                let mut v = vec![(*cls, owl_union, *head)];
+                                v.extend(chain.iter().copied());
+                                v.push((x, rdf_type, c));
+                                v
+                            } else {
+                                Vec::new()
+                            };
+                            emit((x, rdf_type, *cls), "cls-uni", &premises);
                         }
                     }
                 }
@@ -472,7 +965,7 @@ impl Reasoner {
 
         // Materialize inferred triples
         if materialize && inferred_count > 0 {
-            let original: HashSet<(u32, u32, u32)> = facts.iter().copied().collect();
+            let original: HashSet<Fact> = facts.iter().copied().collect();
             let mut lines = String::new();
             for &(s, p, o) in &triple_set {
                 if !original.contains(&(s, p, o)) {
@@ -496,7 +989,7 @@ impl Reasoner {
         }
 
         // Sample
-        let original: HashSet<(u32, u32, u32)> = facts.iter().copied().collect();
+        let original: HashSet<Fact> = facts.iter().copied().collect();
         let sample: Vec<String> = triple_set.iter()
             .filter(|t| !original.contains(t))
             .filter(|&&(_, p, _)| p == rdf_type)
@@ -519,6 +1012,707 @@ impl Reasoner {
             // A caller cannot ask the inferences back unless it is told where
             // they were put.
             result["inference_graph"] = serde_json::json!(INFERRED_GRAPH);
+        }
+
+        if let Some(dir) = certificate_dir {
+            std::fs::create_dir_all(dir)?;
+            let mut asserted = String::with_capacity(facts.len() * 96);
+            for &(s, p, o) in &facts {
+                asserted.push_str(interner.resolve(s));
+                asserted.push('\t');
+                asserted.push_str(interner.resolve(p));
+                asserted.push('\t');
+                asserted.push_str(interner.resolve(o));
+                asserted.push('\n');
+            }
+            std::fs::write(dir.join("asserted.tsv"), asserted)?;
+
+            let mut by_rule: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+            let mut lines = String::with_capacity(derivations.len() * 256);
+            for d in &derivations {
+                *by_rule.entry(d.rule).or_default() += 1;
+                lines.push_str(d.rule);
+                for &(s, p, o) in std::iter::once(&d.conclusion).chain(d.premises.iter()) {
+                    lines.push('\t');
+                    lines.push_str(interner.resolve(s));
+                    lines.push('\t');
+                    lines.push_str(interner.resolve(p));
+                    lines.push('\t');
+                    lines.push_str(interner.resolve(o));
+                }
+                lines.push('\n');
+            }
+            std::fs::write(dir.join("derivations.tsv"), lines)?;
+
+            result["certificate"] = serde_json::json!({
+                "dir": dir.display().to_string(),
+                "format": "oo-cert/1",
+                "asserted": facts.len(),
+                "derivations": derivations.len(),
+                "by_rule": by_rule,
+                "check_with": "cd lean && lake exe oo-cert <dir>/asserted.tsv <dir>/derivations.tsv",
+            });
+        }
+
+        Ok(result.to_string())
+    }
+}
+
+// ── User-supplied Horn rules ────────────────────────────────────────────────
+//
+// Everything above this line applies a rule set this file hardcodes. The
+// checker in `lean/OOCert/Horn.lean` accepts a certificate over ANY rule table,
+// proved once by `OOCert.horn_certificate_sound`, and until now nothing could
+// produce one: the generic layer had a consumer and no producer, and a user
+// with a rule table had nothing to hand it.
+//
+// What follows reads a rule table in the `rules.tsv` format
+// `OOCert.HornParse.parseRules` accepts, evaluates it to a fixpoint over the
+// loaded graph, and writes a certificate in the `horn.tsv` format
+// `OOCert.HornParse.parseHornSteps` accepts.
+//
+// # This path states no verdict, and that is deliberate
+//
+// A certificate over the built-in table earns `entailed`: true in every model
+// of the asserted graph, because `OOCert.Builtin.asHorn_sound` discharges those
+// rules against the semantics. A certificate over a table a user wrote earns
+// `entailed_under_supplied_rules`: true in every model of the graph THAT ALSO
+// SATISFIES THOSE RULES. The rules are assumed and never checked, so a rule
+// reading "every supplier is compliant" produces steps that check green for
+// ever.
+//
+// `oo-horn` decides which of the two a run earned, by comparing the table it
+// was given against the built-in one. This engine does not repeat that
+// judgement in its own output and does not print either verdict word, because a
+// second place where the two could be confused is exactly the hazard decision
+// 0003 exists to prevent. What the engine reports is the table it used, a
+// hash of it, and the command that pronounces.
+
+/// One position of a triple pattern: a fixed term in its N-Triples spelling, or
+/// a variable. Mirrors `OOCert.Pat`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Pat {
+    Const(String),
+    Var(String),
+}
+
+impl Pat {
+    /// The `rules.tsv` spelling: `?x` for a variable, the term itself for a
+    /// constant. Inverse of the parse below, and byte-identical to
+    /// `OOCert.HornParse.patStr`.
+    fn render(&self) -> String {
+        match self {
+            Pat::Const(c) => c.clone(),
+            Pat::Var(v) => format!("?{v}"),
+        }
+    }
+}
+
+/// A triple pattern. Any of the three positions may be a variable, predicate
+/// position included: `Interp` has one ternary extension, so a property is a
+/// domain element like any other and the language stays first-order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AtomPat {
+    pub s: Pat,
+    pub p: Pat,
+    pub o: Pat,
+}
+
+/// `forall vars. body -> head`, the quantifier left implicit. Mirrors
+/// `OOCert.RulePattern`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RulePattern {
+    pub name: String,
+    pub body: Vec<AtomPat>,
+    pub head: AtomPat,
+}
+
+impl RulePattern {
+    fn atoms(&self) -> impl Iterator<Item = &AtomPat> {
+        self.body.iter().chain(std::iter::once(&self.head))
+    }
+}
+
+fn pat_vars<'a>(a: &'a AtomPat, out: &mut Vec<&'a str>) {
+    for p in [&a.s, &a.p, &a.o] {
+        if let Pat::Var(v) = p
+            && !out.contains(&v.as_str())
+        {
+            out.push(v.as_str());
+        }
+    }
+}
+
+/// Parse one field of a rule table.
+///
+/// A field beginning with `?` is a variable, anything else a term, which is the
+/// encoding `HornParse` documents: N-Triples terms begin with `<`, `_:` or `"`,
+/// so nothing is ambiguous. This is stricter than `HornParse` on exactly one
+/// point, and the strictness is the "reject rather than guess" direction: a
+/// constant that is not in N-Triples spelling can never equal a term the store
+/// holds, so a rule carrying one silently never fires. That is a typo, not a
+/// rule, and it is refused rather than run.
+fn parse_pat(field: &str, line: usize, which: &str) -> anyhow::Result<Pat> {
+    if let Some(name) = field.strip_prefix('?') {
+        if name.is_empty() {
+            anyhow::bail!("rules line {line}: {which} is '?' with no variable name");
+        }
+        return Ok(Pat::Var(name.to_string()));
+    }
+    if field.starts_with('<') || field.starts_with("_:") || field.starts_with('"') {
+        return Ok(Pat::Const(field.to_string()));
+    }
+    if field.is_empty() {
+        anyhow::bail!("rules line {line}: {which} is empty");
+    }
+    anyhow::bail!(
+        "rules line {line}: {which} is '{field}', which is neither a variable (?x) nor an \
+         N-Triples term (<iri>, _:blank, or a quoted literal). The store spells every term in \
+         N-Triples, so a constant in any other spelling would match nothing and the rule would \
+         silently never fire"
+    )
+}
+
+/// Read a rule table in the `rules.tsv` format `OOCert.HornParse.parseRules`
+/// accepts: `name TAB bodyLength TAB (s TAB p TAB o)* TAB hs TAB hp TAB ho`.
+///
+/// Malformed input is an error naming the line and what was wrong, never a
+/// guess. Two rejections go beyond what the Lean parser refuses, both because
+/// this side has to PRODUCE bindings rather than check them:
+///
+/// * A head variable that does not occur in the body. The checker is right to
+///   accept a certificate over such a rule, because `SatRule` quantifies over
+///   every substitution, but the engine would have to invent a term to bind it
+///   to. Refusing is the only honest option.
+/// * A carriage return. `HornParse` splits on `\n` alone, so a CRLF file would
+///   put a `\r` inside the last term of every line. Stripping it is a guess
+///   about what the user meant; the error says to convert the file.
+pub fn parse_rules(content: &str) -> anyhow::Result<Vec<RulePattern>> {
+    let mut out: Vec<RulePattern> = Vec::new();
+    for (i, line) in content.split('\n').enumerate() {
+        let n = i + 1;
+        if line.is_empty() {
+            continue;
+        }
+        if line.contains('\r') {
+            anyhow::bail!(
+                "rules line {n}: the line contains a carriage return. The format is tab \
+                 separated with LF endings, and a CR would become part of a term; convert the \
+                 file rather than have it stripped silently"
+            );
+        }
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() < 2 {
+            anyhow::bail!(
+                "rules line {n}: expected a name, a body length and then the patterns, got \
+                 {} tab-separated field(s)",
+                fields.len()
+            );
+        }
+        let name = fields[0];
+        if name.is_empty() {
+            anyhow::bail!("rules line {n}: the rule name is empty");
+        }
+        let len_field = fields[1];
+        if len_field.is_empty() || !len_field.bytes().all(|b| b.is_ascii_digit()) {
+            anyhow::bail!("rules line {n}: body length '{len_field}' is not a number");
+        }
+        let m: usize = len_field
+            .parse()
+            .map_err(|_| anyhow::anyhow!("rules line {n}: body length '{len_field}' is too large"))?;
+        let rest = &fields[2..];
+        let want = m
+            .checked_mul(3)
+            .and_then(|x| x.checked_add(3))
+            .ok_or_else(|| anyhow::anyhow!("rules line {n}: body length '{len_field}' is too large"))?;
+        if rest.len() != want {
+            anyhow::bail!(
+                "rules line {n}: a body of {m} atom(s) plus a head needs {want} pattern fields, \
+                 got {}",
+                rest.len()
+            );
+        }
+        let mut pats: Vec<Pat> = Vec::with_capacity(want);
+        for (k, f) in rest.iter().enumerate() {
+            let which = if k < 3 * m {
+                format!("body atom {} position {}", k / 3 + 1, k % 3 + 1)
+            } else {
+                format!("head position {}", k - 3 * m + 1)
+            };
+            pats.push(parse_pat(f, n, &which)?);
+        }
+        let head = AtomPat {
+            o: pats.pop().expect("head object"),
+            p: pats.pop().expect("head predicate"),
+            s: pats.pop().expect("head subject"),
+        };
+        let mut body: Vec<AtomPat> = Vec::with_capacity(m);
+        let mut it = pats.into_iter();
+        for _ in 0..m {
+            let s = it.next().expect("body subject");
+            let p = it.next().expect("body predicate");
+            let o = it.next().expect("body object");
+            body.push(AtomPat { s, p, o });
+        }
+        let rule = RulePattern { name: name.to_string(), body, head };
+
+        let mut body_vars: Vec<&str> = Vec::new();
+        for a in &rule.body {
+            pat_vars(a, &mut body_vars);
+        }
+        let mut head_vars: Vec<&str> = Vec::new();
+        pat_vars(&rule.head, &mut head_vars);
+        for v in head_vars {
+            if !body_vars.contains(&v) {
+                anyhow::bail!(
+                    "rules line {n}: rule '{}' has head variable ?{v}, which does not occur in \
+                     the body. The engine has nothing to bind it to, so the table is refused \
+                     rather than run with a term invented for it",
+                    rule.name
+                );
+            }
+        }
+        out.push(rule);
+    }
+    Ok(out)
+}
+
+/// Render a rule table back to `rules.tsv`. Byte-identical to
+/// `OOCert.HornParse.ruleStr` per line, so `oo-horn rules` and this agree and a
+/// table read here and written back out digests to the same value it came in
+/// with.
+pub fn rules_tsv(rules: &[RulePattern]) -> String {
+    let mut out = String::new();
+    for r in rules {
+        out.push_str(&r.name);
+        out.push('\t');
+        out.push_str(&r.body.len().to_string());
+        for a in r.atoms() {
+            for p in [&a.s, &a.p, &a.o] {
+                out.push('\t');
+                out.push_str(&p.render());
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// A rule pattern position over interned ids, with variables resolved to a slot
+/// in the rule's environment.
+enum CPat {
+    Const(u32),
+    Var(usize),
+}
+
+struct CAtom {
+    s: CPat,
+    p: CPat,
+    o: CPat,
+}
+
+struct CRule {
+    vars: Vec<String>,
+    body: Vec<CAtom>,
+    head: CAtom,
+}
+
+/// One line of a Horn certificate: the rule index, the binding the engine used,
+/// the premises it matched in the rule's body order, and what it concluded.
+struct HornStepOut {
+    rule: usize,
+    binds: Vec<(String, u32)>,
+    premises: Vec<Fact>,
+    conclusion: Fact,
+}
+
+fn resolve_pat(p: &CPat, env: &[Option<u32>]) -> Option<u32> {
+    match p {
+        CPat::Const(id) => Some(*id),
+        CPat::Var(i) => env[*i],
+    }
+}
+
+/// Match one position against one term, binding a fresh variable and recording
+/// the slot so the caller can undo it on backtracking.
+fn unify_pat(p: &CPat, val: u32, env: &mut [Option<u32>], bound: &mut [usize; 3], nb: &mut usize) -> bool {
+    match p {
+        CPat::Const(id) => *id == val,
+        CPat::Var(i) => match env[*i] {
+            Some(existing) => existing == val,
+            None => {
+                env[*i] = Some(val);
+                bound[*nb] = *i;
+                *nb += 1;
+                true
+            }
+        },
+    }
+}
+
+/// Enumerate every way to match the body against the known facts, calling
+/// `on_match` once per complete binding.
+///
+/// Plain backtracking, one atom at a time, left to right. An atom whose
+/// predicate is already fixed (a constant, or a variable bound by an earlier
+/// atom) is matched against the facts with that predicate; otherwise every fact
+/// is a candidate. That is the whole optimisation, and it is not semi-naive
+/// evaluation: each iteration re-derives what the last one did, and the
+/// duplicate is dropped when its conclusion is found to be known. Correctness
+/// first, as the task said. The cost is a constant factor per iteration on a
+/// scan the loop does anyway, and `derived_triples` is unaffected.
+fn match_body(
+    atoms: &[CAtom],
+    i: usize,
+    env: &mut Vec<Option<u32>>,
+    all: &[Fact],
+    by_pred: &HashMap<u32, Vec<Fact>>,
+    on_match: &mut dyn FnMut(&[Option<u32>]),
+) {
+    if i == atoms.len() {
+        on_match(env);
+        return;
+    }
+    let a = &atoms[i];
+    let candidates: &[Fact] = match resolve_pat(&a.p, env) {
+        Some(pid) => by_pred.get(&pid).map(Vec::as_slice).unwrap_or(&[]),
+        None => all,
+    };
+    for &(s, p, o) in candidates {
+        let mut bound = [0usize; 3];
+        let mut nb = 0usize;
+        let ok = unify_pat(&a.s, s, env, &mut bound, &mut nb)
+            && unify_pat(&a.p, p, env, &mut bound, &mut nb)
+            && unify_pat(&a.o, o, env, &mut bound, &mut nb);
+        if ok {
+            match_body(atoms, i + 1, env, all, by_pred, on_match);
+        }
+        for slot in bound.iter().take(nb) {
+            env[*slot] = None;
+        }
+    }
+}
+
+fn inst_atom(a: &CAtom, env: &[Option<u32>]) -> Fact {
+    const WHY: &str = "every variable of a matched rule is bound: the body is matched in full and \
+                       parse_rules refuses a head variable that does not occur in the body";
+    (
+        resolve_pat(&a.s, env).expect(WHY),
+        resolve_pat(&a.p, env).expect(WHY),
+        resolve_pat(&a.o, env).expect(WHY),
+    )
+}
+
+impl Reasoner {
+    /// Evaluate a SUPPLIED Horn rule table over the loaded graph and write a
+    /// certificate `lean`'s `oo-horn` can check.
+    ///
+    /// Three files land in `certificate_dir`:
+    ///
+    /// * `rules.tsv`, the table as the engine parsed it. The checker is given
+    ///   this rather than the user's file, so what it checks and what the run
+    ///   used are the same table.
+    /// * `asserted.tsv`, every triple the run started from.
+    /// * `horn.tsv`, one line per derived triple:
+    ///   `ruleIndex TAB bindCount TAB (var TAB term)* TAB cs TAB cp TAB co TAB (ps TAB pp TAB po)*`.
+    ///   The binding is written out in full and the premises are the body
+    ///   instantiated, in the body's order, because that is what
+    ///   `OOCert.checkHornStep` demands: a binding that does not instantiate
+    ///   the body, or premises in the wrong order, is rejected.
+    ///
+    /// Steps are written in derivation order, and a step's premises are always
+    /// facts that were known before the round that derived it, so every premise
+    /// is asserted or concluded by an EARLIER line. That is the ordering
+    /// `OOCert.checkHornAll` requires, and no step can cite itself.
+    ///
+    /// Nothing is materialised into the store. A conclusion under a supplied
+    /// table holds only in models that satisfy that table, and writing it in
+    /// beside the assertions would lose exactly the distinction decision 0003
+    /// is about.
+    pub fn run_horn(
+        graph: &Arc<GraphStore>,
+        rules_path: &std::path::Path,
+        certificate_dir: &std::path::Path,
+    ) -> anyhow::Result<String> {
+        let rules_text = std::fs::read_to_string(rules_path)
+            .map_err(|e| anyhow::anyhow!("cannot read rule table {}: {e}", rules_path.display()))?;
+        let rules = parse_rules(&rules_text)
+            .map_err(|e| anyhow::anyhow!("{} is not a rule table: {e}", rules_path.display()))?;
+        if rules.is_empty() {
+            anyhow::bail!(
+                "{} holds no rules. An empty table derives nothing, so there is no certificate \
+                 to write",
+                rules_path.display()
+            );
+        }
+
+        let raw_triples = graph.all_triples()?;
+        let mut interner = Interner::new();
+        let mut facts: Vec<Fact> = Vec::with_capacity(raw_triples.len());
+        for (s, p, o) in &raw_triples {
+            facts.push((interner.intern(s), interner.intern(p), interner.intern(o)));
+        }
+
+        // Compile the table over the interner. A constant the graph never
+        // mentions still gets an id; it simply matches nothing, which is what
+        // it should do.
+        let mut crules: Vec<CRule> = Vec::with_capacity(rules.len());
+        for r in &rules {
+            let mut vars: Vec<String> = Vec::new();
+            for a in r.atoms() {
+                for p in [&a.s, &a.p, &a.o] {
+                    if let Pat::Var(v) = p
+                        && !vars.iter().any(|x| x == v)
+                    {
+                        vars.push(v.clone());
+                    }
+                }
+            }
+            let mut compile = |p: &Pat| match p {
+                Pat::Const(c) => CPat::Const(interner.intern(c)),
+                Pat::Var(v) => CPat::Var(vars.iter().position(|x| x == v).expect("var listed")),
+            };
+            let body: Vec<CAtom> = r
+                .body
+                .iter()
+                .map(|a| CAtom { s: compile(&a.s), p: compile(&a.p), o: compile(&a.o) })
+                .collect();
+            let head = CAtom { s: compile(&r.head.s), p: compile(&r.head.p), o: compile(&r.head.o) };
+            crules.push(CRule { vars, body, head });
+        }
+
+        // A rule whose head puts a literal in subject position, or anything but
+        // an IRI in predicate position, produces something no RDF serialiser
+        // can write. The built-in loop guards the first case for four of its
+        // rules; here both are refused, the count is reported, and the
+        // conclusion is not used as a premise for anything else. Deriving less
+        // is the sound direction, but it means the emitted set is the fixpoint
+        // of the table over WRITABLE triples, which is what
+        // `skipped_unserialisable` in the response is there to say.
+        let serialisable = |interner: &Interner, (s, p, _o): Fact| -> bool {
+            !interner.resolve(s).starts_with('"') && interner.resolve(p).starts_with('<')
+        };
+
+        let mut known: HashSet<Fact> = facts.iter().copied().collect();
+        let asserted_count = known.len();
+        let mut steps: Vec<HornStepOut> = Vec::new();
+        // Distinct conclusions refused for being unwritable. A set rather than
+        // a counter because a refused conclusion is never added to `known`, so
+        // every later round matches the same body again and re-derives it: a
+        // counter would report attempts and grow with the iteration count,
+        // which is not what a reader takes "skipped 2" to mean.
+        let mut refused: HashSet<Fact> = HashSet::new();
+        let mut skipped_samples: Vec<String> = Vec::new();
+        let mut iterations = 0usize;
+        let mut fixpoint = false;
+        let max_iterations = crate::runtime::reasoner_max_iterations();
+
+        while iterations < max_iterations {
+            iterations += 1;
+
+            // Sorted so the candidate order, and therefore the order of the
+            // lines in `horn.tsv`, does not depend on hash iteration order.
+            let mut all: Vec<Fact> = known.iter().copied().collect();
+            all.sort_unstable();
+            let mut by_pred: HashMap<u32, Vec<Fact>> = HashMap::new();
+            for &f in &all {
+                by_pred.entry(f.1).or_default().push(f);
+            }
+
+            let mut round: Vec<HornStepOut> = Vec::new();
+            let mut pending: HashSet<Fact> = HashSet::new();
+            for (ri, rule) in crules.iter().enumerate() {
+                let mut env: Vec<Option<u32>> = vec![None; rule.vars.len()];
+                let known_ref = &known;
+                let interner_ref = &interner;
+                let round_ref = &mut round;
+                let pending_ref = &mut pending;
+                let refused_ref = &mut refused;
+                let samples_ref = &mut skipped_samples;
+                match_body(&rule.body, 0, &mut env, &all, &by_pred, &mut |env| {
+                    let conclusion = inst_atom(&rule.head, env);
+                    if known_ref.contains(&conclusion) || pending_ref.contains(&conclusion) {
+                        return;
+                    }
+                    if !serialisable(interner_ref, conclusion) {
+                        if refused_ref.insert(conclusion) && samples_ref.len() < 3 {
+                            samples_ref.push(format!(
+                                "{} {} {}",
+                                interner_ref.resolve(conclusion.0),
+                                interner_ref.resolve(conclusion.1),
+                                interner_ref.resolve(conclusion.2)
+                            ));
+                        }
+                        return;
+                    }
+                    pending_ref.insert(conclusion);
+                    round_ref.push(HornStepOut {
+                        rule: ri,
+                        binds: rule
+                            .vars
+                            .iter()
+                            .enumerate()
+                            .map(|(i, v)| (v.clone(), env[i].expect("matched body binds every body variable")))
+                            .collect(),
+                        premises: rule.body.iter().map(|a| inst_atom(a, env)).collect(),
+                        conclusion,
+                    });
+                });
+            }
+
+            if round.is_empty() {
+                fixpoint = true;
+                break;
+            }
+            for st in round {
+                known.insert(st.conclusion);
+                steps.push(st);
+            }
+        }
+
+        // Write the three files.
+        std::fs::create_dir_all(certificate_dir)?;
+        let canonical_rules = rules_tsv(&rules);
+        // The checker verifies the steps against the FILE, and the run
+        // evaluated the table in memory. If the rendering lost or changed
+        // anything the two would be different rule sets, and a step would be
+        // checked against a rule nobody ran. Reading the file back and
+        // comparing costs nothing and closes that gap; a mismatch is a bug in
+        // this file, so it stops the run rather than writing a certificate
+        // whose meaning is not the run's.
+        match parse_rules(&canonical_rules) {
+            Ok(reparsed) if reparsed == rules => {}
+            Ok(_) => anyhow::bail!(
+                "internal: the rule table this engine writes does not read back as the table it \
+                 evaluated, so the certificate would be checked against different rules. Refusing \
+                 to write it"
+            ),
+            Err(e) => anyhow::bail!(
+                "internal: the rule table this engine writes does not parse ({e}), so the checker \
+                 could not read it. Refusing to write it"
+            ),
+        }
+        std::fs::write(certificate_dir.join("rules.tsv"), &canonical_rules)?;
+
+        let mut asserted = String::with_capacity(facts.len() * 96);
+        for &(s, p, o) in &facts {
+            asserted.push_str(interner.resolve(s));
+            asserted.push('\t');
+            asserted.push_str(interner.resolve(p));
+            asserted.push('\t');
+            asserted.push_str(interner.resolve(o));
+            asserted.push('\n');
+        }
+        std::fs::write(certificate_dir.join("asserted.tsv"), asserted)?;
+
+        let mut horn = String::with_capacity(steps.len() * 256);
+        let mut by_rule: Vec<usize> = vec![0; rules.len()];
+        for st in &steps {
+            by_rule[st.rule] += 1;
+            horn.push_str(&st.rule.to_string());
+            horn.push('\t');
+            horn.push_str(&st.binds.len().to_string());
+            for (v, term) in &st.binds {
+                horn.push('\t');
+                horn.push_str(v);
+                horn.push('\t');
+                horn.push_str(interner.resolve(*term));
+            }
+            for &(s, p, o) in std::iter::once(&st.conclusion).chain(st.premises.iter()) {
+                horn.push('\t');
+                horn.push_str(interner.resolve(s));
+                horn.push('\t');
+                horn.push_str(interner.resolve(p));
+                horn.push('\t');
+                horn.push_str(interner.resolve(o));
+            }
+            horn.push('\n');
+        }
+        std::fs::write(certificate_dir.join("horn.tsv"), horn)?;
+
+        let digest = {
+            use sha2::{Digest, Sha256};
+            format!("{:x}", Sha256::digest(canonical_rules.as_bytes()))
+        };
+        let per_rule: Vec<serde_json::Value> = rules
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                serde_json::json!({"index": i, "name": r.name, "derivations": by_rule[i]})
+            })
+            .collect();
+        let sample: Vec<String> = steps
+            .iter()
+            .take(10)
+            .map(|st| {
+                format!(
+                    "{} {} {}",
+                    interner.resolve(st.conclusion.0),
+                    interner.resolve(st.conclusion.1),
+                    interner.resolve(st.conclusion.2)
+                )
+            })
+            .collect();
+        let dir = certificate_dir.display().to_string();
+
+        let mut result = serde_json::json!({
+            "mode": "horn",
+            "rules_file": rules_path.display().to_string(),
+            "rules": rules.len(),
+            "asserted_triples": facts.len(),
+            "distinct_asserted_triples": asserted_count,
+            "derived_triples": steps.len(),
+            "iterations": iterations,
+            "fixpoint_reached": fixpoint,
+            "skipped_unserialisable": refused.len(),
+            "materialized": false,
+            "why_not_materialized":
+                "a conclusion drawn under a supplied rule table holds only in models that satisfy \
+                 that table, so it is not written into the store beside the assertions. The \
+                 certificate is the output of this run",
+            "conditional_on":
+                format!("the rules in {}, which this run ASSUMED and never checked. A certificate \
+                         is only as good as the table it cites: a rule saying every supplier is \
+                         compliant produces steps that check green for ever",
+                        rules_path.display()),
+            "sample_derivations": sample,
+            "certificate": {
+                "dir": dir,
+                "format": "oo-horn/1",
+                "rules": rules.len(),
+                "rules_tsv_sha256": digest,
+                "asserted": facts.len(),
+                "derivations": steps.len(),
+                "by_rule": per_rule,
+                "check_with": format!(
+                    "cd lean && lake exe oo-horn check {d}/rules.tsv {d}/asserted.tsv {d}/horn.tsv",
+                    d = certificate_dir.display()
+                ),
+                "pronounced_by":
+                    "lean/, through `oo-horn check`, which decides what this run earned by \
+                     comparing the table against the built-in one. This engine emits the \
+                     certificate and states no verdict of its own",
+            }
+        });
+        if !fixpoint {
+            // An iteration cap reached with work still to do is not a fixpoint,
+            // and a count from such a run is a lower bound. Say it in the
+            // result rather than let the caller read `derived_triples` as the
+            // closure.
+            result["incomplete"] = serde_json::json!(format!(
+                "the run stopped at the {max_iterations}-iteration cap with rules still firing. \
+                 Every step in the certificate is still a step the checker can verify, but \
+                 derived_triples is a LOWER BOUND on the closure of this table, not the closure"
+            ));
+        }
+        if !refused.is_empty() {
+            result["skipped_examples"] = serde_json::json!(skipped_samples);
+            result["skipped_reason"] = serde_json::json!(
+                "the rule head instantiated to a triple no RDF serialiser can write (a literal in \
+                 subject position, or a non-IRI in predicate position). Such conclusions are \
+                 neither certified nor used as premises, so this run derives LESS than the table \
+                 licenses"
+            );
         }
         Ok(result.to_string())
     }

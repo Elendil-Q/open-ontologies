@@ -428,6 +428,20 @@ enum Commands {
     Reason {
         #[arg(long, default_value = "rdfs")]
         profile: String,
+        /// Write a derivation certificate (asserted.tsv + derivations.tsv)
+        /// to this directory. `lean/` holds a checker for it whose soundness
+        /// is a machine-checked theorem; see docs/lean-certificates.md.
+        #[arg(long)]
+        certificate: Option<String>,
+        /// Evaluate a SUPPLIED Horn rule table instead of a built-in profile,
+        /// in the `rules.tsv` format `oo-horn` reads (`oo-horn rules` prints
+        /// the built-in table in it). Requires --certificate, because a run
+        /// over rules nobody has checked reports nothing about what it proved:
+        /// the certificate is the output, and `oo-horn check` is what
+        /// pronounces on it. --profile is not run alongside it; the supplied
+        /// table is the whole rule set for the run. Nothing is materialised.
+        #[arg(long)]
+        rules: Option<String>,
     },
     /// Full pipeline: ingest → SHACL → reason
     Extend {
@@ -619,8 +633,17 @@ impl Commands {
             Commands::Query { query } => cmd("query", vec![query.clone()]),
             Commands::Lint { input } => cmd("lint", vec![absolutize(input)]),
             Commands::Defects { input } => cmd("defects", vec![absolutize(input)]),
-            Commands::Reason { profile } => {
-                cmd("reason", vec!["--profile".into(), profile.clone()])
+            Commands::Reason { profile, certificate, rules } => {
+                let mut a = vec!["--profile".into(), profile.clone()];
+                if let Some(c) = certificate {
+                    a.push("--certificate".into());
+                    a.push(absolutize(c));
+                }
+                if let Some(r) = rules {
+                    a.push("--rules".into());
+                    a.push(absolutize(r));
+                }
+                cmd("reason", a)
             }
             Commands::Shacl { shapes } => cmd("shacl", vec![absolutize(shapes)]),
             Commands::Status => cmd("status", vec![]),
@@ -1598,7 +1621,20 @@ async fn async_main() -> anyhow::Result<()> {
                                 .headers()
                                 .get("authorization")
                                 .and_then(|v| v.to_str().ok());
-                            if auth == Some(&expected) {
+                            // String equality short-circuits on the first
+                            // differing byte, which leaks the shared prefix
+                            // length through response timing and lets a token
+                            // be recovered byte by byte. Hashing both sides
+                            // first makes the compared values fixed-length and
+                            // unrelated to the token's own bytes, so the
+                            // remaining timing difference reveals nothing, and
+                            // sha2 is already a dependency.
+                            let ok = auth.is_some_and(|got| {
+                                use sha2::{Digest, Sha256};
+                                Sha256::digest(got.as_bytes())
+                                    == Sha256::digest(expected.as_bytes())
+                            });
+                            if ok {
                                 next.run(req).await
                             } else {
                                 axum::http::Response::builder()
@@ -2289,11 +2325,36 @@ async fn async_main() -> anyhow::Result<()> {
                 .unwrap_or_else(|e| format!(r#"{{"error":"{}"}}"#, e));
             output_result_checked(&result, cli.pretty);
         }
-        Commands::Reason { profile } => {
-            use open_ontologies::reason::Reasoner;
+        Commands::Reason { profile, certificate, rules } => {
+            use open_ontologies::reason::{InferenceTarget, Reasoner};
             let (_db, graph) = setup(&cli.data_dir)?;
-            let result = Reasoner::run(&graph, &profile, true)
-                .unwrap_or_else(|e| format!(r#"{{"error":"{}"}}"#, e));
+            let result = match (rules.as_deref(), certificate.as_deref()) {
+                // A supplied table and somewhere to put the certificate.
+                (Some(rules_path), Some(dir)) => Reasoner::run_horn(
+                    &graph,
+                    std::path::Path::new(rules_path),
+                    std::path::Path::new(dir),
+                )
+                .unwrap_or_else(|e| serde_json::json!({"error": e.to_string()}).to_string()),
+                // A supplied table and nowhere to put the certificate. The run
+                // would report counts nothing can check, over rules nobody has
+                // checked. Refuse rather than let the engine become a second
+                // place that pronounces.
+                (Some(_), None) => serde_json::json!({
+                    "error": "reason --rules needs --certificate DIR. A run over a supplied rule \
+                              table states no verdict of its own: the certificate is the output, \
+                              and `lake exe oo-horn check` is what pronounces on it"
+                })
+                .to_string(),
+                (None, cert) => Reasoner::run_full(
+                    &graph,
+                    &profile,
+                    true,
+                    InferenceTarget::DefaultGraph,
+                    cert.map(std::path::Path::new),
+                )
+                .unwrap_or_else(|e| format!(r#"{{"error":"{}"}}"#, e)),
+            };
             output_result_checked(&result, cli.pretty);
         }
         Commands::Extend {
@@ -2809,7 +2870,7 @@ mod proxy_serialization_tests {
             Commands::Stats,
             Commands::Query { query: "SELECT ?s WHERE { ?s ?p ?o }".into() },
             Commands::Lint { input: "x.ttl".into() },
-            Commands::Reason { profile: "rdfs".into() },
+            Commands::Reason { profile: "rdfs".into(), certificate: None, rules: None },
             Commands::Shacl { shapes: "s.ttl".into() },
             Commands::Status,
             Commands::Pull { url: "http://example.org".into(), sparql: false, query: None },

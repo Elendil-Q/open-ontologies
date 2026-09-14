@@ -57,7 +57,7 @@ open-ontologies marketplace install ies-4.3.1
 open-ontologies load case-studies/mcp-ies-rag-demo/data/ies-sample.ttl
 
 # 3. (Optional) generate embeddings if you want to use onto_search
-open-ontologies init  # downloads the embedding model the first time
+open-ontologies init  # on a build with --features embeddings, downloads the model the first time
 # in MCP mode: ask Claude to call onto_embed
 
 # 4. Run the competency questions

@@ -1,0 +1,7 @@
+# A user-defined constraint component. Its parameter lives outside the sh: namespace,
+# so the per-shape parameter check cannot see it: the whole graph must be refused.
+<http://ex.org/MyComponent> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/ns/shacl#ConstraintComponent> .
+<http://ex.org/MyComponent> <http://www.w3.org/ns/shacl#parameter> <http://ex.org/myParam> .
+<http://ex.org/S> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/ns/shacl#NodeShape> .
+<http://ex.org/S> <http://www.w3.org/ns/shacl#targetClass> <http://ex.org/Person> .
+<http://ex.org/S> <http://ex.org/myParam> "anything" .

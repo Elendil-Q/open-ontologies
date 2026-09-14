@@ -1,0 +1,8 @@
+# rdf:XMLLiteral: the datatype IRI matches, so the answer turns on well-formedness,
+# and RDF 1.1 says that lexical space is the strings that are well-balanced,
+# self-contained XML content. Deciding that needs an XML parser. It must decline.
+<http://ex.org/S> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/ns/shacl#NodeShape> .
+<http://ex.org/S> <http://www.w3.org/ns/shacl#targetNode> <http://ex.org/alice> .
+<http://ex.org/S> <http://www.w3.org/ns/shacl#property> <http://ex.org/NoteShape> .
+<http://ex.org/NoteShape> <http://www.w3.org/ns/shacl#path> <http://ex.org/note> .
+<http://ex.org/NoteShape> <http://www.w3.org/ns/shacl#datatype> <http://www.w3.org/1999/02/22-rdf-syntax-ns#XMLLiteral> .

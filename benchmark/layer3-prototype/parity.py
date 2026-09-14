@@ -1,6 +1,6 @@
 """Parity test: compiled DuckDB path vs HermiT full ABox consistency.
 
-The Kalgera discipline. The fast path is only usable if it is pinned against
+The fast path is only usable if it is pinned against
 the audited baseline, otherwise it is an optimisation with no correctness story.
 
 Generates random candidate claims from the ontology's own vocabulary, asks both
