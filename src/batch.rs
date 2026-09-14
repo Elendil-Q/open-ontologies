@@ -70,8 +70,21 @@ impl BatchRunner {
                 "result": result,
             }));
 
+            // A command that reports its own `exit_code` keeps it through the
+            // batch. `preserve` and `closure-diff` are the only ones with more
+            // than two outcomes: clean, something was lost, and a stop-the-line
+            // disagreement that means a defect in the engine or in this code.
+            // Without this the exit code was invisible in the ONLY path these
+            // commands can realistically run through, since the store is
+            // in-memory per process, and a stop-the-line would have exited 0.
+            if let Some(c) = result.get("exit_code").and_then(|c| c.as_i64())
+                && c > exit_code as i64
+            {
+                exit_code = c as i32;
+            }
+
             if has_error {
-                exit_code = 1;
+                exit_code = exit_code.max(1);
                 if bail {
                     break;
                 }
@@ -99,6 +112,8 @@ impl BatchRunner {
             "lint" => self.exec_lint(&cmd.args),
             "reason" => self.exec_reason(&cmd.args),
             "fol" => self.exec_fol(&cmd.args),
+            "preserve" => self.exec_preserve(&cmd.args),
+            "closure-diff" | "closure_diff" => self.exec_closure_diff(&cmd.args),
             "shacl" => self.exec_shacl(&cmd.args),
             // The CLI subcommand is spelled with a hyphen and this arm accepted
             // only the underscore, so every documented invocation was rejected
@@ -303,6 +318,104 @@ impl BatchRunner {
         )
         .unwrap_or_else(|e| json!({"error": e.to_string()}).to_string());
         serde_json::from_str(&result).unwrap_or(json!({"raw": result}))
+    }
+
+    /// Entailment preservation over a supplied goal set.
+    ///
+    /// Needed here for the same reason `reason --certificate` is: the store is
+    /// in-memory per process, so `batch` is the only way to load a source and
+    /// then ask about a slice of it in one run.
+    fn exec_preserve(&self, args: &[String]) -> Value {
+        use crate::projection_entailment as pe;
+        let Some(goals_path) = Self::flag_value(args, "--goals") else {
+            return json!({"error": "preserve requires --goals FILE"});
+        };
+        let Some(out) = Self::flag_value(args, "--out") else {
+            return json!({"error": "preserve requires --out DIR"});
+        };
+        let ttl_path = Self::flag_value(args, "--projection");
+        let graph_name = Self::flag_value(args, "--projection-graph");
+        if ttl_path.is_some() == graph_name.is_some() {
+            return json!({"error":
+                "preserve needs exactly one of --projection FILE and --projection-graph IRI. A \
+                 named graph of the loaded store keeps blank node identity, so P ⊆ G can be \
+                 verified over every triple rather than over ground triples only"});
+        }
+        let goals_text = match std::fs::read_to_string(&goals_path) {
+            Ok(t) => t,
+            Err(e) => return json!({"error": format!("cannot read {goals_path}: {e}")}),
+        };
+        let skip: usize = Self::flag_value(args, "--goals-skip-columns")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        // A TSV is asked for by --goals-skip-columns or by a .tsv name; Turtle
+        // otherwise. The goal document goes through the store's OWN parser
+        // either way, which is the only thing that makes a caller's spelling of
+        // a term comparable with the interner's.
+        let parsed = if skip > 0 || goals_path.ends_with(".tsv") {
+            pe::parse_goals_tsv(&goals_text, skip)
+        } else {
+            pe::parse_goals_turtle(&goals_text)
+        };
+        let (goals, refused) = match parsed {
+            Ok(v) => v,
+            Err(e) => return json!({"error": e.to_string()}),
+        };
+        let opts = pe::Opts {
+            profile: Self::flag_value(args, "--profile").unwrap_or("owl-rl".into()),
+            rules: Self::flag_value(args, "--rules").map(std::path::PathBuf::from),
+            work_dir: std::path::PathBuf::from(&out),
+            checker: Self::flag_value(args, "--checker").map(std::path::PathBuf::from),
+            require_checker: args.iter().any(|a| a == "--require-checker"),
+            seed_iris: Self::flag_values(args, "--seed"),
+        };
+        let projection_ttl;
+        let projection = match (&ttl_path, &graph_name) {
+            (Some(p), _) => match std::fs::read_to_string(p) {
+                Ok(t) => {
+                    projection_ttl = t;
+                    pe::Projection::Turtle(&projection_ttl)
+                }
+                Err(e) => return json!({"error": format!("cannot read {p}: {e}")}),
+            },
+            (_, Some(g)) => pe::Projection::NamedGraph(g),
+            _ => unreachable!("checked above"),
+        };
+        match pe::check_entailment_preservation(&self.graph, projection, &goals, &refused, &opts) {
+            Ok(r) => serde_json::to_value(r).unwrap_or_else(|e| json!({"error": e.to_string()})),
+            Err(e) => json!({"error": e.to_string()}),
+        }
+    }
+
+    /// The goal-free form: which conclusions a projection preserves.
+    fn exec_closure_diff(&self, args: &[String]) -> Value {
+        use crate::closure_diff as cd;
+        let Some(proj) = Self::flag_value(args, "--projection") else {
+            return json!({"error": "closure-diff requires --projection FILE"});
+        };
+        let Some(out) = Self::flag_value(args, "--out") else {
+            return json!({"error": "closure-diff requires --out DIR"});
+        };
+        let ttl = match std::fs::read_to_string(&proj) {
+            Ok(t) => t,
+            Err(e) => return json!({"error": format!("cannot read {proj}: {e}")}),
+        };
+        let opts = cd::DiffOptions {
+            profile: Self::flag_value(args, "--profile").unwrap_or("owl-rl-ext".into()),
+            out: std::path::PathBuf::from(&out),
+            checker: Self::flag_value(args, "--checker").map(std::path::PathBuf::from),
+            skolemise_source: Self::flag_value(args, "--skolemise-source")
+                .map(|v| v != "false")
+                .unwrap_or(true),
+            max_rows: Self::flag_value(args, "--max-rows")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(200),
+            seed_iris: Self::flag_values(args, "--seed"),
+        };
+        match cd::closure_diff(&self.graph, &ttl, &opts) {
+            Ok(r) => serde_json::to_value(r).unwrap_or_else(|e| json!({"error": e.to_string()})),
+            Err(e) => json!({"error": e.to_string()}),
+        }
     }
 
     fn exec_shacl(&self, args: &[String]) -> Value {
@@ -631,6 +744,19 @@ impl BatchRunner {
         args.iter()
             .position(|a| a == flag)
             .and_then(|i| args.get(i + 1).cloned())
+    }
+
+    /// Every value of a repeatable flag, in order (e.g. `--seed A --seed B`).
+    ///
+    /// `flag_value` returns the FIRST, which silently drops the rest. A seed
+    /// list that lost all but its first element would produce a coverage proxy
+    /// over one seed while the report said it was over twenty.
+    fn flag_values(args: &[String], flag: &str) -> Vec<String> {
+        args.iter()
+            .enumerate()
+            .filter(|(_, a)| a.as_str() == flag)
+            .filter_map(|(i, _)| args.get(i + 1).cloned())
+            .collect()
     }
 }
 

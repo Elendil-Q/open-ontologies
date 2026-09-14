@@ -40,7 +40,7 @@
 
 ---
 
-Open Ontologies is a **Rust MCP server** and **desktop Studio** for AI-native ontology engineering. It exposes **109 tools** that let Claude build, validate, query, diff, lint, version, reason over, align, plan, certify, and govern RDF/OWL ontologies using an in-memory Oxigraph triple store, alongside a three-layer Dynamics → Causal → Planner architecture, a marketplace of 33 standard ontologies, clinical crosswalks, semantic embeddings, and a lineage audit trail. A default build advertises all 109 tools. Eight of them need an optional Cargo feature and return an error without it: four need `embeddings`, two need `plugins`, and two need `postgres` or `duckdb`. The published binaries and the GHCR image are built with the default feature set, so they do not carry those eight. Build from source with `cargo build --release --features embeddings,plugins,sql` to get them.
+Open Ontologies is a **Rust MCP server** and **desktop Studio** for AI-native ontology engineering. It exposes **112 tools** that let Claude build, validate, query, diff, lint, version, reason over, align, plan, certify, and govern RDF/OWL ontologies using an in-memory Oxigraph triple store, alongside a three-layer Dynamics → Causal → Planner architecture, a marketplace of 33 standard ontologies, clinical crosswalks, semantic embeddings, and a lineage audit trail. A default build advertises all 112 tools. Eight of them need an optional Cargo feature and return an error without it: four need `embeddings`, two need `plugins`, and two need `postgres` or `duckdb`. The published binaries and the GHCR image are built with the default feature set, so they do not carry those eight. Build from source with `cargo build --release --features embeddings,plugins,sql` to get them.
 
 The **Studio** wraps the engine in a visual desktop environment: virtualized ontology tree with hierarchy lines, breadcrumb navigation, and connection explorer; AI chat panel with `/build` (IES-level deep) and `/sketch` (quick prototype) commands; Protégé-style property inspector; and lineage viewer.
 
@@ -74,7 +74,8 @@ The full **Dynamics → Causal → Planner** stack plus 13 new primitives. Every
 - **`onto_align_flora`**, end-to-end alignment pipeline pairing the signal extractor to the fuzzy adjudicator.
 - **`onto_policy_register`** + **`onto_policy_list`** + **`onto_policy_check`**, authorisation gate that composes with `onto_certify_action` (Causal = risk; policy = authorisation).
 - **`eval_rag`** + **`eval_rag_mmrag`**, Hit@k / MRR / faithfulness / token-Jaccard / ROUGE-1 scoring for retriever pipelines, with a dataset adapter.
-- **`graph_projection_lossy_check`**, the auditor that pairs with `onto_segment_retrieve`.
+- **`graph_projection_lossy_check`**, the auditor that pairs with `onto_segment_retrieve`. Its coverage ratio is a proxy and is labelled as one.
+- **`graph_projection_entailment_check`** + **`onto_closure_diff`**, entailment preservation under projection: for each claim an answer rests on, does the slice entail it exactly when the source does, with a Lean-checked certificate per preserved claim, and a free monotonicity differential that treats a projection-only entailment as a soundness bug in the engine rather than a retrieval result. See [decision 0007](docs/decisions/0007-a-slice-preserves-a-conclusion-or-it-does-not.md).
 
 ### Validating end-to-end
 
@@ -878,7 +879,7 @@ The same tool, applied to any ontology, produces the same kind of improvement. T
 
 ## Tools
 
-109 tools organized by function, available as MCP tools (prefixed `onto_`) and CLI subcommands. A default build advertises all 109. Eight require an optional Cargo feature at call time: `embed`, `search`, `similarity` and `hnsw_build` need `embeddings`; `plugin_list` and `plugin_call` need `plugins`; `import-schema` and `sql-ingest` need `postgres` or `duckdb`.
+112 tools organized by function, available as MCP tools (prefixed `onto_`) and CLI subcommands. A default build advertises all 112. Eight require an optional Cargo feature at call time: `embed`, `search`, `similarity` and `hnsw_build` need `embeddings`; `plugin_list` and `plugin_call` need `plugins`; `import-schema` and `sql-ingest` need `postgres` or `duckdb`.
 
 | Category | Tools | Purpose |
 | --- | --- | --- |
@@ -902,7 +903,8 @@ The same tool, applied to any ontology, produces the same kind of improvement. T
 | **Causal** | `certify_action` | Four-verdict causal certificate (EXECUTE / REJECT / EXPERIMENT / ABSTAIN); optional `causal-pywhy` feature enables backdoor identification |
 | **Planner** | `plan_compile_pddl` `plan_classical` `plan_validate` | Compile + validate on the server; solver (Fast Downward) is a client-side subprocess |
 | **Governance** | `policy_register` `policy_list` `policy_check` | Authorisation rules; composes with `certify_action` |
-| **RAG** | `segment_retrieve` `graph_projection_lossy_check` | TBox-slice retrieval + projection-loss auditor |
+| **RAG** | `segment_retrieve` `graph_projection_lossy_check` | TBox-slice retrieval + projection-loss auditor. The coverage ratio is a PROXY and not assurance: it rises as the slice grows, so a retriever tuned on it fetches more rather than the right thing |
+| **RAG, the property** | `graph_projection_entailment_check` `onto_closure_diff` | Does the slice still ENTAIL the claims the answer rests on? Per-claim, with a machine-checked certificate for each one preserved, and a stop-the-line monotonicity gate on every run |
 | **Extraction** | `extract_scaffold` `extract_validate` | Schema-guided structured-extraction prompt + validator |
 | **CQs** | `cq_run` `verify_cq` `cq_verdicts_list` | Competency-question runner with pitfall hints + judgement loop |
 | **Shape induction** | `shape_combinatorics` `shape_induce` | Property-combination lattice + data-driven SHACL induction |

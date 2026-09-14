@@ -341,6 +341,36 @@ jobs:
         # fact, and it is the reason this job exists rather than being folded
         # into the line above.
         run: OO_REQUIRE_FIXTURES=1 cargo test --test lean_horn_certificate_test -- --nocapture
+      - name: Check that a projection preserves the claims an answer rests on
+        # Coverage is a proxy, and the first two legs here are the argument for
+        # that sentence: a slice of a SHIPPED ontology at coverage 1.0 with
+        # ok:true that has dropped the one triple the answer depends on, and
+        # its converse at coverage 0.001 preserving every claim with a
+        # Lean-checked certificate. The rest are the verdict discipline and the
+        # three conditions under which the monotonicity gate is disarmed.
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test lean_projection_entailment_test -- --nocapture
+      - name: Check the goal-free closure diff
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test closure_diff_test -- --nocapture
+      - name: Run the monotonicity differential over every shipped ontology
+        # OWL RL is monotone and a projection is a subset, so anything the
+        # projection entails and the source does not is a soundness bug in the
+        # engine. This leg runs that check for real over the shipped corpus and
+        # prints what it found, INCLUDING if it found nothing: a sweep whose
+        # gate was disarmed everywhere establishes nothing, so the test fails
+        # if the gate was armed on fewer than half the ontologies.
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test projection_monotonicity_corpus_test -- --nocapture
+      - name: Check the preserve and closure-diff command lines, including their exit codes
+        # Wiring nothing exercises is how `push` came to be proxied to a batch
+        # runner with no arm for it. These run the real binary, and they pin
+        # that a lost claim fails the process rather than printing a finding
+        # and exiting 0.
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test preserve_cli_test -- --nocapture
+      - name: Show every gate firing on its own broken input
+        # A gate that cannot fail is decoration, and a gate whose failure
+        # nobody has read is close to it. This leg feeds each gate the input
+        # built to trip it and PRINTS what the tool said, so the evidence is in
+        # the job log rather than in a doc.
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test gate_demonstration_test -- --nocapture
 
   # The official W3C SHACL test suite, as a ratchet.
   #
