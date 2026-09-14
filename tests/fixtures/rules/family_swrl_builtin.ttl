@@ -1,0 +1,28 @@
+# A SWRL rule using a built-in atom. `swrlb:greaterThan` is a predicate over the
+# data domain, computed rather than matched, and a Horn table over triple
+# patterns has no computed predicates. The whole import fails on it unless
+# allow_partial is passed.
+@prefix :      <http://example.org/family#> .
+@prefix swrl:  <http://www.w3.org/2003/11/swrl#> .
+@prefix swrlb: <http://www.w3.org/2003/11/swrlb#> .
+@prefix var:   <urn:swrl#> .
+
+var:x a swrl:Variable .
+var:n a swrl:Variable .
+
+:adults-only a swrl:Imp ;
+    swrl:body (
+        [ a swrl:DatavaluedPropertyAtom ;
+          swrl:propertyPredicate :age ;
+          swrl:argument1 var:x ; swrl:argument2 var:n ]
+        [ a swrl:BuiltinAtom ;
+          swrl:builtin swrlb:greaterThan ;
+          swrl:arguments ( var:n 17 ) ]
+    ) ;
+    swrl:head ( [ a swrl:ClassAtom ; swrl:classPredicate :Adult ; swrl:argument1 var:x ] ) .
+
+# A second rule that IS representable, so the partial import has something to
+# keep and the weaker-rule-set flag has something to be weaker than.
+:supplier a swrl:Imp ;
+    swrl:body ( [ a swrl:ClassAtom ; swrl:classPredicate :Supplier  ; swrl:argument1 var:x ] ) ;
+    swrl:head ( [ a swrl:ClassAtom ; swrl:classPredicate :Compliant ; swrl:argument1 var:x ] ) .

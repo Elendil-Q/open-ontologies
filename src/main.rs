@@ -431,6 +431,11 @@ enum Commands {
         /// Write a derivation certificate (asserted.tsv + derivations.tsv)
         /// to this directory. `lean/` holds a checker for it whose soundness
         /// is a machine-checked theorem; see docs/lean-certificates.md.
+        ///
+        /// When the run also finds a contradiction that the checker can judge,
+        /// a refutation.tsv lands here too, for `lake exe oo-refute check`.
+        /// Only `cax-dw` is certifiable; other clash rules are reported in the
+        /// response as found by this engine and nothing is written for them.
         #[arg(long)]
         certificate: Option<String>,
         /// Evaluate a SUPPLIED Horn rule table instead of a built-in profile,
@@ -442,6 +447,204 @@ enum Commands {
         /// table is the whole rule set for the run. Nothing is materialised.
         #[arg(long)]
         rules: Option<String>,
+    },
+    /// Export the loaded ontology as first-order logic, for a prover or a model finder
+    ///
+    /// The translation is the one owl-lean's machine-checked adequacy theorem
+    /// (`OwlLean.adequacy`) is about. The correspondence between this emitter
+    /// and that Lean is PINNED BY TESTS AND NOT ITSELF PROVED, and a prover's
+    /// verdict on the output is an oracle opinion, never a certificate. A
+    /// MODEL is the other case: see `fol-model`.
+    Fol {
+        /// Output directory. `ontology.p`, `.clif`, `.smt2` or `.in` lands
+        /// here, plus one problem per goal under `goals/` when --goals is
+        /// given. Every run also writes `problem.tsv`, the format the verified
+        /// checker `oo-folmodel` reads, with its digest in the report.
+        #[arg(long)]
+        out: String,
+        /// `tptp` (FOF, what provers read), `clif` (ISO/IEC 24707 Common
+        /// Logic, restricted to the first-order-equivalent fragment),
+        /// `smtlib` (SMT-LIB 2, what Z3 reads) or `ladr` (what Mace4 reads,
+        /// with every symbol MANGLED and the table in `symbols.tsv`).
+        ///
+        /// The last two assert the NEGATED goal rather than declaring a
+        /// conjecture, because they are read by model finders and a
+        /// countermodel to `G |= phi` is a model of `G + {not phi}`.
+        #[arg(long, default_value = "tptp")]
+        format: String,
+        /// With --format smtlib: the carrier size. Omitted gives the UNBOUNDED
+        /// encoding, where `unsat` really is unsatisfiability. Given `k`, the
+        /// carrier is an enumeration datatype of exactly k elements, a `sat`
+        /// comes with a structure `oo-folmodel` can check, and an `unsat`
+        /// establishes only that no model of size k exists.
+        #[arg(long)]
+        smt_domain: Option<u32>,
+        /// With --format clif: `iso` (default, `cl:text`, what ISO/IEC 21838-2
+        /// publishes BFO in) or `colore` (`cl-text`, what COLORE and the
+        /// Macleod toolchain read; Macleod cannot read the ISO spelling).
+        #[arg(long, default_value = "iso")]
+        clif_dialect: String,
+        /// With --format clif: `standalone` (default) puts each label in its
+        /// own `(cl:comment '...')` phrase and the sentence bare, or `wrapped`
+        /// for `(cl:comment '...' SENTENCE)`, the shape BFO uses. Wrapped is
+        /// correct CLIF that both existing CLIF parsers read as EMPTY.
+        #[arg(long, default_value = "standalone")]
+        clif_comments: String,
+        /// A TSV of triples to ask as conjectures, one problem per line.
+        /// `derivations.tsv` from `reason --certificate` is the intended
+        /// input; pass --goals-skip-columns 1 for it, because its first
+        /// column is the rule name.
+        #[arg(long)]
+        goals: Option<String>,
+        #[arg(long, default_value_t = 0)]
+        goals_skip_columns: usize,
+    },
+
+    /// Read rules written in a STANDARD rule syntax into the `rules.tsv` table
+    /// `reason --rules` evaluates and `oo-horn check` verifies.
+    ///
+    /// Every rule imported is a rule you wrote, so a certificate over the table
+    /// this produces can only ever earn `entailed_under_supplied_rules`: true in
+    /// every model of the asserted graph THAT ALSO SATISFIES YOUR RULES. The
+    /// rules are assumed and never checked.
+    RulesImport {
+        /// `swrl` for SWRL rules encoded in RDF, `rif` for RIF Core in its XML
+        /// syntax. Only part of each language is representable as Horn rules
+        /// over triple patterns; the response states the exact fragment and
+        /// names every rule it refused.
+        #[arg(long)]
+        from: String,
+        /// The document to read. Required for `rif`. Optional for `swrl`:
+        /// without it the LOADED graph is read; with it the file is parsed into
+        /// a store of its own, so importing rules never changes what is loaded.
+        #[arg(long)]
+        file: Option<String>,
+        /// Where to write the table. Without it nothing is written and the
+        /// table comes back in the response under `rules_tsv`.
+        #[arg(long)]
+        out: Option<String>,
+        /// Import the rules that CAN be represented even though others cannot.
+        /// Off by default, and deliberately: a table that quietly lost a rule
+        /// still reaches a fixpoint and still produces a certificate that
+        /// checks green, which is a sound proof about a rule set nobody wrote.
+        /// With this flag the import succeeds, the result carries
+        /// `certifies_a_weaker_rule_set: true`, and every lost rule is named.
+        #[arg(long)]
+        allow_partial: bool,
+    },
+
+    /// Find a finite model and CHECK it, for a verdict that says what it rests on
+    ///
+    /// Export, run Z3 or Mace4, read the structure back, and hand it to the
+    /// verified checker `oo-folmodel`. Only the verdict `model_checked` rests
+    /// on a machine-checked theorem (`Fol.satisfiable_of_check`). A solver's
+    /// `unsat` is an ORACLE OPINION and can never be more, and an exhausted
+    /// BOUNDED search is `no_model_up_to_size_k`, which is not
+    /// unsatisfiability. Exits 1 if any run is a stop-the-line disagreement.
+    FolModel {
+        /// Working directory. Every intermediate file lands here, so a run is
+        /// reproducible by hand from what it leaves behind.
+        #[arg(long)]
+        out: String,
+        /// `z3` (SMT-LIB, and the only one that can be asked the UNBOUNDED
+        /// question) or `mace4` (LADR, a dedicated finite model finder whose
+        /// minimum carrier is 2).
+        #[arg(long, default_value = "z3")]
+        solver: String,
+        /// The largest carrier the ladder tries. The default is from the
+        /// measured cost of the compiled checker: about 9M evaluation points
+        /// per second, cubic in the carrier at quantifier depth 3.
+        #[arg(long, default_value_t = 16)]
+        max_domain: u32,
+        #[arg(long, default_value_t = 30)]
+        timeout_secs: u32,
+        /// After a bounded ladder finds nothing, ask the UNBOUNDED question
+        /// too. This is the ONLY route to `unsatisfiable_oracle`. Z3 only.
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        unbounded_probe: bool,
+        /// A TSV of triples to ask as conjectures, one run per line, the same
+        /// shape `fol --goals` takes.
+        #[arg(long)]
+        goals: Option<String>,
+        #[arg(long, default_value_t = 0)]
+        goals_skip_columns: usize,
+        /// Path to `oo-folmodel`. Defaults to `lean/.lake/build/bin/` then
+        /// `$PATH`; its absence is reported loudly and never worked around.
+        #[arg(long)]
+        checker: Option<String>,
+    },
+
+    /// Ask whether a retrieved slice still supports the claims an answer rests on
+    ///
+    /// Coverage is a proxy. This asks the property: for each goal, does the
+    /// projection entail it exactly when the source does, with a machine-checked
+    /// certificate for each one it preserves. Exits 1 if any goal was lost,
+    /// ungrounded or refused, 2 on a stop-the-line disagreement.
+    Preserve {
+        /// The slice as Turtle. Blank nodes are relabelled on re-parse, so
+        /// subsethood is then decided over ground triples only and the
+        /// monotonicity differential is disarmed.
+        #[arg(long, conflicts_with = "projection_graph")]
+        projection: Option<String>,
+        /// A named graph of the LOADED store holding the slice. Blank node
+        /// identity survives, so `P ⊆ G` can hold by construction and the
+        /// differential can be armed.
+        #[arg(long)]
+        projection_graph: Option<String>,
+        /// Turtle in which every triple is a goal, or a TSV with
+        /// --goals-skip-columns. `derivations.tsv` from `reason --certificate`
+        /// is a valid input with --goals-skip-columns 1.
+        #[arg(long)]
+        goals: String,
+        #[arg(long, default_value_t = 0)]
+        goals_skip_columns: usize,
+        /// One profile for BOTH runs. Two profiles compare two rule sets and
+        /// the differential then fires on nothing at all.
+        #[arg(long, default_value = "owl-rl")]
+        profile: String,
+        /// A SUPPLIED Horn table instead of a built-in profile. Its presence
+        /// changes the verdict WORD for every preserved goal.
+        #[arg(long)]
+        rules: Option<String>,
+        /// Where the two certificates and the per-goal slices land.
+        #[arg(long)]
+        out: String,
+        /// Seeds for the demoted coverage proxy. Independent of --goals.
+        #[arg(long)]
+        seed: Vec<String>,
+        #[arg(long)]
+        checker: Option<String>,
+        /// Turn an absent checker into a failure. The CI leg sets it.
+        #[arg(long, default_value_t = false)]
+        require_checker: bool,
+    },
+    /// Which CONCLUSIONS a projection preserves, with no goals supplied
+    ///
+    /// The offline form, for auditing a retrieval STRATEGY rather than one
+    /// answer: reason both graphs to a fixpoint under the same table and report
+    /// `closure(G) \ closure(P)`. Exits 1 when something in the projection's own
+    /// vocabulary was lost, 2 on a monotonicity violation.
+    ClosureDiff {
+        /// The slice as Turtle.
+        #[arg(long)]
+        projection: String,
+        /// Where both certificates and the report land.
+        #[arg(long)]
+        out: String,
+        #[arg(long, default_value = "owl-rl-ext")]
+        profile: String,
+        /// Replace every source blank node with a Skolem IRI before diffing.
+        /// Without it, every triple touching a blank node lands in
+        /// `not_compared` and the monotonicity gate is suppressed for it.
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        skolemise_source: bool,
+        #[arg(long)]
+        checker: Option<String>,
+        #[arg(long, default_value_t = 200)]
+        max_rows: usize,
+        /// Seeds for the demoted coverage proxy.
+        #[arg(long)]
+        seed: Vec<String>,
     },
     /// Full pipeline: ingest → SHACL → reason
     Extend {
@@ -644,6 +847,162 @@ impl Commands {
                     a.push(absolutize(r));
                 }
                 cmd("reason", a)
+            }
+            Commands::Fol { out, format, smt_domain, clif_dialect, clif_comments, goals, goals_skip_columns } => {
+                let mut a = vec![
+                    "--out".into(),
+                    absolutize(out),
+                    "--format".into(),
+                    format.clone(),
+                    "--clif-dialect".into(),
+                    clif_dialect.clone(),
+                    "--clif-comments".into(),
+                    clif_comments.clone(),
+                ];
+                if let Some(k) = smt_domain {
+                    a.push("--smt-domain".into());
+                    a.push(k.to_string());
+                }
+                if let Some(g) = goals {
+                    a.push("--goals".into());
+                    a.push(absolutize(g));
+                    a.push("--goals-skip-columns".into());
+                    a.push(goals_skip_columns.to_string());
+                }
+                cmd("fol", a)
+            }
+
+            Commands::RulesImport { from, file, out, allow_partial } => {
+                // Proxied because `--from swrl` with no `--file` reads the
+                // LOADED graph, which lives in the daemon. Running it locally
+                // would read a different store and import a different rule set.
+                let mut a = vec!["--from".into(), from.clone()];
+                if let Some(f) = file {
+                    a.push("--file".into());
+                    a.push(absolutize(f));
+                }
+                if let Some(o) = out {
+                    a.push("--out".into());
+                    a.push(absolutize(o));
+                }
+                if *allow_partial {
+                    a.push("--allow-partial".into());
+                }
+                cmd("rules-import", a)
+            }
+
+            Commands::FolModel {
+                out,
+                solver,
+                max_domain,
+                timeout_secs,
+                unbounded_probe,
+                goals,
+                goals_skip_columns,
+                checker,
+            } => {
+                let mut a = vec![
+                    "--out".into(),
+                    absolutize(out),
+                    "--solver".into(),
+                    solver.clone(),
+                    "--max-domain".into(),
+                    max_domain.to_string(),
+                    "--timeout-secs".into(),
+                    timeout_secs.to_string(),
+                    "--unbounded-probe".into(),
+                    unbounded_probe.to_string(),
+                ];
+                if let Some(g) = goals {
+                    a.push("--goals".into());
+                    a.push(absolutize(g));
+                    a.push("--goals-skip-columns".into());
+                    a.push(goals_skip_columns.to_string());
+                }
+                if let Some(c) = checker {
+                    a.push("--checker".into());
+                    a.push(absolutize(c));
+                }
+                cmd("fol-model", a)
+            }
+
+            Commands::Preserve {
+                projection,
+                projection_graph,
+                goals,
+                goals_skip_columns,
+                profile,
+                rules,
+                out,
+                seed,
+                checker,
+                require_checker,
+            } => {
+                let mut a = vec![
+                    "--goals".into(),
+                    absolutize(goals),
+                    "--goals-skip-columns".into(),
+                    goals_skip_columns.to_string(),
+                    "--profile".into(),
+                    profile.clone(),
+                    "--out".into(),
+                    absolutize(out),
+                ];
+                if let Some(p) = projection {
+                    a.push("--projection".into());
+                    a.push(absolutize(p));
+                }
+                if let Some(g) = projection_graph {
+                    a.push("--projection-graph".into());
+                    a.push(g.clone());
+                }
+                if let Some(r) = rules {
+                    a.push("--rules".into());
+                    a.push(absolutize(r));
+                }
+                for sd in seed {
+                    a.push("--seed".into());
+                    a.push(sd.clone());
+                }
+                if let Some(c) = checker {
+                    a.push("--checker".into());
+                    a.push(absolutize(c));
+                }
+                if *require_checker {
+                    a.push("--require-checker".into());
+                }
+                cmd("preserve", a)
+            }
+            Commands::ClosureDiff {
+                projection,
+                out,
+                profile,
+                skolemise_source,
+                checker,
+                max_rows,
+                seed,
+            } => {
+                let mut a = vec![
+                    "--projection".into(),
+                    absolutize(projection),
+                    "--out".into(),
+                    absolutize(out),
+                    "--profile".into(),
+                    profile.clone(),
+                    "--skolemise-source".into(),
+                    skolemise_source.to_string(),
+                    "--max-rows".into(),
+                    max_rows.to_string(),
+                ];
+                for sd in seed {
+                    a.push("--seed".into());
+                    a.push(sd.clone());
+                }
+                if let Some(c) = checker {
+                    a.push("--checker".into());
+                    a.push(absolutize(c));
+                }
+                cmd("closure-diff", a)
             }
             Commands::Shacl { shapes } => cmd("shacl", vec![absolutize(shapes)]),
             Commands::Status => cmd("status", vec![]),
@@ -895,6 +1254,27 @@ fn output_result_checked(result: &str, pretty: bool) {
     output_result(result, pretty);
     if failed {
         std::process::exit(1);
+    }
+}
+
+/// Print a report and exit with the code IT names.
+///
+/// `output_result_checked` maps "there is an `error` field" to exit 1, which is
+/// the right rule for a command whose only two outcomes are worked and did not.
+/// A preservation report has three: clean, something was lost, and a
+/// stop-the-line disagreement that means a defect in the engine or in this
+/// code. Folding the third into the second would make the one outcome nobody
+/// may ship look like an ordinary finding.
+fn output_result_with_exit(result: &str, pretty: bool) {
+    let parsed = serde_json::from_str::<serde_json::Value>(result).ok();
+    let code = match &parsed {
+        Some(v) if v.get("error").is_some() => 1,
+        Some(v) => v.get("exit_code").and_then(|c| c.as_i64()).unwrap_or(0) as i32,
+        None => 1,
+    };
+    output_result(result, pretty);
+    if code != 0 {
+        std::process::exit(code);
     }
 }
 
@@ -2357,6 +2737,110 @@ async fn async_main() -> anyhow::Result<()> {
             };
             output_result_checked(&result, cli.pretty);
         }
+        Commands::FolModel {
+            out,
+            solver,
+            max_domain,
+            timeout_secs,
+            unbounded_probe,
+            goals,
+            goals_skip_columns,
+            checker,
+        } => {
+            use open_ontologies::fol_solve::{SolveOptions, Solver, solve_export};
+            let (_db, graph) = setup(&cli.data_dir)?;
+            let result = match Solver::parse(&solver) {
+                Ok(s) => {
+                    let opts = SolveOptions {
+                        solver: s,
+                        max_domain,
+                        timeout_secs,
+                        unbounded_probe,
+                        checker: checker.as_deref().map(std::path::PathBuf::from),
+                    };
+                    solve_export(
+                        &graph,
+                        std::path::Path::new(&out),
+                        &opts,
+                        goals.as_deref().map(std::path::Path::new),
+                        goals_skip_columns,
+                    )
+                    .unwrap_or_else(|e| serde_json::json!({"error": e.to_string()}).to_string())
+                }
+                Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
+            };
+            output_result_checked(&result, cli.pretty);
+            // A stop-the-line disagreement must fail a pipeline, the way
+            // tools/shacl_differential.py exits 1 on a FALSE_CLEAN.
+            let stop = serde_json::from_str::<serde_json::Value>(&result)
+                .ok()
+                .and_then(|v| v.get("stop_the_line").and_then(|n| n.as_u64()))
+                .unwrap_or(0);
+            if stop > 0 {
+                std::process::exit(1);
+            }
+        }
+        Commands::Fol { out, format, smt_domain, clif_dialect, clif_comments, goals, goals_skip_columns } => {
+            let (_db, graph) = setup(&cli.data_dir)?;
+            let result = match open_ontologies::tptp::Syntax::parse(
+                &format,
+                Some(&clif_dialect),
+                Some(&clif_comments),
+                smt_domain,
+            ) {
+                Ok(syntax) => open_ontologies::tptp::export(
+                    &graph,
+                    std::path::Path::new(&out),
+                    syntax,
+                    goals.as_deref().map(std::path::Path::new),
+                    goals_skip_columns,
+                )
+                .unwrap_or_else(|e| serde_json::json!({"error": e.to_string()}).to_string()),
+                Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
+            };
+            output_result_checked(&result, cli.pretty);
+        }
+
+        Commands::RulesImport { from, file, out, allow_partial } => {
+            let (_db, graph) = setup(&cli.data_dir)?;
+            let result = open_ontologies::rulesyntax::run_import(
+                &graph,
+                &from,
+                file.as_deref().map(std::path::Path::new),
+                out.as_deref().map(std::path::Path::new),
+                allow_partial,
+            )
+            .unwrap_or_else(|e| serde_json::json!({"error": e.to_string()}).to_string());
+            // A refused rule puts `error` in the response, so an import that
+            // lost anything exits non-zero and a script cannot walk past it.
+            output_result_checked(&result, cli.pretty);
+        }
+
+        Commands::Preserve { .. } | Commands::ClosureDiff { .. } => {
+            // Both need a loaded source and are reached through `batch` in the
+            // normal case, exactly as `reason --certificate` is: the store is
+            // in-memory per process. Running them locally still works against
+            // whatever the configured store holds, and says so when it is
+            // empty rather than reporting a perfect run over nothing.
+            let (db, graph) = setup(&cli.data_dir)?;
+            let Some(batch) = cli.command.to_batch_command() else {
+                anyhow::bail!("internal: this command is proxy-able and must serialise");
+            };
+            let name = batch["command"].as_str().unwrap_or_default().to_string();
+            let args: Vec<String> = batch["args"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            let runner = open_ontologies::batch::BatchRunner::new(db, graph, false);
+            let payload =
+                serde_json::json!([{ "command": name, "args": args }]).to_string();
+            let (results, _) = runner.run_collect(&payload, false).await;
+            let result = results
+                .first()
+                .map(|r| r["result"].clone())
+                .unwrap_or_else(|| serde_json::json!({"error": "no result"}));
+            output_result_with_exit(&result.to_string(), cli.pretty);
+        }
         Commands::Extend {
             data_path,
             format: _format,
@@ -2871,6 +3355,8 @@ mod proxy_serialization_tests {
             Commands::Query { query: "SELECT ?s WHERE { ?s ?p ?o }".into() },
             Commands::Lint { input: "x.ttl".into() },
             Commands::Reason { profile: "rdfs".into(), certificate: None, rules: None },
+            Commands::Fol { out: "/tmp/fol".into(), format: "tptp".into(), smt_domain: None, clif_dialect: "iso".into(), clif_comments: "standalone".into(), goals: None, goals_skip_columns: 0 },
+            Commands::FolModel { out: "/tmp/folmodel".into(), solver: "z3".into(), max_domain: 16, timeout_secs: 30, unbounded_probe: true, goals: None, goals_skip_columns: 0, checker: None },
             Commands::Shacl { shapes: "s.ttl".into() },
             Commands::Status,
             Commands::Pull { url: "http://example.org".into(), sparql: false, query: None },
@@ -2887,6 +3373,27 @@ mod proxy_serialization_tests {
             Commands::Drift { file_a: "a.ttl".into(), file_b: "b.ttl".into() },
             Commands::Lock { iris: vec!["http://example.org/A".into()], reason: None },
             Commands::Marketplace { action: "list".into(), id: None, domain: None },
+            Commands::Preserve {
+                projection: Some("p.ttl".into()),
+                projection_graph: None,
+                goals: "g.ttl".into(),
+                goals_skip_columns: 0,
+                profile: "owl-rl".into(),
+                rules: None,
+                out: "/tmp/preserve".into(),
+                seed: vec![],
+                checker: None,
+                require_checker: false,
+            },
+            Commands::ClosureDiff {
+                projection: "p.ttl".into(),
+                out: "/tmp/cd".into(),
+                profile: "owl-rl-ext".into(),
+                skolemise_source: true,
+                checker: None,
+                max_rows: 200,
+                seed: vec![],
+            },
         ]
     }
 

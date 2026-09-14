@@ -6,7 +6,7 @@
   `#guard_msgs` · every shipped ontology certified in CI (`tests/lean_certificate_test.rs`) ·
   **opt-in, default unchanged** · the `owl-dl` tableaux path refuses the flag rather than
   pretending · the SHIQ tableaux reasoner now certifies its POSITIVE answers
-  (`Dl.satisfiable_of_checkModel`, decision 0004); its negative answers and the
+  (`Dl.satisfiable_of_checkModel`, decision 0006); its negative answers and the
   parsers remain uncovered
 - **Written**: 2026-09-13
 - **Related**: decision 0001 (an inference is not an assertion); issues #131 and #132, fixed the

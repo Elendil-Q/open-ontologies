@@ -1,0 +1,8 @@
+# The data the imported rules run over. Deliberately small: two facts that fire
+# the uncle rule and one that fires the supplier rule, so a certificate over the
+# imported table has something in it and the derived triples can be named.
+@prefix : <http://example.org/family#> .
+
+:john  :hasParent  :sue .
+:sue   :hasBrother :bob .
+:acme  a           :Supplier .

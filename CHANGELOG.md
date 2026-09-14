@@ -5,6 +5,314 @@ All notable changes to Open Ontologies are documented here.
 ## [Unreleased]
 
 ### Added
+- **The refutation checker has a producer.** `lean/OOCert/Refute.lean` has
+  checked refutations since it landed and nothing in `src/` could write one: a
+  checker with no producer, which is the same shape of defect as a gate that
+  cannot fail. `reason --certificate DIR` (and `onto_reason` with
+  `certificate_dir`) now looks for a contradiction in the closure the fixpoint
+  reached and writes `refutation.tsv` beside `asserted.tsv` and
+  `derivations.tsv`, in the `oo-refute/1` format, with the minimal derivation
+  prefix that reached the clash. `lake exe oo-refute check` accepts it and
+  `oo-refute guard` refuses the derivation certificate over the same graph,
+  which is what `OOCert.a_certificate_adds_nothing_when_the_graph_is_refuted`
+  says to do.
+- **Ten of the seventeen OWL 2 RL rules that conclude `false` are detected, and
+  exactly one is certifiable.** `cax-dw`, `cls-com`, `cls-nothing2`,
+  `cls-maxc1`, `eq-diff1`, `prp-irp`, `prp-asyp`, `prp-pdw`, `prp-npa1` and
+  `prp-npa2` are looked for after the fixpoint. Only `cax-dw` gets a refutation
+  file, because `OOCert.RefuteConditions` carries a semantic condition for that
+  rule alone and `oo-refute` refuses a refutation naming any other with exit 2.
+  The other nine report `clash_found_by_this_engine` and write nothing, and the
+  seven not looked for at all (`cax-adc`, `prp-adp`, `eq-diff2`, `eq-diff3`,
+  `cls-maxqc1`, `cls-maxqc2`, `dt-not-type`) are listed in the response with the
+  reason, so a clean run is never read as a consistency result.
+- **The two verdicts are kept apart by a test.** `clash_found_by_this_engine` is
+  the engine's word and `unsatisfiable_under_disjointness` is what `oo-refute`
+  prints for an ACCEPTED refutation.
+  `tests/lean_refutation_producer_test.rs::the_engine_never_states_the_checkers_verdict`
+  walks every string in the response and fails if the engine ever states the
+  checker's verdict or names its soundness theorem, on the pattern
+  `a_user_rule_never_earns_the_absolute_verdict` set for the Horn layer.
+  `a_consistent_ontology_is_not_refuted` is the test that matters most: no
+  refutation is produced for a consistent ontology and a hand-written one over
+  it is rejected.
+- **The limit is stated and computed, not papered over.** `cax-dw` needs an
+  INDIVIDUAL in two disjoint classes, so a TBox unsatisfiable with no individual
+  asserted is invisible to the rule-based route.
+  `the_tbox_only_case_is_invisible_here_and_the_tableau_sees_it` runs one
+  ontology through both paths: `owl-rl` finds nothing and `owl-dl` reports the
+  unsatisfiable class. No refutation is emitted from the tableau, and the
+  obstruction is written down: `oo-refute/1` can express one contradiction,
+  `cax-dw`, over triples the forward-chaining prefix can reach, and a clash
+  reached through `∃`/`∀` expansion or a cardinality bound has no form in it.
+  Widening that is a change to `lean/`.
+- **The trusted computing base of the certificate layer is written down and
+  property-tested.** `docs/trusted-computing-base.md` enumerates, as twenty-nine
+  checkable properties, everything `lean/` assumes about the Rust: that
+  `asserted.tsv` is the graph the engine reasoned over with nothing dropped and
+  nothing added, that every emitted step is a step the engine took, that the
+  interner round-trips, that the rule table the certificate is checked against
+  is the table that was evaluated, and that no term can carry the field or
+  record separator of a format that has no escaping layer of its own.
+  `tests/certificate_boundary_proptest.rs` property-tests them with generators
+  built to forge a derivation step: literals holding tabs, newlines, carriage
+  returns, quotes and backslashes, a literal spelled exactly like an IRI, a
+  literal spelled exactly like a whole extra TSV line, combining characters
+  against their precomposed form, percent-encoded separators inside IRIs, the
+  empty graph. `proptest` is a DEV-dependency; the shipped binary's dependency
+  surface is unchanged. Three Kani harnesses in `src/reason.rs` (`make verify`)
+  prove the serialisation properties over every byte pattern at a fixed term
+  length rather than over a sample; the bound is stated on each harness, along
+  with the two formulations that made CBMC measure the wrong function. A fourth,
+  over `parse_pat`, does NOT terminate (no verdict at 14 minutes and 9.5GB,
+  because `anyhow`'s error formatting is flattened whether or not the refusal
+  paths are reachable); it is excluded from `make verify`, carries its
+  measurements, and the property is sampled instead. The first property-test run
+  found the `rdfs7` defect below, and measuring its reach found the `cls-avf`
+  one.
+- **The SAT/SMT family, and the asymmetry that makes it worth building.** A
+  refutation cannot be replayed in core Lean, so decision 0005 rules a prover's
+  verdict an oracle opinion for ever. A MODEL is the opposite: a finite object,
+  decidable to check, and `lean/Fol/` holds a verified evaluator for it. So the
+  SATISFIABILITY direction is CERTIFIED while the refutation direction stays an
+  oracle, and the two never share a word.
+
+  `fol --format smtlib|ladr` are a third and fourth printer over the same
+  `FolProblem` the TPTP and CLIF printers walk, never a second translation;
+  every run also writes `problem.tsv`, the format `oo-folmodel` reads, with a
+  digest the Lean recomputes. `fol-model` (also `onto_fol_model` and batch
+  `fol-model`) drives the whole loop: export, run Z3 or Mace4, read the
+  structure back, hand it to the verified checker, and report five fields that
+  are never collapsed — `solver_verdict`, `encoding`, `checker_exit`, `verdict`
+  and `owl_reading`. Only `model_checked` rests on a theorem
+  (`Fol.satisfiable_of_check`), and it requires `checker_exit: 0`. An exhausted
+  BOUNDED search is `no_model_up_to_size_k` and is not unsatisfiability:
+  `∀x∃y (r(x,y) ∧ x≠y)` is unsat at carrier 1 and sat at carrier 2.
+  `unsatisfiable_oracle` may come only from a run with no cardinality
+  constraint. With a goal, a checked countermodel carries
+  `not_entailed_under_unproved_translation` — `Fol.not_entails_of_check`, the
+  sentence no prover can produce, weakened by the two things this layer does
+  not prove.
+
+  A solver answering `sat` whose model the checker REJECTS is a STOP_THE_LINE
+  disagreement with its own block, counted in the summary and exiting non-zero,
+  the way `tools/shacl_differential.py` treats a FALSE_CLEAN. It is never
+  `rejected` as though the ontology were at fault and never `model_checked`.
+
+  Mace4 is here because the dead toolchain has a live half: Prover9's
+  refutations are uncheckable, and Mace4 is a finite model finder whose output
+  is exactly what this layer certifies. Its symbols are MANGLED, because LADR
+  reads a name beginning with `u`, `v`, `w`, `x`, `y` or `z` as a VARIABLE —
+  measured on LADR 2009-11A, `p0(w0). -p0(k0).` is echoed as `p0(x).` and the
+  run reports `exit (exhausted)` with no error at all.
+
+### Fixed
+- **An assertion on a punned entity was dropped from the first-order export
+  SILENTLY, and the report said the axiom set was not weakened.** OWL 2 DL lets
+  one IRI be a class and an individual at once; `OwlLean/Syntax.lean` does not,
+  so the assertion is correctly outside the fragment — but
+  `count_out_of_fragment` knew six named OWL constructs and nothing about
+  punning, so `exports_a_weaker_axiom_set` was `false` over an export that was
+  weaker than the graph. Found by the new model-certificate pipeline, which
+  returned machine-checked countermodels for five of the nine triples the
+  OWL-RL reasoner derives on
+  `case-studies/blast-furnace-ironmaking/blast-furnace-ontology.ttl`, where
+  `bf:Hanging` is an `owl:Class` that also carries `bf:hasSeverity
+  bf:HighSeverity`. Now counted as `assertion on a punned entity` with its
+  reason; the reading itself is unchanged.
+- **A stop-the-line disagreement did not fail a `batch` run.** `src/batch.rs`
+  decided the exit code from the presence of an `"error"` key, and a
+  stop-the-line is not an error: the command ran and answered. Batch is the
+  mode every tool in `tools/` uses, so in the one place the gate has to bite it
+  did not. It now also reads the `stop_the_line` count, keyed on the field
+  rather than on the command name.
+
+### Added
+- **Entailment preservation under graph projection, because coverage is the
+  wrong measure and looks like assurance.** `src/projection_entailment.rs`
+  (CLI `preserve`, MCP `graph_projection_entailment_check`) takes the claims an
+  answer rests on and reports, for each one, whether the retrieved slice entails
+  it exactly when the source does, with a sub-certificate the Lean checker
+  accepts for every claim it preserves. `src/closure_diff.rs` (CLI
+  `closure-diff`, MCP `onto_closure_diff`) is the goal-free form, for auditing a
+  retrieval strategy rather than one answer, and reuses the same certificate
+  index, checker runner, subset precondition, skolemiser and differential, so
+  there is one place in the crate where each verdict word is produced. No new
+  Lean was written: `OOCert.certificate_sound` covers the sub-certificates
+  unchanged, and `OOCert.horn_certificate_sound` covers a run over a supplied
+  Horn table, which earns
+  `preserved_under_supplied_rules_checked` and never the plain word.
+  Four outcomes are kept apart, because a lossy retriever and a hallucinating
+  generator have opposite fixes: `preserved_*`, `lost_under_profile_unchecked`,
+  `ungrounded_in_source` (NEITHER graph derives the claim) and
+  `projection_only`. Measured on `benchmark/reference/pizza-reference.owl`, a
+  file this repository ships: the whole ontology minus one `rdfs:subClassOf`
+  triple scores `aggregate_coverage_ratio: 1.0` with `ok: true` while the
+  conclusion the answer rests on is gone, and a three-triple slice scores
+  0.00128 and preserves every claim with a checked certificate. Both are tests.
+  See [decision 0007](docs/decisions/0007-a-slice-preserves-a-conclusion-or-it-does-not.md)
+  and [docs/projection-entailment.md](docs/projection-entailment.md).
+- **A monotonicity differential that runs on every call and is a defect
+  detector for the engine, not for the retrieval.** OWL RL is monotone and a
+  projection is a subset, so anything the projection entails and the source does
+  not is a soundness bug in this engine. It is reported at `STOP_THE_LINE` with
+  exit 2, and it is DISARMED, loudly and with its own reason, whenever its
+  antecedent fails: the projection is not a subset (computed every run, never
+  inferred from provenance), blank nodes could not be matched, or either run
+  stopped at the iteration cap instead of a fixpoint. A green
+  `violations: []` under a disarmed gate means "we did not look", so the two can
+  never render the same. Run for real over the shipped corpus
+  (`tests/projection_monotonicity_corpus_test.rs`): 275 ontologies swept, the
+  gate ARMED on all 275, every source certificate accepted by `oo-cert`, and
+  **no violations found**.
+- `tests/gate_demonstration_test.rs`, which feeds every gate in this work the
+  input built to trip it, PRINTS what the tool said, and asserts the same
+  thing. A gate that cannot fail is decoration, and a gate whose failure nobody
+  has read is close to it. Run it with `--nocapture`; a CI leg does.
+- `Reasoner::run_full` reports `fixpoint_reached`, matching `run_horn`. A run
+  that stopped at `reasoner_max_iterations` has a closure that is a LOWER BOUND,
+  and until now a truncated closure was indistinguishable from a complete one,
+  which is what would have made a correct engine look unsound to any consumer
+  comparing two closures.
+- `GraphStore::graph_store`, `graph_triples`, `named_graph_iris`,
+  `materialised_inference_count`, `all_quads`, `parse_triples_ordered` and
+  `canonicalise_triples`. The first copies a named graph into a fresh store's
+  default graph BY MODEL TERM, which is the only route by which a slice can be a
+  subset of its source in the strong sense, blank nodes included.
+
+### Fixed
+- **`onto_segment_retrieve` emitted slices that do not parse, which broke the
+  pairing it advertises.** Every term was wrapped in angle brackets
+  unconditionally, so a blank-node `owl:Restriction` superclass came out as
+  `<_:b0>`, which is not a legal IRI. Since issue #93 `load_turtle` collects all
+  or nothing, so one restriction superclass made the ENTIRE slice unreadable and
+  `graph_projection_lossy_check` then reported `projection_parses: false` with
+  `aggregate_coverage_ratio: 0.0` and no diagnosis. Measured on
+  `benchmark/ontoaxiom/data/ontoaxiom/ontologies/pizza.ttl` and
+  `benchmark/reference/pizza-reference.owl`, which is to say on essentially
+  every OWL ontology here. Blank nodes are now written bare, and the
+  angle-bracket trim no longer eats the closing bracket of a typed literal's
+  datatype IRI.
+- **`check_projection_loss` reported `ok: true` on a projection holding MORE
+  than the source.** `coverage_ratio` clamps with `.min()`, so a seed whose
+  slice carries triples the source does not read exactly 1.0 with empty dropped
+  lists: a hallucinating retriever, or a slice of a different graph, scored a
+  clean bill of health on the one input that should stop a pipeline. The clamp
+  stays, because an unclamped "ratio" above 1.0 is not a ratio; the surplus is
+  now named in `seeds_with_surplus` and `ok` requires it to be empty.
+- `docs/lean-certificates.md` said the certified corpus was 122 files. Counted
+  on 14 September 2026 under the test's own filter it is 290 tracked RDF files,
+  21,256,445 bytes.
+- The advertised tool count was stale before this change and is now measured.
+  `src/server.rs` carried 110 distinct `#[tool(name = ...)]` macros while the
+  README, the docs and the server's own instructions said 109: `onto_fol_export`
+  landed without the count moving. With the two added here it is 112, counted
+  from the source rather than incremented. The narrative comment in
+  `src/graph.rs` about the removed store mutex no longer names a number, since
+  what it is about is the lock and not the tool count.
+
+### Changed
+- **`coverage_ratio` is demoted, not deleted.** `ProjectionLossReport` gains
+  `is_a_warrant: false` and a `warning` field carrying the sentence in the
+  payload rather than only in the docs, so a renderer that walks the data still
+  emits it, and the `graph_projection_lossy_check` tool description now carries
+  it too, because a tool description is the text an agent reads when choosing
+  and that is where the trap was living unlabelled. The number is neither
+  necessary nor sufficient for entailment preservation and it moves the wrong
+  way, rising as the projection grows, so a retriever tuned on it learns to
+  fetch more rather than the right thing.
+
+- **First-order export, over the translation a machine-checked adequacy theorem
+  is about.** `fol --out DIR --format tptp|clif` (also `onto_fol_export` and
+  batch `fol`) writes the loaded ontology as TPTP FOF or as ISO/IEC 24707
+  Common Logic, and with `--goals FILE` one problem per conjecture, so an
+  ontology can be handed to E, Vampire or any other first-order prover. The
+  translation in `src/tptp.rs` transcribes `OwlLean/Translation.lean` from the
+  sibling `owl-lean` project, whose `OwlLean.adequacy` is machine-checked with
+  no `sorry`, no Mathlib and axioms `propext`, `Classical.choice`,
+  `Quot.sound`. Everyone else's OWL-to-FOL exporter is validated empirically
+  (FOWL, over 168 ChEBI modules) or proved on paper (Hets); LATIN's
+  `OWL2toFOL.elf` has its cardinality constructors and `objectPropertyChain`
+  commented out, and those are used by 37.2% and 45.9% of constrained real
+  ontologies. The background axioms and the individual typing axioms the
+  theorem requires are emitted, the freshness side condition is enforced at
+  every call site rather than assumed, and both have machine-checked
+  countermodels in `OwlLean/Refutations.lean` showing what goes wrong without
+  them. **The correspondence between the Rust and the Lean is pinned by
+  `tests/fol_translation_correspondence_test.rs` and is NOT itself proved**,
+  which is stated in the module docs, in the JSON report and in the header of
+  every emitted file. Constructs outside the fragment are named in the output
+  with counts and reasons through `exports_a_weaker_axiom_set` and
+  `constructs_not_exported`, the shape the description-logic layer already uses
+  for `certifies_a_weaker_axiom_set`. CLIF is a second serialiser over the one
+  translation, never a second translation, and is restricted to the
+  first-order-equivalent fragment of Common Logic: no sequence markers, fixed
+  arity, no quantification into a predicate position. See
+  docs/first-order-export.md and decision 0005.
+- **The CLIF export is gated against leaving the exactly semantically
+  conformant subdialect.** ISO/IEC 24707 first edition A.4.2 says the
+  subdialect using neither numerals nor quoted strings is exactly semantically
+  conformant, so staying inside it makes CLIF entailment and Common Logic
+  entailment coincide and the adequacy theorem needs no qualification at the
+  CLIF end. `clif_stays_in_the_exactly_conformant_subdialect` walks every
+  emitted sentence and fails on a bare decimal or a single-quoted string. The
+  scope is stated exactly: no numerals and no quoted strings IN SENTENCE
+  POSITIONS, with comment annotations the named exception.
+- **`tools/fol_differential.py`, an ATP as a differential oracle and never as
+  an authority.** It reasons with a certificate, exports one problem per
+  claimed entailment from a separate unreasoned store, and asks E or Vampire.
+  A conclusion the engine derives and the prover refutes is
+  `CLAIMED_NOT_ENTAILED` and exits 1; a prover that gives up is
+  `UNDETERMINED` and is never read as agreement. **An ATP verdict is an oracle
+  opinion, exactly like pyshacl's in `tools/shacl_differential.py`**: a
+  superposition refutation cannot be checked without a verified first-order
+  calculus with unification, which does not exist in core Lean, so a
+  disagreement is a bug in one of the two and the tool says so rather than
+  adjudicating. With no prover installed it skips loudly with the install line,
+  and `FOL_DIFF_REQUIRE_ATP=1` turns that skip into a failure. Run against E
+  3.2.5 over FOAF it reported 58 disagreements on first use, all of them
+  defects in the new export layer, listed under Fixed below.
+- **SWRL and RIF Core front ends, so the logic-programming family is covered in
+  fact and not only in architecture.** `lean/OOCert/Horn.lean` proves one
+  soundness theorem good for every rule table at once and decision 0003 names
+  RIF Core, Datalog and SWRL as the reason, but nothing in the repository could
+  produce a rule table from a standard rule syntax: the only format anything
+  read was `rules.tsv`, an internal encoding, and grep found no mention of SWRL
+  or RIF outside that decision record. `rules-import --from swrl|rif`
+  (`onto_rules_import` over MCP, `rules-import` in batch) closes that. SWRL is
+  read out of a loaded RDF graph through the `swrl:Imp` encoding, reusing the
+  one `rdf:first`/`rdf:rest` reader `src/tableaux.rs` already had for
+  `owl:intersectionOf`; RIF Core is read out of its normative XML syntax.
+  Datalog is deliberately not offered as a front end, because it has no single
+  standard concrete syntax and a Datalog program over triples IS a `rules.tsv`
+  table.
+
+  **Only a fragment of each language is a Horn table over triple patterns, and
+  the exact fragment is in docs/rule-syntax-front-ends.md and in every
+  response.** SWRL built-in atoms, `swrl:SameIndividualAtom`,
+  `swrl:DifferentIndividualsAtom`, `swrl:DataRangeAtom`, anonymous class
+  expressions and an empty head are refused; RIF `Equal`, `External`, `Expr`,
+  `rif:local` constants, `List` terms, `Or`/`Neg`/`Naf`, an existential
+  conclusion, an `Atom` of arity 0 or 3+, `rif:Import` and the presentation
+  syntax are refused. Every refusal is NAMED AND COUNTED, and by default one
+  refusal fails the whole import with no table written: a rule set that quietly
+  lost half its rules still reaches a fixpoint and its certificate still checks
+  green, which is a sound proof about a rule set nobody wrote.
+  `--allow-partial` imports the rest and flags the result
+  `certifies_a_weaker_rule_set`, the name the DL model-certificate block
+  already uses for the same idea.
+
+  Every rule a front end emits is named `swrl/…` or `rif/…` and no built-in
+  rule is, so an imported table can never render identically to the built-in
+  one and can never earn the absolute verdict. It always lands on
+  `entailed_under_supplied_rules` under `OOCert.horn_certificate_sound`.
+  `tests/rule_syntax_frontend_test.rs` runs a real rules file in each syntax
+  through the engine into `lake exe oo-horn check` and asserts the verdict it
+  gets back; `no_front_end_can_name_a_rule_the_way_a_built_in_is_named` pins
+  the naming with no Lean present, and `a_partial_import_can_never_be_silent`
+  pins that no combination of arguments writes a table with a refusal recorded
+  and the weaker-rule-set flag false.
+
 - **Derivation certificates, checked by a proved-sound Lean checker.**
   `reason --certificate DIR` (also `onto_reason`'s `certificate_dir` and batch
   `reason --certificate`) writes `asserted.tsv` and `derivations.tsv`: every
@@ -20,6 +328,229 @@ All notable changes to Open Ontologies are documented here.
   trace. See docs/lean-certificates.md and decision 0002.
 
 ### Fixed
+- **An ASSERTED role edge skipped its `rdfs:domain` and `rdfs:range`, so an
+  inconsistent ABox was reported consistent.** Domain and range are deliberately
+  not GCIs: as `∃p.⊤ ⊑ D` and `⊤ ⊑ ∀p.R` they put a disjunction on every node,
+  and hqdm.owl alone carries 525 of them, so they are held as role metadata and
+  applied when an edge is created. Two places create an edge and only one
+  consulted that metadata. `Tableau::create_successor` applied it; the ABox
+  builder wrote asserted role assertions, and the inverse back-edges it
+  materialises for them, straight into the edge map. Every other role-sensitive
+  rule reads edges through `successors()` and so was unaffected, which is why
+  exactly these two constraints were weaker on an asserted edge than on a
+  generated one. The consequence was a false clean: an ontology whose only
+  contradiction is that an asserted edge forces its subject into a class
+  disjoint from one it already carries came back `consistent: true` with
+  `undecided: false`, the strongest answer the checker can give. Both paths now
+  go through one `Tableau::add_role_edge` primitive. It also applies the
+  constraints stated on the role's INVERSE, which NEITHER path applied before:
+  `a r b` entails `b r⁻ a`, so `r⁻`'s domain binds `b` and its range binds `a`,
+  and a symmetric role is its own inverse and rides the same clause. Found by
+  the model-certificate layer, which had been refusing to certify these
+  completion graphs because they are not models of the range axiom;
+  `tests/dl_model_certificate_test.rs` pinned the defect and now pins the
+  repair.
+- **GCIs did not reach an individual named only as the object of a role
+  assertion.** The ABox builder gives the GCIs to every typed individual and
+  `create_successor` gives them to every generated successor, but an IRI that
+  appears only as an edge's object got a bare node carrying nothing but its own
+  nominal. A GCI holds of every element of the domain, so that node was a hole
+  the check could not see into, and an ABox whose only contradiction landed
+  there was reported consistent. Same shape as the domain/range split, found in
+  the sweep for it.
+- **A rule concluding a triple with a non-IRI PREDICATE left the store half
+  materialised, with no certificate, and reported failure.** `rdfs7` reads
+  `s sub o` and `sub rdfs:subPropertyOf super` and concludes `s super o`, and
+  nothing required `super` to be an IRI. `:p rdfs:subPropertyOf [ owl:inverseOf
+  :q ]` is enough, and that is exactly what the OWL 2 mapping to RDF produces
+  for `SubObjectPropertyOf(:p ObjectInverseOf(:q))`, so an ordinary OWL
+  ontology made `reason` fail with `Parser error: The predicate of a triple must
+  be an IRI`. The failure was not clean: `GraphStore::load_ntriples` streams,
+  inserting each quad as it parses it, so the batch failed PARTWAY. Measured on
+  one fixture over three consecutive runs of identical input, 40, 9 and 24 of
+  40 good inferences stayed in the store, the number being hash iteration order,
+  and `run_full` then returned the error and never wrote the certificate. The
+  store was left holding uncertified inferences while the caller was told the
+  run had failed. In `--dry-run` the materialiser never ran, so the certificate
+  WAS written, containing a conclusion no RDF serialiser can express; the Lean
+  checker holds terms as opaque strings and accepts it. Reachable from `rdfs7`,
+  `prp-inv1`, `prp-inv2` and `cls-hv1`, each of which takes its conclusion's
+  predicate from an object position where RDF permits a blank node or a literal.
+  Found by the new property tests at case 115, shrunk to two triples.
+- **`cls-avf` could still conclude a triple with a LITERAL subject.** The same
+  defect one position over, found while measuring the reach of the one above.
+  `cls-avf` derives `y rdf:type c` from `x rdf:type ∀P.c` and `x P y`, so an
+  `owl:allValuesFrom` restriction on a property with a literal value derived
+  `"x" rdf:type :D` and broke the materialiser the same way. The subject case
+  was found on 30 August 2026 and guarded at `prp-symp`, `prp-inv1`, `prp-inv2`
+  and `eq-sym`; `cls-avf` was not among them, and this one needs no unusual
+  modelling at all. Both positions are now decided in ONE place,
+  `writable_triple`, shared with `run_horn`, which was the only path that
+  already refused either: a refused conclusion is not materialised, not
+  certified and not available as a premise, and the run reports
+  `skipped_unserialisable` with examples. `tests/reason_unwritable_predicate_test.rs`
+  pins every reachable rule, and pins that `prp-symp` and `prp-trp` are NOT
+  reachable, because their property must already be the predicate of a stored
+  triple and is therefore an IRI.
+- **`owl:FunctionalProperty` and `owl:InverseFunctionalProperty` were
+  completely inert, and the module documentation claimed both.** Functionality
+  is encoded as the GCI `≤1 R.⊤` and inverse-functionality as `≤1 R⁻.⊤`. Two
+  things then cancelled each other out: `add_label` returns early for
+  `Concept::Top` and never stores it, and the ≤-rule counted matching
+  successors with `labels.contains(&filler)`, which with `filler == ⊤` is false
+  on every node that will ever exist. So the bound counted zero successors, could
+  not be violated, and no merge ever fired. A functional property with two
+  distinct fillers in disjoint classes came back `consistent: true` with
+  `undecided: false`. The ≥- and ∃-rules used the same test and so also counted
+  zero, manufacturing successors they already had. All three now go through one
+  `node_satisfies`, which is where `⊤` is handled; `has_clash` had special-cased
+  `⊤` for cardinality LABELS on one node all along, and only the
+  successor-counting sites were missed. The ≤-rule also no longer marks a bound
+  processed before it branches, which limited it to ONE merge per node: with
+  three fillers under `≤1` a single merge leaves two and the branch was returned
+  as a model of a constraint it visibly breaks. Termination is argued at the
+  change and rests on the recursion depth, which increases by one on every merge
+  and is hard-capped. Measured over a 20-ontology corpus this repair costs
+  nothing: times within noise, node counts flat or lower (the ∃/≥ half stops
+  building redundant successors), and not one verdict moved.
+- **The role hierarchy was not closed under inverses, so a constraint on the
+  inverse of a super-role never reached a sub-role's edge.** `r ⊑ s` entails
+  `r⁻ ⊑ s⁻` — if `(x,y) ∈ r` then `(x,y) ∈ s`, so `(y,x) ∈ r⁻` implies
+  `(y,x) ∈ s⁻` — and that was simply never computed. Each role's `rdfs:domain`
+  and `rdfs:range` are folded over its transitive super-roles once and consulted
+  per edge, so a domain stated on `s` already reached an `r` edge; a domain
+  stated on `s⁻` did not, because `r⁻` was not known to be below `s⁻`. The
+  closure is one pass, not a fixpoint: `inverse_roles` is an involution, so
+  re-applying the rule to a pair it adds yields the pair it came from.
+  Transitivity is still left to the existing downstream closure, which now runs
+  over the enlarged relation. Because it is applied at parse time, the model
+  certificate's `SubRole` axioms describe the same hierarchy the reasoner used.
+- **An IRI that is never typed contributed no role assertions at all, which is
+  a false clean now that asserted edges carry their domain and range.**
+  Individuals were discovered by walking subjects that have an `rdf:type` and
+  keeping the ones whose type is recognisable as a class, so a subject that is
+  never typed — or is typed only by a vocabulary this reasoner does not treat as
+  a class, a `skos:Concept` say — contributed neither its edges nor itself. An
+  individual with two role assertions whose domains are disjoint classes is
+  inconsistent on those two triples alone and the check never saw them. The
+  object side of the same hole was already closed; this is the subject side, and
+  the filter is narrow: IRIs only, never something already declared a class or a
+  property, and only when the subject actually asserts a declared object
+  property. `build_abox_tableau` now builds a node for BOTH endpoints of a role
+  assertion, and "this ontology has no ABox" now means no role assertions
+  either, in `check_abox` and in `certify_abox_consistent` alike, because those
+  two guards must agree or the certificate layer declines to certify an ABox the
+  reasoner decided.
+- **`individuals_checked` undercounted by exactly the individuals the reasoner
+  knew least about.** It was taken before the nodes for role-assertion endpoints
+  were added. A node that carries labels, carries the GCIs and can clash has
+  been checked whatever its `rdf:type` says, and reporting `0` also suppressed
+  the entire `abox` block from the output. It is now one per node in the ABox
+  tableau.
+- **Every phase of a reasoning run shared one wall-clock deadline fixed when
+  the reasoner was built.** The satisfiability sweep, the subsumption sweep and
+  the ABox check all read one `Instant` computed in `DlReasoner::from_graph`, so
+  whichever ran first spent the clock and the ABox check — which runs last, and
+  is the one a user reads about their own data — reported `undecided` on an ABox
+  it decides in microseconds. Honest rather than false, which is why it
+  survived, but a loaded machine silently degraded an answer that was there. The
+  reasoner now holds the budget as a DURATION and each phase opens its own. The
+  number is unchanged and no cap was raised. A run that does not finish now also
+  says WHICH phase ran out, in `budget_exhausted_in`, because the three draw on
+  different settings and "incomplete" alone tells a reader nothing they can act
+  on. Cost, measured: on the five corpus ontologies that exhaust the budget the
+  wall clock goes from ~10s to 30-40s, since four tableau phases now each get the
+  configured per-test budget instead of four sharing one already-expired instant.
+  No verdict changed on any of the twenty.
+
+### Known defects
+- **`classify_timeout_ms` has never bounded a real run.** It defaults to 180s,
+  but until the phase-budget fix above, the single shared per-test deadline
+  expired 10s into the run and made every later tableau bail on entry, so the
+  180s budget never governed anything. It still does not: phase budgets are
+  scoped per phase, which keeps the cost of the fix at 3-4x rather than the 18x
+  measured when each tableau was given its own. The setting is therefore still
+  not the bound it claims to be, and reconciling the two budgets is open.
+- **`owl:AsymmetricProperty` is not modelled.** It is now DECLARED, in
+  `unmodelled_constructs`, alongside `owl:ReflexiveProperty` and
+  `owl:IrreflexiveProperty`. Asymmetry constrains a PAIR of edges rather than a
+  node's concept membership, so SHIQ without nominals has no label that states
+  it; modelling it needs an edge-level clash rule and its own termination
+  argument. Before this it was in neither place — not implemented, and not
+  declared — so an ontology using it got a clean verdict with no sign that a
+  constraint had been dropped.
+- **The CLIF export produced files that parse cleanly and yield NOTHING.**
+  Every sentence was emitted as `(cl:comment '...' SENTENCE)`, the shape
+  ISO/IEC 21838-2's BFO files use. Measured against both CLIF parsers that
+  exist, that form is discarded: py-typedlogic returns an empty theory and
+  Macleod has no production for it, and both do the same to BFO's own files. A
+  file that is formally valid and practically empty is the assurance-laundering
+  shape this project exists to attack, and it was in this project's own output.
+  The default is now a standalone `(cl:comment '...')` phrase followed by a
+  bare sentence, which py-typedlogic reads back at exactly the count the
+  exporter reports (7, 161, 251, 107 and 705 sentences over five ontologies);
+  `--clif-comments wrapped` keeps the old shape and the docs say what it costs.
+- **CLIF comment strings were double-quoted, and quote style was bound to
+  operator spelling so no flag combination could emit conforming CLIF.**
+  ISO/IEC 24707 A.2.2.2 makes the single quote the string delimiter. The choice
+  had been justified by matching the CLIF files ISO hosts for ISO/IEC 21838-2,
+  and that corpus has been withdrawn by its own maintainers: BFO's release
+  notes of 7 December 2025 say "Comment texts are surrounded by single, not
+  double quotes". The ISO-hosted files carry 369 double-quoted `cl:comment`
+  forms; BFO master carries 356 single-quoted and none double-quoted. Comment
+  strings are now single-quoted in both dialects and the two settings are
+  independent.
+- **The CLIF text was unnamed.** All 227 COLORE texts are named, Macleod
+  refuses an unnamed one with "Error in ontology: bad URI", and py-typedlogic
+  otherwise reports the first comment as the theory's name. The text now
+  carries the ontology's own `owl:Ontology` IRI where it declares one, written
+  bare because Macleod's lexer has no double-quote token.
+- **Two false claims in the first-order export docs.** They said a CLIF file in
+  one dialect's spelling does not parse in the other's tools; py-typedlogic
+  maps both spellings to identical results with identical sentence counts. They
+  also implied Macleod reads the `colore` output; it reads neither, because it
+  cannot lex an IRI in a symbol position at all. Both are corrected and the
+  measurements are in docs/first-order-export.md.
+- **A property characteristic overrode an explicit `owl:DatatypeProperty`
+  declaration in the first-order export.** FOAF declares `foaf:msnChatID` as
+  both `owl:DatatypeProperty` and `owl:InverseFunctionalProperty`, which OWL 2
+  DL forbids and RDF-serialised vocabularies assert anyway. The characteristic
+  won, so the property was exported as an object property throughout and every
+  axiom about it used the wrong symbol. `OwlP2` is a disjoint sum, so `op:p`
+  and `dp:p` are unrelated predicates and the difference is not cosmetic. The
+  declaration now wins and a characteristic on a data property is dropped and
+  named. Found by `tools/fol_differential.py` on its first real run.
+- **The goal builder did not map `owl:Thing` and `owl:Nothing`, and did not
+  consult the entity-kind classification.** A derived triple
+  `X rdfs:subClassOf owl:Thing` became a subsumption under an atomic class
+  symbol occurring in no axiom rather than under the translation's `top`, and a
+  goal about a data property asked about `op:p` while the axioms spoke about
+  `dp:p`. Fifty-two of FOAF's 181 claimed entailments came back as
+  disagreements that were entirely this; the remaining six were the
+  declaration-versus-characteristic defect above. Also found by the
+  differential.
+- **The differential exported from the store the reasoner had just materialised
+  into**, so every conjecture was entailed by the theory already stating it and
+  the run could not fail. A deliberately broken exporter still scored clean
+  under it. The reasoner and the exporter now run against separate stores, the
+  export loads the certificate's own `asserted.tsv` so the two see the same
+  graph down to the blank node labels, and a triple-count mismatch aborts the
+  run rather than reporting a differential that cannot fail.
+- **The refutation layer counted the OWL 2 RL rules that conclude `false` as
+  sixteen, and there are seventeen.** The missing one is `dt-not-type`, from
+  Table 8 of OWL 2 Profiles, and the undercount reached a consumer: `oo-refute
+  check` told a caller whose refutation was rejected that "fifteen other OWL 2
+  RL clash rules have no condition in this checker", one fewer than the truth.
+  `lean/OOCert/Refute.lean` now carries the full list with the W3C table each
+  rule comes from, so the number can be re-counted rather than trusted, and it
+  states the split the number hides: of the sixteen this checker does not
+  implement, fifteen are expressible here and simply absent, while
+  `dt-not-type` cannot be stated at all, because `OOCert.Semantics` has no
+  datatype value space and says so. That is the same ground on which
+  `src/reason.rs` keeps the whole `dt-*` family out of the engine, and the
+  reason is now written where the count is instead of being inferable from
+  another file. Prose and one report string only; no theorem changed, and the
+  checker still implements exactly `cax-dw`.
 - **`sh:sparql` ignored `sh:prefixes` and merged every `sh:declare` in the
   shapes graph into one prologue.** A prefix bound to two namespaces emitted
   two `PREFIX` lines, SPARQL took the last, and which one won was decided by

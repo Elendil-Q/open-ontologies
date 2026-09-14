@@ -251,6 +251,28 @@ pub struct OntoVocabCheckInput {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct OntoRulesImportInput {
+    /// Source rule syntax: `swrl` for SWRL rules encoded in RDF, `rif` (or
+    /// `rif-core`) for RIF Core in its normative XML syntax. The presentation
+    /// syntax is not read.
+    pub from: String,
+    /// Document to read. Required for `rif`. Optional for `swrl`: without it
+    /// the LOADED graph is read; with it the file is parsed into a store of its
+    /// own, so importing rules never changes what is loaded.
+    pub file: Option<String>,
+    /// Where to write the `rules.tsv`. Without it nothing is written and the
+    /// table is returned under `rules_tsv`.
+    pub out: Option<String>,
+    /// Import the rules that CAN be represented even though others cannot.
+    /// Default false, and deliberately: a table that quietly lost a rule still
+    /// reaches a fixpoint and still produces a certificate that checks green,
+    /// which is a sound proof about a rule set nobody wrote. Set true and the
+    /// import succeeds, `certifies_a_weaker_rule_set` is true, and every rule
+    /// that went is named with the construct that stopped it.
+    pub allow_partial: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct OntoReasonInput {
     /// Reasoning profile: rdfs (default), owl-rl
     pub profile: Option<String>,
@@ -282,6 +304,75 @@ pub struct OntoReasonInput {
     /// pronounces on that, and it distinguishes the built-in table from any
     /// other. See docs/decisions/0003.
     pub rules_file: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct OntoFolExportInput {
+    /// Directory to write the export to. `ontology.p` (TPTP) or
+    /// `ontology.clif` lands here, plus one problem per goal under `goals/`.
+    pub out_dir: String,
+    /// `tptp` (FOF, what E and Vampire read) or `clif` (ISO/IEC 24707 Common
+    /// Logic Interchange Format, restricted to the first-order-equivalent
+    /// fragment). Default `tptp`. Both are renderings of ONE translation.
+    pub format: Option<String>,
+    /// A TSV of triples to ask as conjectures, one problem file per line. The
+    /// `derivations.tsv` written by `onto_reason` with `certificate_dir` is
+    /// the intended input; set `goals_skip_columns` to 1 for it, because its
+    /// first column is the rule name.
+    pub goals_file: Option<String>,
+    /// Number of leading tab-separated columns to skip on each goals line
+    /// before the subject. Default 0.
+    pub goals_skip_columns: Option<usize>,
+    /// Which CLIF spelling to emit, when `format` is `clif`. `iso` (default)
+    /// writes `cl:text` / `cl:comment`, ISO/IEC 24707's own reserved tokens
+    /// and what ISO publishes the BFO axiomatisation in with ISO/IEC 21838-2.
+    /// `colore` writes `cl-text` / `cl-comment`, which is what the COLORE
+    /// repository uses and what the Macleod toolchain's shipped lexer accepts;
+    /// Macleod cannot read the ISO spelling. Ignored for `tptp`.
+    pub clif_dialect: Option<String>,
+    /// Where a formula's label goes, when `format` is `clif`. `standalone`
+    /// (default) writes `(cl:comment '...')` as its own phrase and the
+    /// sentence bare; `wrapped` writes `(cl:comment '...' SENTENCE)`, the
+    /// shape ISO/IEC 21838-2's BFO files use. Wrapped is correct CLIF and,
+    /// measured, unreadable: py-typedlogic discards the form and returns an
+    /// EMPTY theory, and Macleod has no production for it, so both parsers
+    /// lose the entire content of such a file, BFO's own included. Ignored
+    /// for `tptp`.
+    pub clif_comments: Option<String>,
+    /// Carrier size, when `format` is `smtlib`. Omit for the UNBOUNDED
+    /// encoding (`declare-sort U 0`), where a solver's `unsat` really is
+    /// unsatisfiability and a `sat` carries no size bound. Set to `k` for the
+    /// FINITE encoding (`U` as an enumeration datatype of exactly k elements),
+    /// where a `sat` comes with a structure `oo-folmodel` can check and an
+    /// `unsat` establishes ONLY that no model of size k exists, which is not
+    /// unsatisfiability. Ignored for every other format; 0 is refused.
+    pub smt_domain: Option<u32>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct OntoFolModelInput {
+    /// Working directory. Every intermediate file lands here: the problem in
+    /// the checker's format, the problem in the solver's, the solver's raw
+    /// output, the model in the checker's format, and the checker's own JSON.
+    pub out_dir: String,
+    /// `z3` (default; SMT-LIB, and the only finder that can be asked the
+    /// UNBOUNDED question, hence the only route to `unsatisfiable_oracle`) or
+    /// `mace4` (LADR, a dedicated finite model finder whose minimum carrier
+    /// is 2, measured: `mace4 -n 1` is a fatal error).
+    pub solver: Option<String>,
+    /// Largest carrier the ladder tries. Default 16.
+    pub max_domain: Option<u32>,
+    /// Seconds per solver invocation. Default 30.
+    pub timeout_secs: Option<u32>,
+    /// After a bounded ladder finds nothing, ask the UNBOUNDED question too.
+    /// Default true, and Z3 only. This is the ONLY route to
+    /// `unsatisfiable_oracle`.
+    pub unbounded_probe: Option<bool>,
+    /// A TSV of triples to ask as conjectures, one run per line; the shape
+    /// `onto_reason` writes with `certificate_dir`.
+    pub goals_file: Option<String>,
+    /// Leading tab-separated columns to skip before the subject. Default 0.
+    pub goals_skip_columns: Option<usize>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -909,6 +1000,60 @@ pub struct GraphProjectionLossyCheckInput {
     pub source_iris: Vec<String>,
     /// The projected Turtle slice that's being passed to a downstream consumer.
     pub projected_ttl: String,
+}
+
+/// Input for `graph_projection_entailment_check`. The goal-directed form: the
+/// caller supplies the claims its answer rests on, because at query time it
+/// knows what it is about to assert.
+#[derive(Deserialize, JsonSchema)]
+pub struct GraphProjectionEntailmentCheckInput {
+    /// The slice as Turtle. Mutually exclusive with `projection_graph`.
+    #[serde(default)]
+    pub projected_ttl: Option<String>,
+    /// A named graph of the loaded store holding the slice. Preferred: blank
+    /// node identity survives, so subsethood is verified over every triple
+    /// rather than approximated over the ground ones.
+    #[serde(default)]
+    pub projection_graph: Option<String>,
+    /// Turtle in which every triple is a claim the answer rests on. Blank nodes
+    /// and non-triple claims are refused BY NAME, never silently dropped.
+    pub goals_ttl: String,
+    /// One profile for both runs. Default `owl-rl`.
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// Seeds for the demoted coverage proxy. Never derived from `goals_ttl`.
+    #[serde(default)]
+    pub seed_iris: Vec<String>,
+    /// Where the two certificates and the per-goal slices land. Defaults to a
+    /// temporary directory.
+    #[serde(default)]
+    pub certificate_dir: Option<String>,
+    /// Turn an absent Lean checker into an error instead of an honest unchecked
+    /// verdict.
+    #[serde(default)]
+    pub require_checker: Option<bool>,
+}
+
+/// Input for `onto_closure_diff` — entailment preservation under projection,
+/// with no goals supplied.
+#[derive(Deserialize, JsonSchema)]
+pub struct OntoClosureDiffInput {
+    /// The projected slice, as Turtle.
+    pub projected_ttl: String,
+    /// Directory for both certificates and the report.
+    pub out_dir: String,
+    /// `rdfs`, `owl-rl` or `owl-rl-ext`. `owl-dl` is refused.
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// Default true. With it false, every triple touching a blank node is
+    /// reported as NOT COMPARED rather than guessed at.
+    #[serde(default)]
+    pub skolemise_source: Option<bool>,
+    #[serde(default)]
+    pub max_rows: Option<usize>,
+    /// Seeds for the demoted coverage proxy.
+    #[serde(default)]
+    pub seed_iris: Vec<String>,
 }
 
 // ─── Full BC+ semantics (#43 follow-on) ─────────────────────────────────────

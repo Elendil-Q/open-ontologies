@@ -1570,10 +1570,68 @@ impl OpenOntologiesServer {
         }
     }
 
-    #[tool(name = "graph_projection_lossy_check", description = "Audit a projected Turtle slice against the loaded ontology's full neighbourhood of the seed IRIs. Reports dropped predicates, dropped object IRIs, per-seed coverage ratio, and aggregate coverage. Pair with onto_segment_retrieve when the slice is being passed to a downstream LLM — knowing what was left behind lets the caller decide whether the slice is sufficient. Per IJCAI 2025 'How to Mitigate Information Loss in KGs for GraphRAG'.")]
+    #[tool(name = "graph_projection_lossy_check", description = "Audit a projected Turtle slice against the loaded ontology's full neighbourhood of the seed IRIs. Reports dropped predicates, dropped object IRIs, per-seed coverage ratio, and aggregate coverage. COVERAGE RATIO IS A PROXY AND IS NOT ASSURANCE: it is neither necessary nor sufficient for entailment preservation, a slice at 0.99 can have dropped the one triple an answer rests on, a slice at 0.60 can preserve every claim, and it RISES as the projection grows, so a retriever tuned on it learns to fetch more rather than the right thing. Measured on this repository's own pizza-reference.owl, the whole ontology minus one subClassOf triple scores 1.0 with ok:true while a conclusion the source derives is gone. For the property itself use graph_projection_entailment_check (goal-directed, machine-checked certificate per preserved claim) or onto_closure_diff (goal-free, whole retrieval strategy). Per IJCAI 2025 'How to Mitigate Information Loss in KGs for GraphRAG'.")]
     async fn graph_projection_lossy_check(&self, Parameters(input): Parameters<GraphProjectionLossyCheckInput>) -> String {
         match crate::projection_check::check_projection_loss(&self.graph, &input.source_iris, &input.projected_ttl) {
             Ok(report) => serde_json::to_string(&report)
+                .unwrap_or_else(|e| Self::err_json(format!("serialization: {}", e))),
+            Err(e) => Self::err_json(e),
+        }
+    }
+
+    #[tool(name = "graph_projection_entailment_check", description = "Does a retrieved slice still support the claims an answer rests on? Supply the claims as Turtle (goals_ttl); for each one this reports whether the projection entails it exactly when the source does, under one pinned rule profile, with a machine-checked Lean certificate (OOCert.certificate_sound) for each claim the projection preserves. Four outcomes, never collapsed: preserved (checked / asserted / unchecked), lost_under_profile_unchecked (the retrieval finding), ungrounded_in_source (NEITHER graph derives it, so the generator invented it and a better retriever will not help), and projection_only (the projection is not a subset, or the engine is unsound). Every run also verifies monotonicity: nothing may be entailed by the projection and not by the source, and a violation is STOP_THE_LINE rather than a retrieval result. Blank-node and non-triple claims are refused by name and counted. Coverage ratio is included, demoted, and labelled as a proxy that is not a warrant.")]
+    async fn graph_projection_entailment_check(
+        &self,
+        Parameters(input): Parameters<GraphProjectionEntailmentCheckInput>,
+    ) -> String {
+        use crate::projection_entailment as pe;
+        if input.projected_ttl.is_some() == input.projection_graph.is_some() {
+            return Self::err_json(
+                "pass exactly one of projected_ttl and projection_graph. A named graph of the \
+                 loaded store keeps blank node identity, so P ⊆ G can be verified over every \
+                 triple rather than over the ground ones only",
+            );
+        }
+        let (goals, refused) = match pe::parse_goals_turtle(&input.goals_ttl) {
+            Ok(v) => v,
+            Err(e) => return Self::err_json(e),
+        };
+        let work = input.certificate_dir.map(std::path::PathBuf::from).unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("oo-preserve-{}", std::process::id()))
+        });
+        let opts = pe::Opts {
+            profile: input.profile.unwrap_or_else(|| "owl-rl".to_string()),
+            rules: None,
+            work_dir: work,
+            checker: None,
+            require_checker: input.require_checker.unwrap_or(false),
+            seed_iris: input.seed_iris,
+        };
+        let ttl = input.projected_ttl.unwrap_or_default();
+        let projection = match &input.projection_graph {
+            Some(g) => pe::Projection::NamedGraph(g),
+            None => pe::Projection::Turtle(&ttl),
+        };
+        match pe::check_entailment_preservation(&self.graph, projection, &goals, &refused, &opts) {
+            Ok(r) => serde_json::to_string(&r)
+                .unwrap_or_else(|e| Self::err_json(format!("serialization: {}", e))),
+            Err(e) => Self::err_json(e),
+        }
+    }
+
+    #[tool(name = "onto_closure_diff", description = "Which CONCLUSIONS a projection preserves, with no goals supplied. Reasons the source and the slice to a fixpoint under the same rule table and reports closure(source) minus closure(projection), partitioned by whether every term of the lost conclusion occurs in the projection: lost_in_projection_vocabulary is the headline, because a conclusion over terms the slice never mentions cannot ground an answer the slice supports. Each lost row names the rule and the blocking premises the retriever dropped. Three warrant words, never collapsed: checked (a Lean-accepted certificate, OOCert.certificate_sound), asserted_in_source (a lookup, nothing was proved), engine_opinion (no checker looked, or it said no). Also runs the monotonicity gate and reports when the gate did NOT run and why, so an empty violation list can never mean 'we did not look'. Skolemises the source by default so blank-node-bearing triples can be compared at all. The offline form; graph_projection_entailment_check is the per-answer one.")]
+    async fn onto_closure_diff(&self, Parameters(input): Parameters<OntoClosureDiffInput>) -> String {
+        use crate::closure_diff as cd;
+        let opts = cd::DiffOptions {
+            profile: input.profile.unwrap_or_else(|| "owl-rl-ext".to_string()),
+            out: std::path::PathBuf::from(&input.out_dir),
+            checker: None,
+            skolemise_source: input.skolemise_source.unwrap_or(true),
+            max_rows: input.max_rows.unwrap_or(200),
+            seed_iris: input.seed_iris,
+        };
+        match cd::closure_diff(&self.graph, &input.projected_ttl, &opts) {
+            Ok(r) => serde_json::to_string(&r)
                 .unwrap_or_else(|e| Self::err_json(format!("serialization: {}", e))),
             Err(e) => Self::err_json(e),
         }
@@ -1876,7 +1934,7 @@ impl OpenOntologiesServer {
         body.to_string()
     }
 
-    #[tool(name = "onto_reason", description = "Run inference over the loaded ontology. Profiles: 'rdfs' (subclass, domain/range), 'owl-rl' (+ transitive/symmetric/inverse, sameAs, equivalentClass), 'owl-rl-ext' (+ someValuesFrom, allValuesFrom, hasValue, intersectionOf, unionOf), 'owl-dl' (SHIQ tableaux: satisfiability, classification, qualified number restrictions with node merging, inverse/symmetric roles, functional properties, parallel agent-based classification, explanation traces, ABox reasoning. Nominals are not implemented: owl:oneOf is not read and owl:hasValue is approximated as an atomic concept, so an ontology that uses either returns undetermined classes rather than a classification. Datatype ranges are skipped). Materializes inferred triples. Set `inference_graph` to keep them in a separate graph, where nothing downstream can read an inference as an assertion and a Turtle/RDF-XML save cannot publish one. Pass `rules_file` to evaluate a SUPPLIED Horn rule table instead of a built-in profile: it needs `certificate_dir`, materialises nothing, and writes a certificate the proved-sound Lean checker verifies with `lake exe oo-horn check`. The verdict comes from that checker and not from here, because rules you supply are assumed and never checked: a conclusion then holds in every model of the asserted graph that ALSO satisfies your rules.")]
+    #[tool(name = "onto_reason", description = "Run inference over the loaded ontology. Profiles: 'rdfs' (subclass, domain/range), 'owl-rl' (+ transitive/symmetric/inverse, sameAs, equivalentClass), 'owl-rl-ext' (+ someValuesFrom, allValuesFrom, hasValue, intersectionOf, unionOf), 'owl-dl' (SHIQ tableaux: satisfiability, classification, qualified number restrictions with node merging, inverse/symmetric roles, functional properties, parallel agent-based classification, explanation traces, ABox reasoning. Nominals are not implemented: owl:oneOf is not read and owl:hasValue is approximated as an atomic concept, so an ontology that uses either returns undetermined classes rather than a classification. Datatype ranges are skipped). Materializes inferred triples. Set `inference_graph` to keep them in a separate graph, where nothing downstream can read an inference as an assertion and a Turtle/RDF-XML save cannot publish one. Pass `rules_file` to evaluate a SUPPLIED Horn rule table instead of a built-in profile: it needs `certificate_dir`, materialises nothing, and writes a certificate the proved-sound Lean checker verifies with `lake exe oo-horn check`. The verdict comes from that checker and not from here, because rules you supply are assumed and never checked: a conclusion then holds in every model of the asserted graph that ALSO satisfies your rules. With `certificate_dir` the run ALSO looks for a contradiction in the closure it reached, and writes refutation.tsv when it finds one the Lean refutation checker can judge: `lake exe oo-refute check`, or `oo-refute guard` which refuses the derivation certificate over a graph it can refute. Seventeen OWL 2 RL rules conclude false, ten are detected here and exactly ONE, cax-dw, is certifiable, because OOCert.RefuteConditions carries a semantic condition for that rule alone. The other nine are reported as `clash_found_by_this_engine` with no file written, and that word is not the checker's `unsatisfiable_under_disjointness`: an engine opinion and a machine-checked result never share a string here. cax-dw needs an INDIVIDUAL in two disjoint classes, so a TBox unsatisfiable with no individual asserted is invisible to this route; profile 'owl-dl' sees that case and its answer carries no certificate. No clash found is never a consistency result.")]
     async fn onto_reason(&self, Parameters(input): Parameters<OntoReasonInput>) -> String {
         use crate::reason::Reasoner;
         // A supplied Horn rule table takes a different path: it is evaluated
@@ -1920,6 +1978,63 @@ impl OpenOntologiesServer {
         let dir = input.certificate_dir.as_deref().map(std::path::Path::new);
         Reasoner::run_full(&self.graph, profile, materialize, target, dir)
             .unwrap_or_else(Self::err_json)
+    }
+
+    #[tool(name = "onto_fol_export", description = "Export the loaded ontology as first-order logic, so it can be handed to the automated-theorem-proving ecosystem. FOUR syntaxes over ONE translation: `tptp` (FOF, what E, Vampire and every other first-order prover read), `clif` (ISO/IEC 24707 Common Logic Interchange Format, restricted to the first-order-equivalent fragment: no sequence markers, fixed arity, no quantification into a predicate position), `smtlib` (SMT-LIB 2, what Z3 reads) and `ladr` (what Mace4 reads, with every symbol MANGLED and the table written beside it as symbols.tsv, because LADR reads a name beginning with u, v, w, x, y or z as a VARIABLE and has no quoting construct that survives an IRI). The last two are read by MODEL FINDERS, so they assert the NEGATED goal rather than declaring a conjecture: a countermodel to `G |= phi` is a model of `G + {not phi}`. With `smtlib`, omit `smt_domain` for the UNBOUNDED encoding, where `unsat` really is unsatisfiability, or set it to k for an enumeration carrier of exactly k elements, where a `sat` comes with a structure `oo-folmodel` can CHECK and an `unsat` establishes only that no model of size k exists. Every run also writes `problem.tsv`, the checker's own format, with its digest, so a solver result can be handed to `oo-folmodel` without going back through the engine; use onto_fol_model to do all of that in one call. The translation is the one a MACHINE-CHECKED ADEQUACY THEOREM is about: `OwlLean.adequacy` in the sibling owl-lean project, axioms propext + Classical.choice + Quot.sound, no sorry, no Mathlib. That theorem is why the emitted file means what it says. THE CORRESPONDENCE BETWEEN THIS EMITTER AND THAT LEAN IS PINNED BY TESTS AND IS NOT ITSELF PROVED. The output includes the background axioms (the two domains are disjoint, the object domain is non-empty) and the individual typing axioms `thing(a)`, whose ABSENCE REFUTES ADEQUACY OUTRIGHT (OwlLean.Refutations.adequacy_needs_ind_axioms). Constructs outside the fragment are NOT dropped silently: `exports_a_weaker_axiom_set` and `constructs_not_exported` name every one with its count and the reason, and `reduced_to_fragment` names every construct rewritten before translation. Pass `goals_file` (a TSV of triples, e.g. the `derivations.tsv` from onto_reason with certificate_dir, with goals_skip_columns=1) to also write one problem per conjecture. A PROVER'S VERDICT ON THESE FILES IS AN ORACLE OPINION AND NEVER A CERTIFICATE: checking a superposition refutation needs a verified first-order calculus with unification, which does not exist in core Lean. Use tools/fol_differential.py, which reports disagreement between this engine and an ATP and does not adjudicate it.")]
+    async fn onto_fol_export(&self, Parameters(input): Parameters<OntoFolExportInput>) -> String {
+        let syntax = match crate::tptp::Syntax::parse(
+            input.format.as_deref().unwrap_or("tptp"),
+            input.clif_dialect.as_deref(),
+            input.clif_comments.as_deref(),
+            input.smt_domain,
+        ) {
+            Ok(s) => s,
+            Err(e) => return Self::err_json(e),
+        };
+        crate::tptp::export(
+            &self.graph,
+            std::path::Path::new(&input.out_dir),
+            syntax,
+            input.goals_file.as_deref().map(std::path::Path::new),
+            input.goals_skip_columns.unwrap_or(0),
+        )
+        .unwrap_or_else(Self::err_json)
+    }
+
+    #[tool(name = "onto_rules_import", description = "Read rules written in a STANDARD rule syntax into the Horn rule table `onto_reason` evaluates with `rules_file` and the proved-sound Lean checker verifies with `lake exe oo-horn check`. `from: \"swrl\"` reads SWRL rules encoded in RDF (swrl:Imp with swrl:body / swrl:head as rdf:List atom lists) out of the loaded graph, or out of `file` if one is given. `from: \"rif\"` reads RIF Core in its normative XML syntax from `file`; the presentation syntax is NOT parsed and is refused rather than half-read. ONLY PART OF EACH LANGUAGE IS A HORN TABLE OVER TRIPLE PATTERNS. SWRL built-in atoms (swrlb: arithmetic and string predicates), swrl:SameIndividualAtom, swrl:DifferentIndividualsAtom, swrl:DataRangeAtom and anonymous class expressions are refused; RIF equality, External functions and predicates, Expr terms, rif:local constants, List terms, Or/Neg/Naf, an existential conclusion and an Atom of arity 0 or 3+ are refused. A refused rule is NAMED AND COUNTED and by default fails the whole import with no table written, because a rule set that quietly lost half its rules still reaches a fixpoint and still produces a certificate that checks green, which is a sound proof about a rule set nobody wrote. `allow_partial: true` imports the rest anyway and flags the result `certifies_a_weaker_rule_set`. Every rule imported is a rule YOU wrote and nothing discharges it, so a certificate over the table can only ever earn `entailed_under_supplied_rules` under `OOCert.horn_certificate_sound`: true in every model of the asserted graph THAT ALSO SATISFIES YOUR RULES. This tool states no verdict; `oo-horn check` is what pronounces.")]
+    fn onto_rules_import(&self, Parameters(input): Parameters<OntoRulesImportInput>) -> String {
+        crate::rulesyntax::run_import(
+            &self.graph,
+            &input.from,
+            input.file.as_deref().map(std::path::Path::new),
+            input.out.as_deref().map(std::path::Path::new),
+            input.allow_partial.unwrap_or(false),
+        )
+        .unwrap_or_else(Self::err_json)
+    }
+
+    #[tool(name = "onto_fol_model", description = "Find a finite model of the loaded ontology and CHECK IT, so the answer names what it rests on. This is the SAT/SMT family, and it is deliberately not symmetric. A REFUTATION cannot be replayed in core Lean, so a solver saying `unsat` is an ORACLE OPINION for ever (decision 0005). A MODEL is a finite object, checking a formula against it is decidable, and `lean/Fol/` holds a checker whose soundness is machine-checked: `Fol.satisfiable_of_check` turns an accepted structure into satisfiability of exactly the formulas it was checked against, and `Fol.not_entails_of_check` turns a checked model of the NEGATED goal into a machine-checked NON-ENTAILMENT, which is the one sentence no theorem prover can produce. The pipeline exports SMT-LIB 2 (for Z3) or LADR (for Mace4) and `problem.tsv` from ONE representation, climbs a cardinality ladder, reads the structure back, and runs `oo-folmodel`. FIVE FIELDS THAT ARE NEVER COLLAPSED: `solver_verdict` (sat/unsat/unknown, what the oracle said), `encoding` (unbounded or finite(k), what it was asked), `checker_exit` (null means the checker never ran), `verdict`, and `owl_reading`. The verdict is one of FIVE WORDS: `model_checked` is the ONLY certified one and requires checker_exit 0; `satisfiable_oracle` is sat with nothing checked; `no_model_up_to_size_k` is an exhausted BOUNDED search and IS NOT UNSATISFIABILITY (a theory with no model of size k can have one of size k+1, and SHIQ has no finite model property at all, so a satisfiable ontology can have only infinite models and will never receive a certificate here); `unsatisfiable_oracle` may be produced ONLY by a run with no cardinality constraint of any kind and can never be more than an opinion; `unknown_oracle` is a timeout or a give-up. A solver answering sat whose model the checker REJECTS is a STOP-THE-LINE disagreement reported in its own block with severity STOP_THE_LINE, never `rejected` as though the ontology were at fault and never `model_checked`. The OWL-level reading carries its own word, `not_entailed_under_unproved_translation`, because it rides on OwlLean.adequacy in a sibling project AND on the Rust-to-Lean correspondence that is PINNED BY TESTS AND NOT PROVED. Needs z3 or mace4 on PATH and `oo-folmodel` built (cd lean && lake build); the absence of either is reported loudly in `skipped` and never worked around. See docs/decisions/0006.")]
+    async fn onto_fol_model(&self, Parameters(input): Parameters<OntoFolModelInput>) -> String {
+        use crate::fol_solve::{SolveOptions, Solver, solve_export};
+        let solver = match Solver::parse(input.solver.as_deref().unwrap_or("z3")) {
+            Ok(s) => s,
+            Err(e) => return Self::err_json(e),
+        };
+        let opts = SolveOptions {
+            solver,
+            max_domain: input.max_domain.unwrap_or(16),
+            timeout_secs: input.timeout_secs.unwrap_or(30),
+            unbounded_probe: input.unbounded_probe.unwrap_or(true),
+            checker: None,
+        };
+        solve_export(
+            &self.graph,
+            std::path::Path::new(&input.out_dir),
+            &opts,
+            input.goals_file.as_deref().map(std::path::Path::new),
+            input.goals_skip_columns.unwrap_or(0),
+        )
+        .unwrap_or_else(Self::err_json)
     }
 
     #[tool(name = "onto_dl_explain", description = "Explain why a class is unsatisfiable using DL tableaux reasoning. Returns an explanation trace showing the logical contradictions that make the class impossible to instantiate.")]
@@ -2890,6 +3005,6 @@ impl OpenOntologiesServer {
 impl ServerHandler for OpenOntologiesServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().enable_prompts().build())
-            .with_instructions("Open Ontologies: AI-native ontology engine, an RDF/OWL/SPARQL MCP server with 109 tools and 6 workflow prompts for ontology engineering, validation, comparison, alignment, data ingestion, and exploration. All 109 tools are advertised in a default build; 8 of them require an optional Cargo feature (embeddings, plugins, postgres or duckdb) and return an error without it.")
+            .with_instructions("Open Ontologies: AI-native ontology engine, an RDF/OWL/SPARQL MCP server with 114 tools and 6 workflow prompts for ontology engineering, validation, comparison, alignment, data ingestion, and exploration. All 112 tools are advertised in a default build; 8 of them require an optional Cargo feature (embeddings, plugins, postgres or duckdb) and return an error without it.")
     }
 }

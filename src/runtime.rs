@@ -161,6 +161,19 @@ pub fn set_classify_timeout_ms(ms: usize) {
     CLASSIFY_TIMEOUT_MS.store(ms, Ordering::Relaxed);
 }
 pub fn reasoner_max_iterations() -> usize { REASONER_MAX_ITER.load(Ordering::Relaxed) }
+
+/// Set the forward-chaining iteration cap directly.
+///
+/// `set_classify_timeout_ms` above is the same shape and exists for the same
+/// reason: a knob that only `init_from_config` can move cannot be exercised by
+/// a test that has no config file. The cap matters here because a run that
+/// stops at it has a closure that is a LOWER BOUND, and a consumer comparing
+/// two closures has to be shown behaving correctly when one of them is
+/// truncated. A test that forces the cap must restore it, since this is a
+/// process-wide global.
+pub fn set_reasoner_max_iterations(n: usize) {
+    REASONER_MAX_ITER.store(n.max(1), Ordering::Relaxed);
+}
 pub fn cache_hash_prefix_bytes() -> usize { CACHE_HASH_PREFIX.load(Ordering::Relaxed) }
 pub fn feedback_suppress_threshold() -> i64 { FB_SUPPRESS.load(Ordering::Relaxed) }
 pub fn feedback_downgrade_threshold() -> i64 { FB_DOWNGRADE.load(Ordering::Relaxed) }

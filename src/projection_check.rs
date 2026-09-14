@@ -8,9 +8,34 @@
 //!
 //! Designed as a complementary primitive to `onto_segment_retrieve` (#34) — the
 //! retriever produces the slice; this auditor reports what it left behind.
+//!
+//! # `coverage_ratio` is a PROXY and it is demoted, not deleted
+//!
+//! It is neither necessary nor sufficient for the property that matters. A
+//! slice at 0.99 can have dropped the one triple an answer rests on, and a
+//! slice at 0.60 can preserve every conclusion a report asks about. It also
+//! moves the wrong way: it rises as the projection grows, so a retriever tuned
+//! on it learns to fetch MORE rather than to fetch the right thing.
+//!
+//! Measured on this repository's own `benchmark/reference/pizza-reference.owl`:
+//! the whole ontology minus the single triple `NamedPizza rdfs:subClassOf
+//! Pizza` scores `aggregate_coverage_ratio: 1.0` and `ok: true` over the 23
+//! named-pizza seeds, while `Veneziana rdfs:subClassOf Food` — a conclusion the
+//! source derives — is gone. The number cannot see the damage at all.
+//!
+//! The property is entailment preservation, and it is asked by
+//! [`crate::projection_entailment`] (goal-directed, one answer) and
+//! [`crate::closure_diff`] (goal-free, a whole retrieval strategy). This module
+//! stays because a cheap signal is worth keeping; the label stays with it
+//! because an unlabelled one is a trap.
 
 use crate::graph::GraphStore;
 use serde::{Deserialize, Serialize};
+
+/// The sentence that travels with the number, in the payload rather than only
+/// in the docs. Re-exported from [`crate::projection_entailment`] so there is
+/// one spelling of it in the crate.
+pub use crate::projection_entailment::COVERAGE_LABEL;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -45,6 +70,22 @@ pub struct ProjectionLossReport {
     pub total_dropped_predicates: usize,
     /// Total dropped objects across all seeds (deduped).
     pub total_dropped_objects: usize,
+    /// Always false. A FIELD rather than a doc comment, so a consumer reading
+    /// the JSON sees it without reading prose, and a renderer that walks only
+    /// the data still emits it.
+    pub is_a_warrant: bool,
+    /// [`COVERAGE_LABEL`], carried in the payload.
+    pub warning: &'static str,
+    /// Seeds whose projection side holds MORE triples than the source side.
+    ///
+    /// `coverage_ratio` clamps with `.min()`, so such a seed reads 1.0 with
+    /// empty dropped lists, and `ok` used to be true on exactly the input that
+    /// should stop a pipeline: a projection that is not a subset of the source,
+    /// which is either a hallucinating retriever or a slice of a different
+    /// graph. The clamp stays, because an unclamped "ratio" above 1.0 is not a
+    /// ratio; the surplus is named instead and `ok` now requires it to be
+    /// empty.
+    pub seeds_with_surplus: Vec<String>,
 }
 
 /// Audit a projected Turtle slice against the loaded ontology's full
@@ -62,6 +103,11 @@ pub fn check_projection_loss(
     let projected = GraphStore::new();
     let parse_ok = projected.load_turtle(projected_ttl, None).is_ok();
     if !parse_ok {
+        // NOTE: `aggregate_coverage_ratio: 0.0` on a parse failure is this
+        // module's oldest trap: "we could not read the file" renders as "0%
+        // coverage". `projection_parses` is the field that separates them, and
+        // `projection_entailment::coverage_proxy` drops the number entirely
+        // rather than pass a 0.0 on to a reader.
         return Ok(ProjectionLossReport {
             projection_parses: false,
             aggregate_coverage_ratio: 0.0,
@@ -69,6 +115,9 @@ pub fn check_projection_loss(
             ok: false,
             total_dropped_predicates: 0,
             total_dropped_objects: 0,
+            is_a_warrant: false,
+            warning: COVERAGE_LABEL,
+            seeds_with_surplus: Vec::new(),
         });
     }
 
@@ -127,7 +176,13 @@ pub fn check_projection_loss(
 
     let n = seed_iris.len().max(1) as f64;
     let aggregate = sum_ratio / n;
-    let ok = per_seed.iter().all(|r| (r.coverage_ratio - 1.0).abs() < 1e-9);
+    let surplus: Vec<String> = per_seed
+        .iter()
+        .filter(|r| r.projected_triples > r.source_triples)
+        .map(|r| r.seed_iri.clone())
+        .collect();
+    let ok = surplus.is_empty()
+        && per_seed.iter().all(|r| (r.coverage_ratio - 1.0).abs() < 1e-9);
 
     Ok(ProjectionLossReport {
         projection_parses: true,
@@ -136,6 +191,9 @@ pub fn check_projection_loss(
         ok,
         total_dropped_predicates: all_dropped_preds.len(),
         total_dropped_objects: all_dropped_objs.len(),
+        is_a_warrant: false,
+        warning: COVERAGE_LABEL,
+        seeds_with_surplus: surplus,
     })
 }
 
@@ -208,6 +266,43 @@ mod tests {
         let cat_report = &report.per_seed[0];
         assert!(cat_report.dropped_predicates.iter().any(|p| p.contains("age")));
         assert!(cat_report.dropped_predicates.iter().any(|p| p.contains("species")));
+    }
+
+    /// The clamp used to report a clean bill of health on the one input that
+    /// should stop a pipeline: a projection holding MORE about a seed than the
+    /// source does, which is a hallucinating retriever or a slice of a
+    /// different graph.
+    #[test]
+    fn a_projection_with_more_than_the_source_is_not_ok() {
+        let source = r#"
+            @prefix ex: <http://ex.org/> .
+            ex:Cat ex:hasColour ex:Black .
+        "#;
+        let projection = r#"
+            @prefix ex: <http://ex.org/> .
+            ex:Cat ex:hasColour ex:Black ; ex:invented ex:Nonsense .
+        "#;
+        let g = loaded(source);
+        let r = check_projection_loss(&g, &["http://ex.org/Cat".to_string()], projection).unwrap();
+        assert_eq!(r.per_seed[0].coverage_ratio, 1.0, "the clamp still clamps");
+        assert!(r.per_seed[0].dropped_predicates.is_empty(), "nothing was dropped");
+        assert_eq!(r.seeds_with_surplus.len(), 1, "the surplus must be named: {r:?}");
+        assert!(!r.ok, "a non-subset projection must not report ok: {r:?}");
+    }
+
+    #[test]
+    fn the_label_travels_with_the_number() {
+        let g = loaded(r#"@prefix ex: <http://ex.org/> . ex:X ex:p ex:Y ."#);
+        for ttl in [r#"@prefix ex: <http://ex.org/> . ex:X ex:p ex:Y ."#, "not turtle <<<"] {
+            let r = check_projection_loss(&g, &["http://ex.org/X".to_string()], ttl).unwrap();
+            let json = serde_json::to_string(&r).unwrap();
+            assert!(!r.is_a_warrant);
+            assert!(json.contains("is neither necessary nor sufficient"), "{json}");
+            assert!(
+                !json.contains("\"ratio\"") || json.contains("PROXY"),
+                "wherever the number appears the label must appear: {json}"
+            );
+        }
     }
 
     #[test]

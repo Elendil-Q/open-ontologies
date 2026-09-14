@@ -299,6 +299,11 @@ jobs:
   # and proves the checker can also say no. OO_REQUIRE_FIXTURES=1 turns the
   # "no lake installed" skip into a failure, so this job cannot pass by not
   # running.
+  #
+  # The last three legs are the SAT/SMT family: a model finder proposes a
+  # finite structure and `oo-folmodel` disposes. They need z3 and mace4 as well
+  # as Lean, and the same environment variable turns a missing solver from a
+  # loud skip into a failure here, for the same reason.
   lean:
     timeout-minutes: 45
     name: lean / certificate checker
@@ -330,6 +335,15 @@ jobs:
         run: OO_REQUIRE_FIXTURES=1 cargo test --test dl_model_certificate_test -- --nocapture
       - name: Check the refutation certificates
         run: OO_REQUIRE_FIXTURES=1 cargo test --test lean_refutation_test -- --nocapture
+      - name: Check the refutations THIS ENGINE writes, and that it cannot refute a consistent ontology
+        # The line above checks hand-written fixtures, which settles whether the
+        # checker works and says nothing about whether anything can feed it.
+        # This one runs the engine, takes its `refutation.tsv`, and hands that
+        # to the same binary. The two legs that matter most are the consistent
+        # ontology, where no refutation may be produced and none may be
+        # accepted, and the laundering guard, which fails if this engine ever
+        # states the verdict only an accepted refutation earns.
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test lean_refutation_producer_test -- --nocapture
       - name: Check the mixed certificate layer
         run: OO_REQUIRE_FIXTURES=1 cargo test --test lean_mixed_certificate_test -- --nocapture
       - name: Check the generic Horn-rule layer, and that a user rule cannot earn the absolute verdict
@@ -341,6 +355,60 @@ jobs:
         # fact, and it is the reason this job exists rather than being folded
         # into the line above.
         run: OO_REQUIRE_FIXTURES=1 cargo test --test lean_horn_certificate_test -- --nocapture
+      - name: Install the model finders
+        # Z3 reads SMT-LIB and is the only one of the two that can be asked the
+        # UNBOUNDED question, which is the only route to `unsatisfiable_oracle`.
+        # Mace4 ships in the LADR/Prover9 distribution: Prover9's refutations
+        # are uncheckable and by decision 0005 an oracle opinion for ever, but
+        # Mace4 is a FINITE MODEL FINDER and a finite model is exactly what
+        # this layer certifies. The dead toolchain has a live half.
+        run: sudo apt-get update && sudo apt-get install -y z3 prover9
+      - name: Check the first-order model certificates end to end
+        # `lake build` already compiles these proofs, because `Fol` and
+        # `oo-folmodel` are both in defaultTargets. What this leg adds is the
+        # ENGINE's own export going through a real solver and back into the
+        # verified checker, which is what decision 0006 recorded as missing.
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test lean_fol_model_test -- --nocapture
+      - name: Check that an unchecked result never reports the certified word
+        # The laundering guard, and the reason this is its own leg rather than
+        # folded into the line above. A pipeline that fell back to
+        # `model_checked` when the checker was unavailable would print the
+        # certified word on every machine without Lean installed, and a run
+        # whose bounded search was exhausted must say `no_model_up_to_size_k`
+        # and never `unsatisfiable_oracle`. See docs/decisions/0006 item 4.
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test fol_solver_verdict_test -- --nocapture
+      - name: Check the model ingestion, both front ends
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test fol_model_ingest_test -- --nocapture
+      - name: Check that a projection preserves the claims an answer rests on
+        # Coverage is a proxy, and the first two legs here are the argument for
+        # that sentence: a slice of a SHIPPED ontology at coverage 1.0 with
+        # ok:true that has dropped the one triple the answer depends on, and
+        # its converse at coverage 0.001 preserving every claim with a
+        # Lean-checked certificate. The rest are the verdict discipline and the
+        # three conditions under which the monotonicity gate is disarmed.
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test lean_projection_entailment_test -- --nocapture
+      - name: Check the goal-free closure diff
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test closure_diff_test -- --nocapture
+      - name: Run the monotonicity differential over every shipped ontology
+        # OWL RL is monotone and a projection is a subset, so anything the
+        # projection entails and the source does not is a soundness bug in the
+        # engine. This leg runs that check for real over the shipped corpus and
+        # prints what it found, INCLUDING if it found nothing: a sweep whose
+        # gate was disarmed everywhere establishes nothing, so the test fails
+        # if the gate was armed on fewer than half the ontologies.
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test projection_monotonicity_corpus_test -- --nocapture
+      - name: Check the preserve and closure-diff command lines, including their exit codes
+        # Wiring nothing exercises is how `push` came to be proxied to a batch
+        # runner with no arm for it. These run the real binary, and they pin
+        # that a lost claim fails the process rather than printing a finding
+        # and exiting 0.
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test preserve_cli_test -- --nocapture
+      - name: Show every gate firing on its own broken input
+        # A gate that cannot fail is decoration, and a gate whose failure
+        # nobody has read is close to it. This leg feeds each gate the input
+        # built to trip it and PRINTS what the tool said, so the evidence is in
+        # the job log rather than in a doc.
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test gate_demonstration_test -- --nocapture
 
   # The official W3C SHACL test suite, as a ratchet.
   #

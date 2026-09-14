@@ -580,6 +580,18 @@ fn test_dl_exact_cardinality() {
     );
 }
 
+/// Functionality, asserted in both directions.
+///
+/// THIS TEST USED TO ASSERT ONLY THE POSITIVE HALF, and that is why it passed
+/// for as long as `owl:FunctionalProperty` did nothing at all. Functionality is
+/// encoded as `≤1 R.⊤`; `add_label` refuses to store `⊤`, and the ≤-rule counted
+/// matching successors with `labels.contains(&filler)`, which for `⊤` is false
+/// on every node — so the bound counted zero successors, could never be
+/// violated, and no merge ever fired. A test that only checks that a satisfiable
+/// class is reported satisfiable cannot tell a working rule from an absent one:
+/// deleting the rule entirely makes it pass. The second half below is
+/// unsatisfiable PRECISELY BECAUSE the property is functional, so it fails if
+/// the rule stops firing.
 #[test]
 fn test_dl_functional_property() {
     // Functional property means ≤1, so a functional property
@@ -621,6 +633,51 @@ fn test_dl_functional_property() {
         unsat.is_empty(),
         "HasMother with functional property should be satisfiable: {:?}",
         unsat
+    );
+
+    // The negative half. `Impossible` demands a hasMother-filler that is an `M`
+    // and a hasMother-filler that is a `W`; hasMother is functional, so those are
+    // one individual, and `M` and `W` are disjoint. The class is unsatisfiable
+    // and it is unsatisfiable for exactly one reason. Drop the functionality and
+    // the ontology is perfectly satisfiable, which is what makes this the test
+    // the positive half above could never be.
+    let store = Arc::new(GraphStore::new());
+    store
+        .load_turtle(
+            r#"
+        @prefix ex: <http://example.org/> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+        ex:hasMother a owl:ObjectProperty, owl:FunctionalProperty .
+        ex:M a owl:Class .
+        ex:W a owl:Class .
+        ex:M owl:disjointWith ex:W .
+
+        ex:Impossible a owl:Class .
+        ex:Impossible rdfs:subClassOf [
+            a owl:Restriction ; owl:onProperty ex:hasMother ; owl:someValuesFrom ex:M
+        ] .
+        ex:Impossible rdfs:subClassOf [
+            a owl:Restriction ; owl:onProperty ex:hasMother ; owl:someValuesFrom ex:W
+        ] .
+    "#,
+            None,
+        )
+        .unwrap();
+
+    let result = Reasoner::run(&store, "owl-dl", false).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+    // An unfinished run proves nothing either way, so refuse to read one.
+    assert_eq!(
+        parsed["complete"], true,
+        "a budget was hit, so this run is not a verdict: {parsed}"
+    );
+    let unsat = parsed["unsatisfiable_classes"].as_array().unwrap();
+    assert!(
+        unsat.iter().any(|u| u.as_str().unwrap_or("").ends_with("/Impossible>")),
+        "hasMother is functional, so the M-filler and the W-filler are the same \
+         individual and it is in two disjoint classes: {parsed}"
     );
 }
 
@@ -1246,5 +1303,55 @@ fn test_dl_absorbs_conjunctive_rhs() {
     assert!(
         unsat.iter().any(|u| u.ends_with("/A>")),
         "conjunctive-RHS absorption must preserve entailment, got {unsat:?}"
+    );
+}
+
+/// An ABox made inconsistent by an ASSERTED edge, read off the reported output.
+///
+/// `build_abox_tableau` used to write asserted role assertions straight into the
+/// edge map while `create_successor` was the only place `rdfs:domain` and
+/// `rdfs:range` were consulted, so a generated successor carried both
+/// constraints and an asserted edge carried neither. The report said
+/// `consistent: true` with `undecided: false`, which is the strongest answer
+/// this checker can give, for an ontology with a contradiction in it. Both edge
+/// paths now go through `Tableau::add_role_edge`.
+///
+/// `tests/reasoner_soundness_test.rs` covers the same repair against `check_abox`
+/// directly. This one is here because it is the reported OUTPUT that was wrong,
+/// and the headline `consistent` flag has to carry an ABox contradiction rather
+/// than report around it.
+#[test]
+fn test_dl_asserted_edge_applies_its_domain() {
+    let store = Arc::new(GraphStore::new());
+    store
+        .load_turtle(
+            r#"
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix ex: <http://example.org/> .
+        ex:D a owl:Class . ex:E a owl:Class . ex:D owl:disjointWith ex:E .
+        ex:p a owl:ObjectProperty ; rdfs:domain ex:D .
+        ex:a a ex:E ; ex:p ex:b .
+    "#,
+            None,
+        )
+        .unwrap();
+
+    let result = Reasoner::run(&store, "owl-dl", false).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+
+    // An unfinished run proves nothing either way, so refuse to read one.
+    assert_ne!(
+        parsed["abox"]["undecided"], true,
+        "the ABox check ran out of budget, so this run is not a verdict: {parsed}"
+    );
+    assert_eq!(
+        parsed["abox"]["consistent"], false,
+        "the asserted p-edge gives a the domain D, which is disjoint from the E it \
+         is asserted to be: {parsed}"
+    );
+    assert_eq!(
+        parsed["consistent"], false,
+        "the headline verdict must carry the ABox contradiction: {parsed}"
     );
 }

@@ -30,7 +30,9 @@ pub mod pack;
 pub mod support;
 pub mod temporal;
 pub mod policy;
+pub mod closure_diff;
 pub mod projection_check;
+pub mod projection_entailment;
 pub mod shape_combinatorics;
 // (re-exports keep the alphabetical ordering of the surrounding modules manageable)
 #[cfg(feature = "embeddings")]
@@ -64,6 +66,9 @@ pub mod plugins;
 pub mod poincare;
 pub mod reason;
 pub mod reason_incremental;
+/// Standard rule syntaxes (SWRL, RIF Core) into the Horn rule table
+/// `reason::run_horn` evaluates and `lean/`'s `oo-horn` checks.
+pub mod rulesyntax;
 pub mod registry;
 pub mod repo;
 pub mod runtime;
@@ -84,6 +89,11 @@ pub mod state;
 pub mod structembed;
 pub mod tableaux;
 pub mod toolfilter;
+/// First-order export (TPTP FOF and ISO/IEC 24707 CLIF) over the translation
+/// owl-lean's machine-checked adequacy theorem is about.
+pub mod fol_model;
+pub mod fol_solve;
+pub mod tptp;
 #[cfg(feature = "turbovec")]
 pub mod turbo_index;
 #[cfg(feature = "embeddings")]

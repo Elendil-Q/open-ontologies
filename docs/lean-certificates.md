@@ -59,13 +59,16 @@ one with its rule, conclusion and premises; `2` a file could not be read or pars
 
 ## The files
 
-Two tab-separated files. Terms are in N-Triples spelling, exactly as the engine's interner holds
+Tab-separated. Terms are in N-Triples spelling, exactly as the engine's interner holds
 them, so a term is spelled identically wherever it appears and tabs and newlines cannot occur
 inside one.
 
 - `asserted.tsv`: one triple per line, `s TAB p TAB o`. Every triple the run started from.
 - `derivations.tsv`: one step per line, `rule TAB s TAB p TAB o` for the conclusion, then the
   premises as further triples, in the order documented per rule in `lean/OOCert/Rules.lean`.
+- `refutation.tsv`, only when the run found a contradiction it can certify: the line `oo-refute/1`,
+  then the derivation steps that reached the clash in the same spelling as `derivations.tsv`, then
+  one `refute TAB rule` line with the clash rule's premises. See the refutation section below.
 
 ## What is proved
 
@@ -132,14 +135,136 @@ kept in `tests/lean_certificate_test.rs` as a forged certificate the checker mus
 The `lean` job builds `lean/` (which is the proof check), then runs
 `tests/lean_certificate_test.rs` with `OO_REQUIRE_FIXTURES=1`. Every RDF file the repository
 tracks, enumerated from `git ls-files`, is loaded, reasoned under `owl-rl-ext` with a certificate,
-and the certificate checked: 122 files and 37,133 derivations at the time of writing. Files over
-4 MB and files that do not parse are listed with the reason, never dropped silently. The same test
-appends three forgeries and requires each to be rejected.
+and the certificate checked. Files over 4 MB and files that do not parse are listed with the reason,
+never dropped silently. The same test appends three forgeries and requires each to be rejected.
+
+The corpus was 122 files and 37,133 derivations when that was written. Counted on 14 September 2026
+under the test's own `SKIP_DIRS` filter it is **290 tracked RDF files, 21,256,445 bytes (20.3 MiB)**, one of which
+(`case-studies/skills-england-occupational-maps/ontology/occupational-map.ttl`, 5.70 MB) is over the
+4 MB cap and is therefore already excluded and named. The derivation count is not restated here,
+because the only honest source for it is the run's own output.
 
 The corpus used to be five hand-named directories, three of which hold no RDF, so 46% of the
 repository's RDF was never walked and was excluded without being named. Widening it is what
 surfaced the literal-subject defect in `prp-symp`, `prp-inv1`, `prp-inv2` and `eq-sym`, which lived
 in `benchmark/`.
+
+## Refutations: certifying that a graph has NO model
+
+A derivation certificate says a triple follows. A *refutation* says the graph contradicts itself, and
+it needs a second format because there is no triple to conclude. `lean/OOCert/Refute.lean` holds it,
+`oo-refute` checks it, and `OOCert.refutation_sound` is proved about it.
+
+The reasoner now writes one. `reason --certificate DIR` looks for a contradiction in the closure it
+reached and, when it finds one the checker can judge, writes `DIR/refutation.tsv` beside the other
+two files.
+
+```bash
+open-ontologies reason --profile owl-rl --certificate /tmp/cert
+cd lean
+lake exe oo-refute check /tmp/cert/asserted.tsv /tmp/cert/refutation.tsv
+lake exe oo-refute guard /tmp/cert/asserted.tsv /tmp/cert/derivations.tsv /tmp/cert/refutation.tsv
+```
+
+`check` exits 0 when the refutation is valid, which is a good exit code reporting bad news. `guard`
+runs both checkers and REFUSES the derivation certificate when the refutation succeeds, because over
+a refuted graph every triple is entailed under the disjointness reading and an ordinary certificate
+carries no information (`OOCert.a_certificate_adds_nothing_when_the_graph_is_refuted`). `oo-cert`
+will still accept that certificate and will still be telling the truth: its verdict quantifies over
+a model class that ignores disjointness, and that class is never empty.
+
+The response gains an `inconsistency` object:
+
+```json
+{
+  "inconsistency": {
+    "found": true,
+    "verdict": "clash_found_by_this_engine",
+    "checked_by_lean": false,
+    "by_rule": {"cax-dw": 1},
+    "refutation": {
+      "written": true,
+      "rule": "cax-dw",
+      "prefix": 2,
+      "verdict": "refutation_written_not_yet_checked",
+      "check_with": "cd lean && lake exe oo-refute check /tmp/cert/asserted.tsv /tmp/cert/refutation.tsv"
+    }
+  }
+}
+```
+
+**Read the two verdicts apart.** `clash_found_by_this_engine` is this engine saying so, with nothing
+behind it. `unsatisfiable_under_disjointness` is what `oo-refute` prints when it has ACCEPTED a
+refutation, and the engine never states it.
+`tests/lean_refutation_producer_test.rs::the_engine_never_states_the_checkers_verdict` fails if any
+string in the response is ever that verdict, on the pattern the Horn layer's laundering guard set.
+
+### Which rules conclude `false`, and which of them can be certified
+
+Seventeen rules of the OWL 2 RL profile conclude `false` rather than a triple. None of them is in the
+forward-chaining table, and none could be: a certificate step's conclusion is a triple. They are
+looked for once, after the fixpoint.
+
+| rule | detected | certifiable |
+|---|---|---|
+| `cax-dw` (`c1 owl:disjointWith c2`, `x a c1`, `x a c2`) | yes | **yes** |
+| `cls-com` (`owl:complementOf`) | yes | no |
+| `cls-nothing2` (`x a owl:Nothing`) | yes | no |
+| `cls-maxc1` (`owl:maxCardinality 0`) | yes | no |
+| `eq-diff1` (`owl:sameAs` and `owl:differentFrom`) | yes | no |
+| `prp-irp` (`owl:IrreflexiveProperty`) | yes | no |
+| `prp-asyp` (`owl:AsymmetricProperty`) | yes | no |
+| `prp-pdw` (`owl:propertyDisjointWith`) | yes | no |
+| `prp-npa1`, `prp-npa2` (negative property assertions) | yes | no |
+| `cax-adc`, `prp-adp`, `eq-diff2`, `eq-diff3` | no, they read an RDF list | no |
+| `cls-maxqc1`, `cls-maxqc2` | no, qualified cardinality is not implemented | no |
+| `dt-not-type` | no, an ill-typed literal needs a datatype value space | no |
+
+Only `cax-dw` is certifiable, and the reason belongs to the checker rather than to the engine.
+`OOCert.RefuteConditions` carries exactly one semantic field, for `cax-dw`, and `oo-refute` refuses a
+refutation naming any other clash rule with exit 2 rather than guessing at it. So the producer writes
+a refutation for that rule alone. For the other nine it detects, the response says a clash was found
+and `"refutation": {"written": false}` with the reason. Every rule the engine does not look for is
+listed in `rules_not_detected` with its own reason, so a run with no clash is never a consistency
+result: most of the table was not tried.
+
+`lean/OOCert/Refute.lean` says sixteen rules conclude `false`. Counted against the W3C tables it is
+seventeen; the difference is `dt-not-type`, which that file excludes elsewhere on the stated ground
+that the Lean semantics has no datatype value space. Nothing computes with the number.
+
+### The limit, which is real
+
+`cax-dw` needs an INDIVIDUAL in two disjoint classes. A TBox that is unsatisfiable with no individual
+asserted cannot be seen this way at all. `:Lion rdfs:subClassOf :Carnivore, :Herbivore` with those
+two disjoint makes `:Lion` unsatisfiable, and until something is asserted to BE a `:Lion` the
+rule-based route has nothing to fire on. That is a boundary of forward chaining, not a defect in the
+producer.
+
+The SHIQ tableau (`--profile owl-dl`, `src/tableaux.rs`) does see it, and reports
+`unsatisfiable_classes`. **Its answer carries no certificate**, which its own report already states
+(`"not_covered": "unsatisfiability and inconsistency carry no certificate"`). No refutation is
+emitted from it, and the obstruction is precise rather than a matter of effort:
+
+- `oo-refute/1` can express exactly one contradiction, `cax-dw`, whose three premises must each be
+  asserted or concluded by a step of the 29-rule forward-chaining prefix. A tableau clash reached
+  through `∃`/`∀` expansion, node merging or a cardinality bound is not three triples of that shape
+  and there is nothing in the format to write it as.
+- Where a tableau clash IS a `cax-dw` instance over triples the forward-chaining rules can reach, the
+  rule-based producer has already found it, so the tableau adds nothing that can be certified.
+- Feeding the tableau's inferred subsumptions back into the store and re-reasoning would let more
+  clashes surface, but those subsumptions would then appear in `asserted.tsv` as axioms with nothing
+  marking them derived. That is the assumption-laundering failure this layer exists to prevent, so it
+  is not done.
+- Adding a clash rule to the format means a new field in `OOCert.RefuteConditions`, a new arm in
+  `OOCert.checkRefuteStep` and a new soundness case. That is a change to `lean/`, not to the producer.
+
+`tests/lean_refutation_producer_test.rs::the_tbox_only_case_is_invisible_here_and_the_tableau_sees_it`
+computes this boundary on one ontology rather than asserting it here.
+
+`onto_defects` asks a different question again, and the three do not substitute for one another.
+It checks the ontology against ITSELF with no data present, so `disjoint_with_ancestor` and
+`inherited_disjoint` catch the schema that will contradict itself the moment an instance arrives.
+This layer needs the instance to be there. The tableau needs neither and certifies nothing.
 
 ## User-written rules
 
@@ -168,18 +293,273 @@ inference and never the premises. The report carries a digest of the table that 
 runs can be compared, and `tests/lean_horn_certificate_test.rs` fails if a user-rule run ever
 reports the absolute verdict.
 
-Nineteen of the engine's rules are Horn rules and appear in the built-in table. `cls-int1` and
-`cls-uni` are not: their premise count is the length of an RDF list, which is data rather than fixed
-by the rule, so they remain hardcoded arms. A user rule language stops at the same boundary.
+Twenty-seven of the engine's rules are Horn rules and appear in the built-in table, the count
+`the_built_in_rules_are_emitted_as_data` pins. Four are not: `cls-int1`, `cls-int2`, `cls-uni` and
+`cls-oo` each read an RDF list off the graph, so the LIST is a premise and the premise count is data
+rather than fixed by the rule. They remain hardcoded arms. A user rule language stops at the same
+boundary.
 
-The Rust reasoner does not yet evaluate a supplied rule table, so today this layer checks
-certificates rather than producing them. See
+`reason --rules TABLE --certificate DIR` evaluates a supplied table to a fixpoint over the loaded
+graph and writes the three files `oo-horn check` reads. Nothing is materialised: a conclusion drawn
+under a table nobody has checked holds only in models that satisfy that table, and writing it into
+the store beside the assertions would lose exactly that distinction. See
 [decision 0003](decisions/0003-a-rule-is-data-and-an-assumption-is-not-a-fact.md).
+
+## Rules you wrote in SWRL or RIF Core
+
+`rules.tsv` is an internal encoding, not a language anybody writes in. `rules-import` reads two
+standard rule syntaxes into it.
+
+```bash
+open-ontologies load ontology.ttl
+open-ontologies rules-import --from swrl --out rules.tsv              # SWRL, out of the loaded graph
+open-ontologies rules-import --from swrl --file rules.owl --out rules.tsv
+open-ontologies rules-import --from rif  --file rules.xml --out rules.tsv
+open-ontologies reason --rules rules.tsv --certificate cert/
+cd lean && lake exe oo-horn check ../cert/rules.tsv ../cert/asserted.tsv ../cert/horn.tsv
+```
+
+**Only part of each language is a Horn table over triple patterns, and the exact fragment is in
+[docs/rule-syntax-front-ends.md](rule-syntax-front-ends.md) and in every response.** A rule outside
+it is named, counted and refused; by default one refusal fails the whole import and writes nothing,
+because a table that quietly lost a rule still reaches a fixpoint and still produces a certificate
+that checks green, which is a sound proof about a rule set nobody wrote. `--allow-partial` imports
+the rest and flags the result `certifies_a_weaker_rule_set`.
+
+Every imported rule is a rule you wrote, so it lands on the second row of the table above without
+exception: imported rules are named `swrl/…` and `rif/…`, no built-in rule is, and `oo-horn` awards
+the absolute verdict only to a table that renders identically to the built-in one.
+The Rust reasoner evaluates a supplied rule table through `reason --rules RULES.tsv --certificate
+DIR`, which writes `rules.tsv`, `asserted.tsv` and `horn.tsv` and states no verdict of its own.
+Nothing is materialised into the store: a conclusion drawn under a table you wrote holds only in
+models that satisfy that table, and merging it in beside the assertions would lose exactly the
+distinction this is about. See
+[decision 0003](decisions/0003-a-rule-is-data-and-an-assumption-is-not-a-fact.md).
+
+## What the checker assumes about the engine
+
+The theorem is conditional. It says that IF the asserted graph is `G` and IF these steps check,
+THEN the conclusions hold in every model of `G`. Everything to the left of that is the Rust writing
+down the truth, and the checker cannot see any of it: it reads files, not the store and not the
+run. `docs/trusted-computing-base.md` enumerates that boundary as twenty-nine checkable properties
+and says for each what checks it. Read it before relying on a certificate, because a certificate is
+a claim about a file and the file's relationship to the store is the part nobody proved.
+## First-order model certificates: `oo-folmodel`
+
+A solver's `sat` answer is worth nothing on its own and everything once the model comes with it.
+`lean/Fol/` holds a checker for a finite first-order structure, and `Fol.satisfiable_of_check` says
+that a structure it accepts really does satisfy every formula of the problem, so the problem is
+satisfiable. `Fol.not_entails_of_check` is the sharper form: a checked model of `¬φ` together with
+`Γ` is a machine-checked proof that `Γ` does **not** entail `φ`.
+
+```bash
+cd lean
+lake build                                                  # builds the checker AND checks the proofs
+lake exe oo-folmodel PROBLEM.tsv MODEL.tsv
+```
+
+```json
+{"verdict":"model_checked","formulas":5,"domain":2,"closed":true,
+ "goal_negated_present":true,"source":"z3","cardinality_search":"1,2",
+ "problem_digest":"4403d8aaa0c422f7","theorem":"Fol.satisfiable_of_check",
+ "non_entailment_theorem":"Fol.not_entails_of_check"}
+```
+
+The two file formats, with a worked example whose digest is pinned by the build, are documented in
+`lean/Fol/Syntax.lean`. Runnable copies of every case below are in `tests/fixtures/folmodel/`.
+
+**Exit codes, and the fixture that demonstrates each.**
+
+| exit | verdict | reason | fixture |
+|---|---|---|---|
+| 0 | `model_checked` | | `problem.tsv` + `model.tsv` |
+| 1 | `rejected` | the checker rejected the structure | `model_no_edge.tsv` |
+| 1 | `rejected` | `problem_digest_mismatch` | `model_wrong_digest.tsv`, `problem_other.tsv` |
+| 1 | `rejected` | `undeclared_symbol` | `model_undeclared.tsv` |
+| 2 | `unreadable` | the carrier is empty | `model_empty_domain.tsv` |
+| 2 | `unreadable` | a row contradicts a declared arity | `model_bad_arity.tsv` |
+| 2 | `unreadable` | an index is outside the carrier | `model_index_out_of_range.tsv` |
+| 2 | `unreadable` | a declared symbol has no row | `model_missing_row.tsv` |
+| 2 | `unreadable` | the problem carries no formulas | `problem_empty.tsv` |
+
+**The verdict tells you what it is relative to, and you must read it.** These four are the SOLVER
+level, and a driver that collapses any two of them is reporting a falsehood from correct solver
+output.
+
+| solver said | encoding | verdict | theorem | means |
+|---|---|---|---|---|
+| `sat`, with a model the checker accepted | either | `model_checked` | `Fol.satisfiable_of_check` | the problem has a model, exhibited |
+| `sat`, no checkable model | either | `satisfiable_oracle` | none | trust the solver |
+| `unsat` | `finite(k)` | `no_model_up_to_size_k` | none | **not** unsatisfiability |
+| `unsat` | `unbounded` | `unsatisfiable_oracle` | none | trust the solver, and never more |
+
+`no_model_up_to_size_k` is the one people get wrong. `∀x∃y (r(x,y) ∧ x≠y)` is `unsat` at carrier 1
+and `sat` at carrier 2, so a bounded `unsat` is frequently not evidence of anything. A solver that
+answers `sat` whose model the checker then REJECTS is `satisfiable_oracle` with `checker_exit: 1`,
+never `rejected` as though the ontology were at fault.
+
+**Two gates that are not soundness gates, and are labelled so.**
+
+- `undeclared_symbol` is an ATTRIBUTION gate. `Fol.FinModel`'s three fields are total, so an
+  undeclared symbol is still interpreted and the theorem holds without the gate. What it buys is
+  that the structure certified is the structure the solver described rather than that structure
+  completed with defaults. The JSON carries `"gate":"attribution"` so a report cannot quietly
+  promote it.
+- `problem_digest_mismatch` binds `model.tsv` to `problem.tsv`. The digest is FNV-1a 64 over the
+  canonical re-serialisation of the parsed formula list, specified in `lean/Fol/Parse.lean` so a
+  Rust writer can reproduce it. It identifies; it does not commit.
+
+**Cost, measured on this machine** (Apple silicon, compiled `oo-folmodel`, 2000 formulas at
+quantifier depth 3, so `carrier^3` evaluation points per formula):
+
+| carrier | evaluation points | user time |
+|---|---|---|
+| 8 | 1.0M | 0.14 s |
+| 16 | 8.2M | 0.92 s |
+| 24 | 27.6M | 2.93 s |
+| 32 | 65.5M | 6.80 s |
+
+About 9M points per second, cubic in the carrier at this depth. Solvers return carriers in the
+single digits on real ontologies, so this is a cap to state rather than a problem to solve:
+`--max-domain` defaults to 16 and the flag goes higher with the cost documented.
+
+### Driving all of it in one command: `fol-model`
+
+`oo-folmodel` checks a model somebody already has. `open-ontologies fol-model` produces one: it
+exports the ontology, runs Z3 or Mace4, reads the structure back, runs the checker, and reports the
+verdict with the five fields above.
+
+```bash
+cd lean && lake build && cd ..                     # the checker, and its proofs
+printf 'load case-studies/blast-furnace-ironmaking/blast-furnace-ontology.ttl\n\
+fol-model --out /tmp/solve --solver z3 --max-domain 8\n' \
+  | open-ontologies --no-connect --data-dir /tmp/store batch -
+```
+
+```json
+{"verdict":"model_checked","solver_verdict":"sat","encoding":"finite(1)","checker_exit":0,
+ "owl_reading":null,"theorem":"Fol.satisfiable_of_check","formulas":45,
+ "problem_digest":"27751aa61e9de6fd","cardinality_search":[1],
+ "bounded_search":"a model was reported at carrier 1","dropped_symbols":[],"seconds":0.084}
+```
+
+Every intermediate file lands in `--out`, so a run is reproducible by hand from what it leaves
+behind: `problem.tsv` and its digest, `problem_k1.smt2` (or `problem.in` plus `symbols.tsv` for
+Mace4), the solver's raw output, `model.tsv`, and `checker.json`.
+
+Pass `--goals` a TSV of triples — `derivations.tsv` from `reason --certificate` is the intended
+input, with `--goals-skip-columns 1` — and each becomes its own run asking whether the ontology
+FAILS to entail it. A `model_checked` there carries `owl_reading:
+"not_entailed_under_unproved_translation"`, which is `Fol.not_entails_of_check` plus two things
+this layer does not prove: `OwlLean.adequacy` lives in a sibling project, and the Rust-to-Lean
+translation correspondence is pinned by tests and not proved. Never shorten it to "not entailed".
+
+**A rejected model stops the line.** If a solver answers `sat` and the checker rejects the
+structure, the verdict stays `satisfiable_oracle` — it is not a fact about the ontology — but the
+report carries a `disagreement` block with `severity: STOP_THE_LINE`, the run summary counts it,
+and the command exits non-zero. That is the treatment `tools/shacl_differential.py` gives a
+FALSE_CLEAN, for the same reason: a disagreement between a checker and the thing it is checking is
+the one result that must fail a pipeline.
+
+**The two finders differ in what they can be asked, and the verdict rules read the difference.**
+
+| | Z3 | Mace4 |
+|---|---|---|
+| format | SMT-LIB 2 (`fol --format smtlib`) | LADR (`fol --format ladr`) |
+| smallest carrier | 1 | 2 — `mace4 -n 1` is a FATAL error, measured |
+| unbounded question | yes, so `unsatisfiable_oracle` is reachable | no, it is a finite model finder |
+| symbols | quoted with vertical bars | MANGLED to `p0`/`r0`/`c0`, table in `symbols.tsv` |
+| reduct | auxiliary functions | Skolem functions and constants |
+
+Mangling is not a style choice. LADR reads a name whose first letter is in `{u,v,w,x,y,z}` as a
+VARIABLE, so an IRI beginning with one of those becomes universally quantified and Mace4 silently
+searches a different problem. Measured on LADR 2009-11A: `p0(w0). -p0(k0).` is echoed in Mace4's
+own `CLAUSES FOR SEARCH` block as `p0(x).` and `-p0(k0).`, and the run reports `exit (exhausted)`
+with no error at all.
+
+## What is proved, and what is not, on this layer
+
+Every result in `lean/Fol/` has axiom footprint `[propext, Quot.sound]` or smaller, pinned by
+`#guard_msgs` in the source. `Classical.choice` appears nowhere in the layer, which is tighter than
+the triple the older layers carry.
+
+| theorem | says |
+|---|---|
+| `Fol.eval_iff` | the Boolean evaluator and the `Prop` satisfaction relation agree, at every formula and environment |
+| `Fol.satisfiable_of_check` | an accepted structure is an existence proof: the problem is satisfiable |
+| `Fol.check_complete` | the gate can fail: a rejection is about the structure, not the checker's patience |
+| `Fol.check_complete_closed` | for a problem of sentences, a rejected structure is not a model under **any** assignment |
+| `Fol.not_entails_of_check` | a checked model of `¬φ :: Γ` proves `Γ` does not entail `φ` |
+
+`lean/Fol/Witness.lean` closes the vacuity question by construction: `employment_is_satisfiable`
+accepts a real structure, `the_model_does_not_satisfy_everything` shows that same structure refuses
+a formula, `not_everything_is_satisfiable` shows `Satisfiable` is not the trivial predicate, and
+five named forgeries are each rejected on their own through `check_complete`, so it is the
+checker's own rejection that is certified rather than an independent argument.
+
+Not proved, and named next to the verdict rather than in a footnote:
+
+- **Nothing about unsatisfiability, in any direction, ever.**
+- **The absence of a finite model implies nothing.** SHIQ lacks the finite model property, so a
+  satisfiable ontology can have only infinite models and will never receive a certificate.
+- **The OWL-level reading** rides on `OwlLean.adequacy` in the sibling project *and* on the
+  Rust-to-Lean translation correspondence, which decision 0005 states is pinned by tests and not
+  proved. It carries its own word, `not_entailed_under_unproved_translation`, which must never be
+  shortened to "not entailed".
+- **The parser and the file formats** (`lean/Fol/Parse.lean`, `lean/FolMain.lean`). A parse error
+  is exit 2 and never a verdict in either direction.
+
+Nothing in `src/` writes either file yet, so today this layer checks certificates rather than
+producing them. See
+[decision 0006](decisions/0006-a-model-is-a-certificate-and-a-refutation-is-not.md).
+## Does a retrieved slice still support the answer?
+
+A certificate says the engine's inferences over ONE graph are entailed by it. A GraphRAG pipeline
+asks a different question: an answer was grounded in a retrieved slice, so does that slice still
+entail the claims the answer rests on?
+
+`preserve` and `graph_projection_entailment_check` ask it per claim, and every preserved-and-derived
+claim gets a SUB-CERTIFICATE extracted from the projection's own `derivations.tsv` and checked by
+`oo-cert` against the projection's own `asserted.tsv`. No new Lean was written:
+`OOCert.certificate_sound` covers it unchanged, and the sub-certificate's line order is valid
+because `run_full` computes a round's conclusions from the closure as it stood at the start of the
+round, so every premise was asserted or concluded strictly earlier.
+
+The verdict table follows the one above.
+
+| verdict | theorem | means |
+|---|---|---|
+| `preserved_checked` | `OOCert.certificate_sound` | the projection entails the claim, machine-checked |
+| `preserved_under_supplied_rules_checked` | `OOCert.horn_certificate_sound` | true in every model of the projection that **also satisfies** your rules. Carries the table's digest. Never shortened |
+| `preserved_asserted` | none | the claim is literally in the slice. A lookup, not a theorem |
+| `preserved_unchecked` | none | the ENGINE derived it and no checker looked |
+| `lost_under_profile_unchecked` | none | not derivable from the slice under this profile, bounded by a rule table covering 29 of the profile's 78 rules |
+| `ungrounded_in_source` | none | NEITHER graph derives it, so the generator invented it and a better retriever will not help |
+
+Every run also checks monotonicity: OWL RL is monotone and a projection is a subset, so anything the
+projection entails and the source does not is a soundness bug in this engine, reported at
+`STOP_THE_LINE` rather than as a retrieval result. It is disarmed, loudly and with its own reason,
+when the projection is not a subset, when blank nodes could not be matched, or when either run
+stopped at the iteration cap instead of a fixpoint.
+
+Run over the shipped corpus, 275 ontologies swept with the gate armed on all 275 and every source
+certificate accepted by `oo-cert`, it found nothing.
+
+See [docs/projection-entailment.md](projection-entailment.md) and
+[decision 0007](decisions/0007-a-slice-preserves-a-conclusion-or-it-does-not.md).
 
 ## Known limitations
 
 Stated rather than discovered later.
 
+- **A conclusion no RDF serialiser can write is refused, not derived.** A literal in subject
+  position or a non-IRI in predicate position produces a triple the store cannot hold. Such a
+  conclusion is not materialised, not certified, and not used as a premise, so a run that hits one
+  derives LESS than its rule set licenses. The count and up to three examples come back as
+  `skipped_unserialisable` and `skipped_examples`. This is reachable from ordinary OWL: `:p
+  rdfs:subPropertyOf [ owl:inverseOf :q ]` is what the OWL 2 mapping to RDF produces for
+  `SubObjectPropertyOf(:p ObjectInverseOf(:q))`, and it makes `rdfs7` conclude a triple with a
+  blank node in predicate position.
 - **The rule table is this engine's, not W3C's.** `by_rule` describes what this engine did. It is
   not an OWL 2 RL conformance claim, and the engine does not implement every rule in the profile.
 - **`asserted.tsv` is the store, not your file.** Quads are flattened, so a triple present in two
@@ -189,6 +569,18 @@ Stated rather than discovered later.
   but if you materialise into a store that already held inferences they appear in `asserted.tsv` as
   assumptions with nothing marking them derived. Use `inference_graph: true` (decision 0001) when
   that distinction matters.
+- **No clash found is not consistency.** Seven of the seventeen clash rules are not looked for at
+  all and eight of the ten that are cannot be certified, so a clean `reason` run means "none of the
+  ten rules tried fired", never "this ontology is consistent". A rejected refutation means the same:
+  `oo-refute`'s own report says so in every verdict it prints.
+- **One clash is reported per refutation, and only the first certifiable one is written.** A graph
+  with twenty disjointness clashes gets one `refutation.tsv`. `clash_count` and `by_rule` carry the
+  rest; ten are listed in full under `clashes`. Refuting a graph once is enough to invalidate every
+  derivation over it, so a second refutation would add nothing.
+- **The refutation's derivation prefix is not byte-stable across runs.** Which of several valid
+  derivations of a premise the fixpoint recorded first depends on the same hash iteration order that
+  already decides the line order of `derivations.tsv`. The contradiction itself IS stable: clashes
+  are sorted on their N-Triples spelling before one is chosen.
 - **A SHACL report double-counts a node selected by two target declarations of one shape.** Both
   `focus_nodes` and `violation_count` are affected. Collapsing identical results is not the fix:
   SHACL emits one result per SPARQL solution, pyshacl does too, and deduplicating breaks an exact

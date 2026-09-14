@@ -28,6 +28,47 @@ pub struct SegmentResult {
     pub frontier_iris: Vec<String>,
 }
 
+/// Write one term of the slice.
+///
+/// Every term used to be wrapped in angle brackets unconditionally, which is
+/// wrong for a blank node and for a literal. `rdfs:subClassOf` objects are
+/// blank-node restrictions on essentially every OWL ontology in this
+/// repository, so the slice contained `<_:b0>` — a relative reference that is
+/// not a legal IRI — and since issue #93 `load_turtle` collects all or nothing,
+/// so ONE restriction superclass made the ENTIRE slice fail to parse. The
+/// auditor it pairs with then reported `projection_parses: false` with
+/// `aggregate_coverage_ratio: 0.0` and no diagnosis. Measured on
+/// `benchmark/ontoaxiom/data/ontoaxiom/ontologies/pizza.ttl` and
+/// `benchmark/reference/pizza-reference.owl`: both produced an unparseable
+/// slice.
+///
+/// Emitting a blank node bare makes the slice parse, and the labels are then
+/// FRESH on re-parse, which is the trap `projection_entailment` handles by
+/// disarming its monotonicity gate and saying so. The way to get a slice whose
+/// blank nodes still match the source is to skolemise the source first
+/// (`projection_entailment::skolemise`), which this repository's closure-diff
+/// path does by default.
+fn term(t: &str) -> String {
+    if t.starts_with("_:") || t.starts_with('"') {
+        t.to_string()
+    } else {
+        format!("<{t}>")
+    }
+}
+
+/// Strip the angle brackets a SPARQL JSON row puts round an IRI, and ONLY
+/// those.
+///
+/// The old `trim_matches(|c| c == '<' || c == '>')` ate the closing bracket of
+/// a typed literal's datatype IRI as well, so `"1"^^<...#integer>` came back as
+/// `"1"^^<...#integer` and could not be written back out.
+fn unbracket(t: &str) -> String {
+    match t.strip_prefix('<').and_then(|x| x.strip_suffix('>')) {
+        Some(inner) => inner.to_string(),
+        None => t.to_string(),
+    }
+}
+
 /// TBox-relevant predicates that get traversed when retrieving a slice.
 const TBOX_PREDICATES: &[&str] = &[
     "http://www.w3.org/2000/01/rdf-schema#subClassOf",
@@ -73,7 +114,7 @@ pub fn retrieve_segment(
                 {
                     for row in rows {
                         if let Some(o) = row["o"].as_str() {
-                            let o = o.trim_matches(|c| c == '<' || c == '>').to_string();
+                            let o = unbracket(o);
                             triples.insert((iri.clone(), pred.to_string(), o.clone()));
                             if !visited.contains(&o) {
                                 next_frontier.push(o);
@@ -93,7 +134,7 @@ pub fn retrieve_segment(
             {
                 for row in rows {
                     if let Some(o) = row["o"].as_str() {
-                        let o = o.trim_matches(|c| c == '<' || c == '>').to_string();
+                        let o = unbracket(o);
                         triples.insert((
                             iri.clone(),
                             "http://www.w3.org/1999/02/22-rdf-syntax-ns#type".to_string(),
@@ -114,7 +155,7 @@ pub fn retrieve_segment(
                 {
                     for row in rows {
                         if let Some(s) = row["s"].as_str() {
-                            let s = s.trim_matches(|c| c == '<' || c == '>').to_string();
+                            let s = unbracket(s);
                             triples.insert((
                                 s.clone(),
                                 "http://www.w3.org/1999/02/22-rdf-syntax-ns#type".to_string(),
@@ -133,7 +174,12 @@ pub fn retrieve_segment(
 
     let mut turtle = String::new();
     for (s, p, o) in &triples {
-        turtle.push_str(&format!("<{}> <{}> <{}> .\n", s, p, o));
+        turtle.push_str(&term(s));
+        turtle.push(' ');
+        turtle.push_str(&term(p));
+        turtle.push(' ');
+        turtle.push_str(&term(o));
+        turtle.push_str(" .\n");
     }
 
     Ok(SegmentResult {
@@ -165,6 +211,32 @@ mod tests {
         )
         .unwrap();
         g
+    }
+
+    /// The measured defect. Every term used to be wrapped in angle brackets,
+    /// so a blank-node restriction superclass produced `<_:b0>` and the whole
+    /// slice failed to parse — on the very ontologies this repository ships.
+    #[test]
+    fn a_slice_with_a_blank_node_superclass_still_parses() {
+        let g = Arc::new(GraphStore::new());
+        g.load_turtle(
+            r#"
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix ex: <http://ex.org/> .
+            ex:Cheesy rdfs:subClassOf ex:Pizza ,
+                [ a owl:Restriction ; owl:onProperty ex:hasTopping ; owl:someValuesFrom ex:Cheese ] .
+        "#,
+            None,
+        )
+        .unwrap();
+        let r = retrieve_segment(&g, &["http://ex.org/Cheesy".to_string()], 2, false).unwrap();
+        assert!(!r.turtle.contains("<_:"), "a blank node is not an IRI: {}", r.turtle);
+        let back = GraphStore::new();
+        back.load_turtle(&r.turtle, None).unwrap_or_else(|e| {
+            panic!("the slice must parse, or the auditor it pairs with sees 0% coverage: {e}\n{}", r.turtle)
+        });
+        assert!(back.triple_count() > 0);
     }
 
     #[test]
