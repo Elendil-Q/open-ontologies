@@ -77,10 +77,27 @@ inside one.
 > if `checkCert G steps = true` then for every step, `G ⊨ step.conclusion`
 
 where `G ⊨ t` is truth in every model of `G` under the semantics in `lean/OOCert/Semantics.lean`:
-the RDF-based reading of the twenty rules' vocabulary, with each semantic condition the *if*
-direction of the W3C condition or a consequence of it, never more. Weaker conditions admit more
-interpretations, so the result carries over to the OWL 2 RDF-Based Semantics and to the Direct
-Semantics read through triples.
+the RDF-based reading of the twenty-nine rules' vocabulary, with each semantic condition the *if*
+direction of the W3C condition or a consequence of it, never more.
+
+Weaker conditions admit more interpretations, so the result carries outward, and that transfer is
+now a theorem rather than a claim. `lean/OOCert/W3C.lean` states the OWL 2 RDF-Based Semantics
+conditions at full strength, one field per table cell quoted verbatim from the raw HTML of the
+specification, and `OOCert.W3CEntails.of_entails` proves that everything `Entails` gives is true in
+every interpretation meeting them. `OOCert.certificate_w3c_sound` is `certificate_sound` restated
+over that class, with the same certificates and the same checker.
+
+Fourteen arms of the soundness proof used to be *posited*: the theorem that `scm-dom1` is sound read
+a field off `Conditions` which said that `scm-dom1` holds. All fourteen are now derived, and each
+derivation is a proof term that depends on no axiom at all. The cell that makes them derivable is
+Table 5.8's connective, which carries `rowspan="4"` in the source and so states an `iff` for
+`rdfs:subClassOf`, `rdfs:subPropertyOf`, `rdfs:domain` and `rdfs:range`. RDFS alone gives those rows
+only the `if-then` direction, and the twelve `scm-*` arms among the fourteen do not follow from it.
+
+**The claim that the result carries over to the OWL 2 Direct Semantics read through triples is
+withdrawn.** Nobody verified it, and it is false as written for those twelve arms, which need a
+backward direction the Direct Semantics has no `rdfs:subClassOf` triples to carry. Do not reinstate
+it without a formalisation of that translation.
 
 The axioms the theorem depends on are pinned in the source by `#guard_msgs`:
 `propext`, `Classical.choice`, `Quot.sound`. A `sorry`, or a `native_decide`, fails `lake build`.
@@ -102,6 +119,49 @@ The third is the one worth reading. It is a machine-checked refutation of the de
 used to make: a model of the premises in which `x` is not a `C`. So the removed rule was unsound in
 fact, not merely unjustified by the rule set the checker implements. The witness is the Herbrand
 interpretation of the premises plus the single consequence the semantics does force.
+
+### Which model class a negative result is about, and it is not the specification's
+
+Entailment transfers outward and non-entailment does not. A triple true in every model of the
+weaker `Conditions` is true in every conforming interpretation, which is what
+`W3CEntails.of_entails` proves; a triple *false* in some model of `Conditions` need not be false in
+any conforming one, because that model need not be conforming.
+
+**Every `¬ Entails`, every `¬ Unsat` and every `Model I G` in this repository is therefore a
+statement about the Lean's own model class unless it is stated over `W3CModel`.** That includes the
+second and third rows of the table above. Each is discharged by a Herbrand or a saturated
+interpretation, and neither kind is a conforming one: a Herbrand witness carrying no `rdf:type`
+triple has `IC` empty, so Table 5.8's backward direction forces `rdfs:subClassOf` and
+`rdfs:subPropertyOf` triples that the witness does not contain.
+
+Two of them now have conforming versions, in `lean/OOCert/W3CWitness.lean`:
+
+| theorem | says |
+|---|---|
+| `live_is_a_w3c_model` | a seventeen-element interpretation meets the quoted cells of Tables 5.2, 5.3, 5.6, 5.8, 5.9, 5.12 and 5.13, so `W3C` is satisfiable |
+| `live_is_live` | and it is not degenerate: `IC` has three members and is not the carrier, one class extension is everything, another is a proper subset witnessed on both sides, a third is empty, and the property that matters has a pair in it |
+| `the_natural_avf2_direction_is_not_w3c_entailed` | the reversed `scm-avf2` conclusion fails in that interpretation |
+| `not_everything_is_w3c_entailed` | `W3CEntails` is not the trivial relation either |
+
+`live_is_live` is compiled into the build on purpose. A soundness theorem over a degenerate model
+class would look better than the assumption it replaced while proving less, so the liveness facts
+are a `decide`-checked theorem rather than a sentence in a comment, and shortening the model to fix
+a build failure breaks it rather than hollowing it out quietly.
+
+The rest stay open, and the obstruction is recorded at each of them rather than worked around.
+`RefuteWitness.lean`'s `Der`, which is the repository's only general "every graph has a model"
+machine, cannot be extended to carry Table 5.8's backward halves: the constructor would put `Der` to
+the left of an arrow and Lean rejects the strictly negative occurrence. The obstruction is
+mathematical and not an artefact of Lean. `sc_bwd` is antitone in `ICEXT(a)`, so adding a `rdf:type`
+triple can un-force a `rdfs:subClassOf` triple that `sc_fwd` still demands, and there is no least
+fixed point by monotonicity. Every conforming countermodel has to be a hand-built finite structure.
+
+`the_natural_avf2_direction_is_not_w3c_entailed` is also not a proof that the triple fails to be
+OWL 2 RDF-Based entailed, and nobody should write that sentence. `W3CModel`'s class is still larger
+than the conforming interpretations, because `W3C` omits every table row no rule consumes: the model
+violates Table 5.2's `owl:Thing | = IR` and `rdf:Property | = IP` rows, and the axiomatic triple
+tables are absent entirely. It is closer to the specification than anything else here and it does
+not arrive.
 
 ## What is not proved
 
