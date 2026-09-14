@@ -5,6 +5,47 @@ All notable changes to Open Ontologies are documented here.
 ## [Unreleased]
 
 ### Added
+- **SWRL and RIF Core front ends, so the logic-programming family is covered in
+  fact and not only in architecture.** `lean/OOCert/Horn.lean` proves one
+  soundness theorem good for every rule table at once and decision 0003 names
+  RIF Core, Datalog and SWRL as the reason, but nothing in the repository could
+  produce a rule table from a standard rule syntax: the only format anything
+  read was `rules.tsv`, an internal encoding, and grep found no mention of SWRL
+  or RIF outside that decision record. `rules-import --from swrl|rif`
+  (`onto_rules_import` over MCP, `rules-import` in batch) closes that. SWRL is
+  read out of a loaded RDF graph through the `swrl:Imp` encoding, reusing the
+  one `rdf:first`/`rdf:rest` reader `src/tableaux.rs` already had for
+  `owl:intersectionOf`; RIF Core is read out of its normative XML syntax.
+  Datalog is deliberately not offered as a front end, because it has no single
+  standard concrete syntax and a Datalog program over triples IS a `rules.tsv`
+  table.
+
+  **Only a fragment of each language is a Horn table over triple patterns, and
+  the exact fragment is in docs/rule-syntax-front-ends.md and in every
+  response.** SWRL built-in atoms, `swrl:SameIndividualAtom`,
+  `swrl:DifferentIndividualsAtom`, `swrl:DataRangeAtom`, anonymous class
+  expressions and an empty head are refused; RIF `Equal`, `External`, `Expr`,
+  `rif:local` constants, `List` terms, `Or`/`Neg`/`Naf`, an existential
+  conclusion, an `Atom` of arity 0 or 3+, `rif:Import` and the presentation
+  syntax are refused. Every refusal is NAMED AND COUNTED, and by default one
+  refusal fails the whole import with no table written: a rule set that quietly
+  lost half its rules still reaches a fixpoint and its certificate still checks
+  green, which is a sound proof about a rule set nobody wrote.
+  `--allow-partial` imports the rest and flags the result
+  `certifies_a_weaker_rule_set`, the name the DL model-certificate block
+  already uses for the same idea.
+
+  Every rule a front end emits is named `swrl/…` or `rif/…` and no built-in
+  rule is, so an imported table can never render identically to the built-in
+  one and can never earn the absolute verdict. It always lands on
+  `entailed_under_supplied_rules` under `OOCert.horn_certificate_sound`.
+  `tests/rule_syntax_frontend_test.rs` runs a real rules file in each syntax
+  through the engine into `lake exe oo-horn check` and asserts the verdict it
+  gets back; `no_front_end_can_name_a_rule_the_way_a_built_in_is_named` pins
+  the naming with no Lean present, and `a_partial_import_can_never_be_silent`
+  pins that no combination of arguments writes a table with a refusal recorded
+  and the weaker-rule-set flag false.
+
 - **Derivation certificates, checked by a proved-sound Lean checker.**
   `reason --certificate DIR` (also `onto_reason`'s `certificate_dir` and batch
   `reason --certificate`) writes `asserted.tsv` and `derivations.tsv`: every

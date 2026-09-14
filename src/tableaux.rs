@@ -216,12 +216,58 @@ impl Interner {
 
 // ── Triple Index ────────────────────────────────────────────────────────
 
-struct TripleIndex {
+/// A by-subject view of a graph, with the one RDF list reader this crate has.
+///
+/// `pub(crate)` rather than private because `rulesyntax.rs` reads SWRL atom
+/// lists, which are `rdf:List`s exactly as `owl:intersectionOf`'s operand list
+/// is. A second traversal of `rdf:first`/`rdf:rest` would be a second thing to
+/// keep right; there is one, and `walk_list_checked` is it.
+pub(crate) struct TripleIndex {
     by_subject: HashMap<String, Vec<(String, String)>>,
 }
 
+/// Why a traversal of an `rdf:List` did not reach `rdf:nil`.
+///
+/// `walk_list` drops this, which is right for the DL parser: a malformed
+/// `owl:intersectionOf` list yields a shorter conjunction, the reasoner derives
+/// less, and deriving less is the sound direction. It is NOT right for a rule
+/// importer, where a truncated body is a DIFFERENT RULE that fires more often
+/// than the one the user wrote. So the defect is returned and the caller
+/// decides.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ListDefect {
+    /// A cell with no `rdf:first`. Its position in the list is lost.
+    NoFirst(String),
+    /// A cell with no `rdf:rest`, so the list never reaches `rdf:nil`.
+    Unterminated(String),
+    /// Still walking after `MAX_LIST_CELLS` cells: a cycle, or a list longer
+    /// than anything this reads.
+    TooLong,
+}
+
+impl ListDefect {
+    pub(crate) fn describe(&self) -> String {
+        match self {
+            ListDefect::NoFirst(cell) => {
+                format!("the list cell {cell} has no rdf:first, so an element is missing")
+            }
+            ListDefect::Unterminated(cell) => format!(
+                "the list cell {cell} has no rdf:rest, so the list never reaches rdf:nil and its \
+                 remaining elements are unknown"
+            ),
+            ListDefect::TooLong => format!(
+                "the list did not reach rdf:nil within {MAX_LIST_CELLS} cells, which means a \
+                 cycle through rdf:rest or a list longer than this reads"
+            ),
+        }
+    }
+}
+
+/// The cell budget both list readers share.
+pub(crate) const MAX_LIST_CELLS: usize = 1000;
+
 impl TripleIndex {
-    fn new(triples: &[(String, String, String)]) -> Self {
+    pub(crate) fn new(triples: &[(String, String, String)]) -> Self {
         let mut by_subject: HashMap<String, Vec<(String, String)>> = HashMap::new();
         for (s, p, o) in triples {
             by_subject
@@ -232,7 +278,7 @@ impl TripleIndex {
         Self { by_subject }
     }
 
-    fn objects(&self, subject: &str, predicate: &str) -> Vec<String> {
+    pub(crate) fn objects(&self, subject: &str, predicate: &str) -> Vec<String> {
         self.by_subject
             .get(subject)
             .map(|pairs| {
@@ -245,26 +291,46 @@ impl TripleIndex {
             .unwrap_or_default()
     }
 
-    fn object(&self, subject: &str, predicate: &str) -> Option<String> {
+    pub(crate) fn object(&self, subject: &str, predicate: &str) -> Option<String> {
         self.objects(subject, predicate).into_iter().next()
     }
 
-    fn walk_list(&self, head: &str) -> Vec<String> {
+    /// Walk an `rdf:List`, reporting the FIRST thing that stopped it reaching
+    /// `rdf:nil` cleanly. The items are gathered exactly as `walk_list` has
+    /// always gathered them, so the two readings differ only in what they SAY,
+    /// never in what they collect.
+    pub(crate) fn walk_list_checked(&self, head: &str) -> (Vec<String>, Option<ListDefect>) {
         let mut items = Vec::new();
+        let mut defect: Option<ListDefect> = None;
         let mut current = head.to_string();
-        for _ in 0..1000 {
+        for _ in 0..MAX_LIST_CELLS {
             if current == RDF_NIL {
-                break;
+                return (items, defect);
             }
-            if let Some(first) = self.object(&current, RDF_FIRST) {
-                items.push(first);
+            match self.object(&current, RDF_FIRST) {
+                Some(first) => items.push(first),
+                // Skipped, not fatal: that is what this reader has always done.
+                None => {
+                    defect.get_or_insert_with(|| ListDefect::NoFirst(current.clone()));
+                }
             }
             match self.object(&current, RDF_REST) {
                 Some(rest) => current = rest,
-                None => break,
+                None => {
+                    defect.get_or_insert(ListDefect::Unterminated(current));
+                    return (items, defect);
+                }
             }
         }
-        items
+        (items, Some(defect.unwrap_or(ListDefect::TooLong)))
+    }
+
+    /// The DL parser's reading: take what there is and say nothing about a
+    /// malformed tail. A short `owl:intersectionOf` list yields a smaller
+    /// conjunction and the reasoner derives less, which is the sound direction
+    /// there. Behaviour is unchanged.
+    fn walk_list(&self, head: &str) -> Vec<String> {
+        self.walk_list_checked(head).0
     }
 }
 

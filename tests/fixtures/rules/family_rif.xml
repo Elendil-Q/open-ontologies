@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The same two rules as family_swrl.ttl, written in RIF Core's XML syntax.
+
+  Entity references are expanded: this importer does not process a DOCTYPE, and
+  reading `&rif;iri` as six literal characters would silently turn every IRI
+  constant into a local one. An unexpanded entity is an error here, not a guess.
+
+  The first rule uses Frame, which is the RIF construct that IS an RDF triple.
+  The second uses Member, which is rdf:type.
+-->
+<Document xmlns="http://www.w3.org/2007/rif#">
+  <payload>
+    <Group>
+
+      <sentence>
+        <Forall>
+          <declare><Var>x</Var></declare>
+          <declare><Var>y</Var></declare>
+          <declare><Var>z</Var></declare>
+          <formula>
+            <Implies>
+              <id><Const type="http://www.w3.org/2007/rif#iri">http://example.org/family#uncle</Const></id>
+              <if>
+                <And>
+                  <formula>
+                    <Frame>
+                      <object><Var>x</Var></object>
+                      <slot ordered="yes">
+                        <Const type="http://www.w3.org/2007/rif#iri">http://example.org/family#hasParent</Const>
+                        <Var>y</Var>
+                      </slot>
+                    </Frame>
+                  </formula>
+                  <formula>
+                    <Frame>
+                      <object><Var>y</Var></object>
+                      <slot ordered="yes">
+                        <Const type="http://www.w3.org/2007/rif#iri">http://example.org/family#hasBrother</Const>
+                        <Var>z</Var>
+                      </slot>
+                    </Frame>
+                  </formula>
+                </And>
+              </if>
+              <then>
+                <Frame>
+                  <object><Var>x</Var></object>
+                  <slot ordered="yes">
+                    <Const type="http://www.w3.org/2007/rif#iri">http://example.org/family#hasUncle</Const>
+                    <Var>z</Var>
+                  </slot>
+                </Frame>
+              </then>
+            </Implies>
+          </formula>
+        </Forall>
+      </sentence>
+
+      <sentence>
+        <Forall>
+          <declare><Var>x</Var></declare>
+          <formula>
+            <Implies>
+              <id><Const type="http://www.w3.org/2007/rif#iri">http://example.org/family#every-supplier-is-compliant</Const></id>
+              <if>
+                <Member>
+                  <instance><Var>x</Var></instance>
+                  <class><Const type="http://www.w3.org/2007/rif#iri">http://example.org/family#Supplier</Const></class>
+                </Member>
+              </if>
+              <then>
+                <Member>
+                  <instance><Var>x</Var></instance>
+                  <class><Const type="http://www.w3.org/2007/rif#iri">http://example.org/family#Compliant</Const></class>
+                </Member>
+              </then>
+            </Implies>
+          </formula>
+        </Forall>
+      </sentence>
+
+    </Group>
+  </payload>
+</Document>

@@ -168,13 +168,42 @@ inference and never the premises. The report carries a digest of the table that 
 runs can be compared, and `tests/lean_horn_certificate_test.rs` fails if a user-rule run ever
 reports the absolute verdict.
 
-Nineteen of the engine's rules are Horn rules and appear in the built-in table. `cls-int1` and
-`cls-uni` are not: their premise count is the length of an RDF list, which is data rather than fixed
-by the rule, so they remain hardcoded arms. A user rule language stops at the same boundary.
+Twenty-seven of the engine's rules are Horn rules and appear in the built-in table, the count
+`the_built_in_rules_are_emitted_as_data` pins. Four are not: `cls-int1`, `cls-int2`, `cls-uni` and
+`cls-oo` each read an RDF list off the graph, so the LIST is a premise and the premise count is data
+rather than fixed by the rule. They remain hardcoded arms. A user rule language stops at the same
+boundary.
 
-The Rust reasoner does not yet evaluate a supplied rule table, so today this layer checks
-certificates rather than producing them. See
+`reason --rules TABLE --certificate DIR` evaluates a supplied table to a fixpoint over the loaded
+graph and writes the three files `oo-horn check` reads. Nothing is materialised: a conclusion drawn
+under a table nobody has checked holds only in models that satisfy that table, and writing it into
+the store beside the assertions would lose exactly that distinction. See
 [decision 0003](decisions/0003-a-rule-is-data-and-an-assumption-is-not-a-fact.md).
+
+## Rules you wrote in SWRL or RIF Core
+
+`rules.tsv` is an internal encoding, not a language anybody writes in. `rules-import` reads two
+standard rule syntaxes into it.
+
+```bash
+open-ontologies load ontology.ttl
+open-ontologies rules-import --from swrl --out rules.tsv              # SWRL, out of the loaded graph
+open-ontologies rules-import --from swrl --file rules.owl --out rules.tsv
+open-ontologies rules-import --from rif  --file rules.xml --out rules.tsv
+open-ontologies reason --rules rules.tsv --certificate cert/
+cd lean && lake exe oo-horn check ../cert/rules.tsv ../cert/asserted.tsv ../cert/horn.tsv
+```
+
+**Only part of each language is a Horn table over triple patterns, and the exact fragment is in
+[docs/rule-syntax-front-ends.md](rule-syntax-front-ends.md) and in every response.** A rule outside
+it is named, counted and refused; by default one refusal fails the whole import and writes nothing,
+because a table that quietly lost a rule still reaches a fixpoint and still produces a certificate
+that checks green, which is a sound proof about a rule set nobody wrote. `--allow-partial` imports
+the rest and flags the result `certifies_a_weaker_rule_set`.
+
+Every imported rule is a rule you wrote, so it lands on the second row of the table above without
+exception: imported rules are named `swrl/…` and `rif/…`, no built-in rule is, and `oo-horn` awards
+the absolute verdict only to a table that renders identically to the built-in one.
 
 ## Known limitations
 

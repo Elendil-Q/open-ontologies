@@ -60,7 +60,42 @@ cases. The engine's rule count has since grown; the checker covers 29 of the OWL
 rules, 30 counting `cax-dw` in the refutation layer, and four of them stay as hand-written arms
 because their premise count is the length of an RDF list.
 
+## The family is now covered in fact and not only in architecture
+
+This decision said the logic-programming family — RIF Core, Datalog, SWRL — was the reason to make
+rules data. For a while that was true of the checker and false of the product: the only rule syntax
+anything here could read was `rules.tsv`, which is an internal encoding and not a language anybody
+writes in, and grep found no mention of SWRL or RIF outside this file. A user holding a rules file
+in a standard syntax could use none of it.
+
+`src/rulesyntax.rs` and `rules-import` / `onto_rules_import` close that. SWRL is read out of a
+loaded RDF graph through the `swrl:Imp` encoding, reusing the one `rdf:first`/`rdf:rest` reader the
+DL parser already had; RIF Core is read out of its normative XML syntax. Datalog is deliberately NOT
+offered as a front end, because it has no single standard concrete syntax and a Datalog program over
+triples IS a `rules.tsv` table.
+
+Three things follow from decision 4 and are not negotiable in that code:
+
+1. **Both front ends produce USER tables.** Every rule is named `swrl/…` or `rif/…`, no built-in
+   rule is, and `oo-horn` awards `entailed` only to a table that renders identically to the
+   built-in one. So an imported table structurally cannot earn the absolute verdict.
+   `a_swrl_rule_never_earns_the_absolute_verdict` and its RIF twin are the front ends' copies of
+   `a_user_rule_never_earns_the_absolute_verdict`, and they run the whole pipeline into `oo-horn`.
+2. **A rule that cannot be represented is refused by name and counted.** Both languages exceed a
+   Horn table: SWRL has built-in atoms, same- and different-individual atoms and data ranges; RIF
+   Core has equality, External, `Expr`, `rif:local` and list terms. By default ONE refusal fails the
+   whole import and no table is written, because a rule set that quietly lost half its rules still
+   reaches a fixpoint and its certificate still checks green — a sound proof about a rule set nobody
+   wrote, which is the laundering failure in its purest form. `allow_partial` is the opt-in and sets
+   `certifies_a_weaker_rule_set`, the name the DL model-certificate block already uses for the same
+   idea.
+3. **The supported fragment is stated, never implied.** `docs/rule-syntax-front-ends.md` and every
+   response carry it. "SWRL is supported" would be the false claim this decision exists to prevent
+   one level up.
+
 ## Still not done
 
 - Nothing in `src/` writes the refutation format, so inconsistency can be checked and not yet
   produced by this engine.
+- The RIF presentation syntax is not parsed. It is refused by name; a half-written parser for it
+  would mis-read rules rather than refuse them.

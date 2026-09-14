@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  A rule using an External predicate. `pred:numeric-greater-than` is computed by
+  a function outside the rule set; a Horn table matches triples that are in the
+  graph and computes nothing. The RIF counterpart of a SWRL built-in atom.
+-->
+<Document xmlns="http://www.w3.org/2007/rif#">
+  <payload>
+    <Group>
+      <sentence>
+        <Forall>
+          <declare><Var>x</Var></declare>
+          <declare><Var>n</Var></declare>
+          <formula>
+            <Implies>
+              <id><Const type="http://www.w3.org/2007/rif#iri">http://example.org/family#adults-only</Const></id>
+              <if>
+                <And>
+                  <formula>
+                    <Frame>
+                      <object><Var>x</Var></object>
+                      <slot ordered="yes">
+                        <Const type="http://www.w3.org/2007/rif#iri">http://example.org/family#age</Const>
+                        <Var>n</Var>
+                      </slot>
+                    </Frame>
+                  </formula>
+                  <formula>
+                    <External>
+                      <content>
+                        <Atom>
+                          <op><Const type="http://www.w3.org/2007/rif#iri">http://www.w3.org/2007/rif-builtin-predicate#numeric-greater-than</Const></op>
+                          <args ordered="yes">
+                            <Var>n</Var>
+                            <Const type="http://www.w3.org/2001/XMLSchema#integer">17</Const>
+                          </args>
+                        </Atom>
+                      </content>
+                    </External>
+                  </formula>
+                </And>
+              </if>
+              <then>
+                <Member>
+                  <instance><Var>x</Var></instance>
+                  <class><Const type="http://www.w3.org/2007/rif#iri">http://example.org/family#Adult</Const></class>
+                </Member>
+              </then>
+            </Implies>
+          </formula>
+        </Forall>
+      </sentence>
+    </Group>
+  </payload>
+</Document>

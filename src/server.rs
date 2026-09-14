@@ -1922,6 +1922,18 @@ impl OpenOntologiesServer {
             .unwrap_or_else(Self::err_json)
     }
 
+    #[tool(name = "onto_rules_import", description = "Read rules written in a STANDARD rule syntax into the Horn rule table `onto_reason` evaluates with `rules_file` and the proved-sound Lean checker verifies with `lake exe oo-horn check`. `from: \"swrl\"` reads SWRL rules encoded in RDF (swrl:Imp with swrl:body / swrl:head as rdf:List atom lists) out of the loaded graph, or out of `file` if one is given. `from: \"rif\"` reads RIF Core in its normative XML syntax from `file`; the presentation syntax is NOT parsed and is refused rather than half-read. ONLY PART OF EACH LANGUAGE IS A HORN TABLE OVER TRIPLE PATTERNS. SWRL built-in atoms (swrlb: arithmetic and string predicates), swrl:SameIndividualAtom, swrl:DifferentIndividualsAtom, swrl:DataRangeAtom and anonymous class expressions are refused; RIF equality, External functions and predicates, Expr terms, rif:local constants, List terms, Or/Neg/Naf, an existential conclusion and an Atom of arity 0 or 3+ are refused. A refused rule is NAMED AND COUNTED and by default fails the whole import with no table written, because a rule set that quietly lost half its rules still reaches a fixpoint and still produces a certificate that checks green, which is a sound proof about a rule set nobody wrote. `allow_partial: true` imports the rest anyway and flags the result `certifies_a_weaker_rule_set`. Every rule imported is a rule YOU wrote and nothing discharges it, so a certificate over the table can only ever earn `entailed_under_supplied_rules` under `OOCert.horn_certificate_sound`: true in every model of the asserted graph THAT ALSO SATISFIES YOUR RULES. This tool states no verdict; `oo-horn check` is what pronounces.")]
+    fn onto_rules_import(&self, Parameters(input): Parameters<OntoRulesImportInput>) -> String {
+        crate::rulesyntax::run_import(
+            &self.graph,
+            &input.from,
+            input.file.as_deref().map(std::path::Path::new),
+            input.out.as_deref().map(std::path::Path::new),
+            input.allow_partial.unwrap_or(false),
+        )
+        .unwrap_or_else(Self::err_json)
+    }
+
     #[tool(name = "onto_dl_explain", description = "Explain why a class is unsatisfiable using DL tableaux reasoning. Returns an explanation trace showing the logical contradictions that make the class impossible to instantiate.")]
     async fn onto_dl_explain(&self, Parameters(input): Parameters<OntoDlExplainInput>) -> String {
         use crate::tableaux::DlReasoner;
@@ -2890,6 +2902,6 @@ impl OpenOntologiesServer {
 impl ServerHandler for OpenOntologiesServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().enable_prompts().build())
-            .with_instructions("Open Ontologies: AI-native ontology engine, an RDF/OWL/SPARQL MCP server with 109 tools and 6 workflow prompts for ontology engineering, validation, comparison, alignment, data ingestion, and exploration. All 109 tools are advertised in a default build; 8 of them require an optional Cargo feature (embeddings, plugins, postgres or duckdb) and return an error without it.")
+            .with_instructions("Open Ontologies: AI-native ontology engine, an RDF/OWL/SPARQL MCP server with 110 tools and 6 workflow prompts for ontology engineering, validation, comparison, alignment, data ingestion, and exploration. All 110 tools are advertised in a default build; 8 of them require an optional Cargo feature (embeddings, plugins, postgres or duckdb) and return an error without it.")
     }
 }
