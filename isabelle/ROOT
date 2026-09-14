@@ -1,0 +1,21 @@
+session OOHorn = HOL +
+  description "
+    Independent second formalisation, in Isabelle/HOL, of the OWL 2 RL/RDF Horn
+    certificate checker and its model theory.  Built from the W3C primary sources and
+    the fixture DATA only; no part of the project's Lean layer was read.
+  "
+  options [document = false]
+  sessions
+    "HOL-Library"
+  theories
+    OO_Format
+    OO_Semantics
+    OO_Check
+    OO_Sound
+    OO_Builtin_Sound
+    OO_NonVacuity
+    OO_Parse
+    OO_Pipeline
+    OO_Fixtures
+    OO_Audit
+    OO_Export
