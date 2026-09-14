@@ -7,11 +7,17 @@
 <h1 align="center">Open Ontologies</h1>
 
 <p align="center">
-  <strong>A Terraforming MCP for Knowledge Graphs</strong><br>
-  Validate, classify, and govern AI-generated ontologies. Written in Rust. Ships as a single binary.
+  <strong>An ontology engine whose answers carry their evidence</strong><br>
+  Reason, validate and align over RDF and OWL, then have a small verified checker in Lean 4
+  confirm the result. Written in Rust. Ships as a single binary.
 </p>
 
 <p align="center">
+  <a href="https://tesseractsemantics.com"><strong>tesseractsemantics.com</strong></a>
+</p>
+
+<p align="center">
+  <a href="https://tesseractsemantics.com"><img src="https://img.shields.io/badge/Tesseract%20Semantics-tesseractsemantics.com-111827?style=for-the-badge" alt="Tesseract Semantics"></a>
   <a href="https://github.com/fabio-rovai/open-ontologies/stargazers"><img src="https://img.shields.io/github/stars/fabio-rovai/open-ontologies?style=for-the-badge&logo=github" alt="Stars"></a>
   <a href="https://github.com/fabio-rovai/open-ontologies/network/members"><img src="https://img.shields.io/github/forks/fabio-rovai/open-ontologies?style=for-the-badge&logo=github" alt="Forks"></a>
   <a href="https://github.com/fabio-rovai/open-ontologies/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/fabio-rovai/open-ontologies/ci.yml?branch=main&style=for-the-badge" alt="CI"></a>
@@ -40,7 +46,26 @@
 
 ---
 
-Open Ontologies is a **Rust MCP server** and **desktop Studio** for AI-native ontology engineering. It exposes **110 tools** that let Claude build, validate, query, diff, lint, version, reason over, align, plan, certify, and govern RDF/OWL ontologies using an in-memory Oxigraph triple store, alongside a three-layer Dynamics → Causal → Planner architecture, a marketplace of 33 standard ontologies, clinical crosswalks, semantic embeddings, and a lineage audit trail. A default build advertises all 110 tools. Eight of them need an optional Cargo feature and return an error without it: four need `embeddings`, two need `plugins`, and two need `postgres` or `duckdb`. The published binaries and the GHCR image are built with the default feature set, so they do not carry those eight. Build from source with `cargo build --release --features embeddings,plugins,sql` to get them.
+Open Ontologies is a **Rust MCP server** and **desktop Studio** for ontology engineering, built by
+[Tesseract Semantics](https://tesseractsemantics.com). It exposes **111 tools** that let Claude build,
+validate, query, diff, lint, version, reason over, align, plan, certify and govern RDF and OWL using an
+in-memory Oxigraph triple store, alongside a marketplace of 33 standard ontologies, clinical
+crosswalks, semantic embeddings and a lineage audit trail.
+
+What separates it from every other engine of this kind is what comes back with the answer. An
+inference arrives with a derivation certificate. A satisfiable ontology arrives with a model. An
+inconsistent one arrives with a refutation. A retrieval slice arrives with the entailments it
+preserves. Each of those is replayed by a small checker written in Lean 4, in core Lean with no
+Mathlib, whose theorems say the conclusion holds in every model of what you asserted. You do not have
+to trust this engine. You can check what it did.
+
+The discipline matters more than the machinery, and it runs through the whole system. A rule you
+supplied is an assumption the certificate carries, never a fact it establishes, so it earns a
+different verdict word. A model a solver hands back can be checked and becomes a certificate; a
+refutation cannot be replayed in core Lean and stays an oracle opinion, and the two never share a
+word. Where something is measured rather than proved, the documentation says measured.
+
+A default build advertises all 111 tools. Eight of them need an optional Cargo feature and return an error without it: four need `embeddings`, two need `plugins`, and two need `postgres` or `duckdb`. The published binaries and the GHCR image are built with the default feature set, so they do not carry those eight. Build from source with `cargo build --release --features embeddings,plugins,sql` to get them.
 
 The **Studio** wraps the engine in a visual desktop environment: virtualized ontology tree with hierarchy lines, breadcrumb navigation, and connection explorer; AI chat panel with `/build` (IES-level deep) and `/sketch` (quick prototype) commands; Protégé-style property inspector; and lineage viewer.
 
@@ -878,7 +903,7 @@ The same tool, applied to any ontology, produces the same kind of improvement. T
 
 ## Tools
 
-110 tools organized by function, available as MCP tools (prefixed `onto_`) and CLI subcommands. A default build advertises all 110. Eight require an optional Cargo feature at call time: `embed`, `search`, `similarity` and `hnsw_build` need `embeddings`; `plugin_list` and `plugin_call` need `plugins`; `import-schema` and `sql-ingest` need `postgres` or `duckdb`.
+111 tools organized by function, available as MCP tools (prefixed `onto_`) and CLI subcommands. A default build advertises all 111. Eight require an optional Cargo feature at call time: `embed`, `search`, `similarity` and `hnsw_build` need `embeddings`; `plugin_list` and `plugin_call` need `plugins`; `import-schema` and `sql-ingest` need `postgres` or `duckdb`.
 
 | Category | Tools | Purpose |
 | --- | --- | --- |
@@ -947,7 +972,7 @@ flowchart TD
             REST["REST API\n/api/query · /api/update\n/api/save · /api/load · /api/lineage"]
         end
 
-        subgraph ToolGroups["110 Tools"]
+        subgraph ToolGroups["111 Tools"]
             direction LR
             Core["Core\nvalidate · load · save · clear\nstats · query · diff · lint\nconvert · status"]
             DataPipe["Data Pipeline\nmap · ingest · shacl\nreason · extend · import-schema"]
