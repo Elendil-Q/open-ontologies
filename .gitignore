@@ -33,3 +33,32 @@ python/oo_lite_test.duckdb
 demo/derived/
 demo/corpus_extracted/
 demo/_review.jsonl
+
+# Confidentiality guards, promoted from one case study's .gitignore to the root.
+# The pattern that protected `case-studies/foundry-owl-crosswalk/` worked, and it
+# protected exactly one directory out of eighteen. A naming discipline defeated
+# by one misnamed file is not a guard.
+#
+# Outreach drafts name real recipients. Never publish them.
+OUTREACH.md
+**/OUTREACH.md
+**/OUTREACH*.md
+**/outreach/
+**/CAMPAIGN*.md
+**/PROSPECTS*.md
+**/PRIVATE*.md
+**/BIDNOBID*.md
+**/*-internal.md
+
+# Environment files. `studio/.env` was committed once; it held a port number and
+# no harm was done, which is the only reason this is a near miss and not a story.
+.env
+.env.*
+!.env.example
+**/.env
+!**/.env.example
+
+# In-progress research. This was protected only by .git/info/exclude, which is
+# local-only: it does not travel with the repo, it is gone on a fresh clone, and
+# it is invisible to a collaborator or to an agent working in one.
+benchmark/handshake_gate/
