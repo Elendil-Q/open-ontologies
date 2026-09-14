@@ -3,7 +3,7 @@
 The Rust suite has had this since `tests/common/mod.rs` was written: a test that
 skips for want of a toolchain prints a `SKIPPED_FIXTURE:` marker, and any job
 that is supposed to PROVIDE that toolchain sets `OO_REQUIRE_FIXTURES=1`, which
-makes the skip fatal. The `lean` job runs fifteen legs that way, and
+makes the skip fatal. The `lean` job runs nineteen legs that way, and
 `w3c-shacl` one more. The Python suite had no equivalent of any kind: no
 `conftest.py` existed, no test read the variable, and every `pytest.skip` and
 `pytest.importorskip` in `python/tests/` was unconditional and unpromotable.

@@ -235,6 +235,7 @@ a Protégé-style inspector. No JVM. No Protégé.
 | Architecture | [docs/architecture.md](docs/architecture.md) |
 | Derivation certificates and the Lean checkers | [docs/lean-certificates.md](docs/lean-certificates.md) |
 | What the Lean proofs assume about the Rust | [docs/trusted-computing-base.md](docs/trusted-computing-base.md) |
+| Which gates a green CI tick actually ran | [docs/ci-gates.md](docs/ci-gates.md) |
 | First-order export, TPTP and Common Logic | [docs/first-order-export.md](docs/first-order-export.md) |
 | Every reasoning system, and why each was used or refused | [docs/reasoning-systems-inventory.md](docs/reasoning-systems-inventory.md) |
 | Design decisions, one rule per file | [docs/decisions/](docs/decisions/) |

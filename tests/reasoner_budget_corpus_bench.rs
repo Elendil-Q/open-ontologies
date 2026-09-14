@@ -1,46 +1,68 @@
 //! What a change to the reasoner's budgets costs, measured rather than asserted.
 //!
 //! `src/tableaux.rs` carries a cost measurement in a doc comment — "a
-//! 20-ontology corpus went from 67s to over 600s" — and until this file there
-//! was no way to reproduce it. A number in a comment that nobody can re-run is a
-//! number that goes stale silently, and the budget it justifies is exactly the
-//! kind of setting that gets changed by someone who cannot check what it costs.
+//! 20-ontology corpus went from 67s to over 600s" — over a corpus that is
+//! written down NOWHERE, so it cannot be re-run and this file does not reproduce
+//! it. It measures two corpora that ARE in the tree instead, neither of which is
+//! that one: the twenty case studies reach no budget at all, and the ten hard
+//! ones have two reaching one rather than five. A number in a comment that
+//! nobody can re-run is a number that goes stale silently, and the budget it
+//! justifies is exactly the kind of setting that gets changed by someone who
+//! cannot check what it costs.
 //!
-//! The corpus is fixed and is in the repository: every `*.ttl` under a
-//! `case-studies/**/ontology/` directory, plus the two core ontologies that live
-//! one level up, minus `occupational-map.ttl`, which is 5.7 MB and is already
-//! excluded from the certificate corpus for the same reason. That is twenty
-//! files.
+//! TWO corpora, both fixed and both in the repository. `CORPUS` is every `*.ttl`
+//! under a `case-studies/**/ontology/` directory, plus the two core ontologies
+//! that live one level up, minus `occupational-map.ttl`, which is 5.7 MB and is
+//! already excluded from the certificate corpus for the same reason: twenty
+//! files, none of which reaches a budget. `HARD` is ten from `benchmark/` that
+//! cost something, two of which exhaust one. Both are needed, and the reason is
+//! in the comment on `HARD`.
 //!
 //! IGNORED by default, because it takes minutes and measures wall clock, which
 //! is not a thing an assertion should be built on. Run it deliberately:
 //!
 //! ```text
-//! cargo test --release --test reasoner_budget_corpus_bench -- --ignored --nocapture
+//! cargo test --test reasoner_budget_corpus_bench -- --ignored --nocapture
 //! ```
+//!
+//! The numbers below are from THAT command, the debug profile, because that is
+//! what `cargo test` runs and comparing a debug total against a release total
+//! measures the optimiser. Add `--release` if you want to, and then compare only
+//! release against release.
 //!
 //! It prints per-ontology wall time, the phases that ran out of budget, and the
 //! total. Compare two totals; do not compare a total against a number in a
 //! comment written on a different machine.
 //!
-//! MEASURED, 14 September 2026, `cargo test` debug profile, this machine,
-//! running the two builds back to back so they share whatever load the machine
-//! was under — which matters more than it sounds: an earlier pair of runs
-//! differed by a factor of four purely because a release build was competing
-//! with one of them. The change under test is `phase_deadline_within`, which
-//! puts every phase under the `classify_timeout_ms` ceiling, plus the widening
-//! of definition realization to untyped individuals.
+//! MEASURED, 15 September 2026, `cargo test` debug profile, this machine,
+//! alternating the two builds so they share whatever load the machine was under
+//! — which matters more than it sounds: an earlier pair of runs differed by a
+//! factor of four purely because a release build was competing with one of them.
+//! The change under test is `phase_deadline_within`, which puts every phase
+//! under the `classify_timeout_ms` ceiling, plus the widening of definition
+//! realization to untyped individuals.
+//!
+//! THREE RUNS OF EACH BUILD, not one, because one run of each cannot tell a cost
+//! from the machine:
 //!
 //! | corpus | before | after |
 //! |---|---|---|
-//! | twenty case-study ontologies, none reaching a budget | 0.10s | 0.10s |
-//! | ten that do, two of them exhausting one | 64.53s | 63.84s |
+//! | twenty case-study ontologies, none reaching a budget | 0.33 / 0.09 / 0.09s | 0.10 / 0.34 / 0.08s |
+//! | ten that do, two of them exhausting one | 62.42 / 62.78 / 65.10s | 63.75 / 62.62 / 64.55s |
 //!
-//! Unchanged, and it has to be: at the shipped settings
-//! `min(now + 10 000 ms, now + 180 000 ms)` is the same instant the phase
-//! budget alone produced, so the intersection is arithmetic and not work. The
-//! difference shows up only when `classify_timeout_ms` is set below five times
-//! `tableaux_test_timeout_ms`, which is when it is meant to.
+//! Unchanged: the "after" range lies inside the "before" range on both corpora,
+//! and the spread between two runs of the SAME build is larger than any gap
+//! between the builds. It also has to be unchanged, which is why three runs are
+//! enough to believe it: at the shipped settings
+//! `min(now + 10 000 ms, now + 180 000 ms)` is the same instant the phase budget
+//! alone produced, so the intersection is five `Option` comparisons per run and
+//! not work. The difference shows up only when `classify_timeout_ms` is set
+//! below five times `tableaux_test_timeout_ms`, which is when it is meant to.
+//!
+//! Do not quote a single pair from this table as "the" number. The two 30-second
+//! rows are clock-bound and identical by construction; everything that can move
+//! is in the other eight, which total under two seconds, so a 1-second gap
+//! between two totals is the machine and not the code.
 
 mod common;
 
@@ -52,9 +74,9 @@ use open_ontologies::reason::Reasoner;
 
 /// The ontologies in this repository that actually exhaust a reasoner budget.
 ///
-/// The case-study corpus below is broad and EASY: measured here it runs in under
-/// three seconds and not one of the twenty hits a cap, so a change to the budget
-/// logic is invisible in it. A cost measurement over a corpus that never reaches
+/// The case-study corpus below is broad and EASY: measured here it runs in about
+/// a tenth of a second and not one of the twenty hits a cap, so a change to the
+/// budget logic is invisible in it. A cost measurement over a corpus that never reaches
 /// the thing being measured is the shape of number this project exists to
 /// refuse, so this second list exists and is the one that answers the question.
 /// `nominals_blowup.ttl` is in `benchmark/reasoner/regressions/` for exactly this

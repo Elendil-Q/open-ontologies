@@ -261,7 +261,7 @@ jobs:
   # tests need, and `python/tests/conftest.py` makes `OO_REQUIRE_FIXTURES=1` mean
   # on this side what it has meant on the Rust side since `tests/common/mod.rs`:
   # a skip is a failure. The strict leg below names the files whose dependencies
-  # this job actually provides, exactly as the `lean` job names its fifteen.
+  # this job actually provides, exactly as the `lean` job names its nineteen.
   python:
     # 15 was enough for `pytest -q` on a pure-Python suite. This job now builds
     # `lean/` and a release binary, which is what the `lean` job budgets 45 for.

@@ -6,12 +6,16 @@
 //!
 //!   1. **It could not fire.** Each phase of a classification opens its own
 //!      deadline from `tableaux_test_timeout_ms`, which defaults to 10 000 ms.
-//!      Four phases — consistency, satisfiability, subsumption, ABox — is a
-//!      worst case of 40 000 ms, so a 180 000 ms global deadline is dead
-//!      arithmetic. An earlier attempt to fix this by minting a deadline per
+//!      Four phases had one — consistency, satisfiability, subsumption, ABox —
+//!      for a worst case of 40 000 ms, so a 180 000 ms global deadline was dead
+//!      arithmetic. Explanation is the fifth and had no clock at all, which is
+//!      point 2 below; with it under the same budget the worst case is 50 000 ms
+//!      and the ceiling is still dead arithmetic, which is what the run now says
+//!      in words. An earlier attempt to fix this by minting a deadline per
 //!      TABLEAU did hand the global budget the run, and took a 20-ontology
 //!      corpus from 67s to over 600s. It was abandoned, correctly, and the knob
-//!      stayed.
+//!      stayed. (That 67s is unreproducible — its corpus was never written down.
+//!      `tests/reasoner_budget_corpus_bench.rs` pins two that were.)
 //!   2. **It did not cover the run.** `classify_timeout_ms` was read inside
 //!      `classify_parallel` and nowhere else, so the TBox consistency check
 //!      before it, the ABox check after it and the explanation loop after that
@@ -210,11 +214,20 @@ fn the_classification_budget_bounds_the_run_or_the_run_says_it_does_not() {
     //       all: `apply_reasoner` wrote the depth cap, the node cap and the
     //       iteration cap and touched neither clock. Three comments in
     //       `src/tableaux.rs` referred to "`[reasoner] classify_timeout_ms`" as
-    //       though it were a setting. The only ways to move either were the
-    //       `--reason-timeout-ms` flag, which moves the per-test one only, and
-    //       the setters above, which exist for tests. A ceiling nobody can lower
-    //       is the strongest form of a limit that enforces nothing, and the note
-    //       this run now prints tells a reader to lower it.
+    //       though it were a setting. The only way to move either was the pair
+    //       of setters above, which exist for tests — and the phase one was
+    //       documented as "used by the CLI `--reason-timeout-ms` flag", which
+    //       does not exist: grepping the whole tree for that string returned one
+    //       hit, the sentence claiming it. A ceiling nobody can lower is the
+    //       strongest form of a limit that enforces nothing, and the note this
+    //       run now prints tells a reader to lower it.
+    //
+    //       Worse than an unreachable key: `Config` does not deny unknown
+    //       fields, so a user who wrote `classify_timeout_ms = 30000` in
+    //       `config.toml` got a clean parse, no warning, and no effect. That is
+    //       what the assertions below would have caught, and did: run this test
+    //       against the pre-fix engine and `classify_timeout_ms()` comes back
+    //       holding whatever the previous line set, not 4321.
     let toml = r#"
         [reasoner]
         classify_timeout_ms = 4321

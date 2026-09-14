@@ -172,7 +172,11 @@ pub fn set_tableaux_test_timeout_ms(ms: usize) {
 /// fifty, which is less than a hundred and eighty. Making it the binding bound
 /// means minting a deadline per tableau rather than per phase, which was
 /// measured: a 20-ontology corpus went from 67s to over 600s with no verdict
-/// changing. The engine therefore reports, in `budget.binding_bound` and
+/// changing. That number is UNREPRODUCIBLE — its corpus is written down nowhere
+/// and matches neither corpus in `tests/reasoner_budget_corpus_bench.rs`; see
+/// `DlReasoner::phase_deadline`, which is the one place that says so, and the
+/// bench, which is the one place that measures. The engine therefore reports, in
+/// `budget.binding_bound` and
 /// `budget.note` on every `owl-dl` run, which of the two bounds actually stops
 /// the run — including "neither" — rather than leaving a reader to do this
 /// arithmetic from two settings and a phase count.

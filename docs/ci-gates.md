@@ -8,8 +8,8 @@ over the same documents — ran its preflight, found neither of the two tools it
 needs, skipped every test in the file, and exited 0.
 
 This page is the answer to "does a green tick mean this ran?", so that nobody has
-to work it out again from six workflow files and the thirty-three test files that
-can skip — twenty-four Rust, nine Python. It is a statement about CI
+to work it out again from six workflow files and the thirty-four test files that
+can skip — twenty-five Rust, nine Python. It is a statement about CI
 configuration, which changes; the date it was last checked is at the bottom, and
 the way to re-check it is at the bottom too.
 
@@ -70,6 +70,7 @@ job invokes the file at all.
 | `embed_test.rs` | ONNX model in `~/.open-ontologies/models/` | `features/depth` compiles it; no job runs `open-ontologies init` | **skips** |
 | `embedding_e2e_test.rs` | same ONNX model + tokenizer | same | **skips** |
 | `claimcheck_pizza_bench.rs` | `/tmp/pizza_compiled.json` from `CompileOntology.java` | only `benchmark.yml` has a JDK, it is `workflow_dispatch` and does not produce the file | **skips** |
+| `reasoner_budget_corpus_bench.rs` | the tracked corpus (in tree) | any job — but the one test is `#[ignore]` | **not run**, by design: it is a wall-clock measurement, run by hand |
 
 `fol_model_ingest_test.rs` runs in the `lean` job under the same variable and has
 no skip path at all, which is why it is not in the table.
@@ -107,6 +108,15 @@ The other seven files under `python/tests/` have no skip path.
 - **`test_dataframe.py`.** `fenic` is an undeclared optional test dependency.
   Declaring it as an extra and installing it in the `python` job is the fix; it
   was not made here because the dependency has not been assessed.
+- **Two skips inside now-strict Python files are conditions, not missing
+  toolchains, and `OO_REQUIRE_FIXTURES=1` will fail the job on either.** Both are
+  wanted. `test_horn_differential.py` skips a corpus file that pyoxigraph cannot
+  parse; a file under `demo/` that does not parse is a defect and should stop the
+  job rather than vanish into an `s`. `test_horn_rule_table.py` skips when `git`
+  is absent or the tree is not a checkout, which on a GitHub runner after
+  `actions/checkout` cannot happen. Measured on the current tree: the eight
+  strict Python files are 67 passed, 1 skipped, and the one skip is the
+  `oo_opt_in` twelve-minute differential.
 - **The `features/breadth` job runs no tests** (`test: false`); it is
   `cargo check` plus clippy across all features. That is deliberate and is not a
   skip, but it does mean an all-features build is type-checked and never run.
@@ -121,13 +131,15 @@ The other seven files under `python/tests/` have no skip path.
 ## Re-checking this page
 
 ```bash
-# every Rust file that can skip
+# every Rust file that can skip — 25, and the table has 25 rows
 grep -ln 'skip_unless\|SKIPPED_FIXTURE' tests/*.rs
-# every Python file that can skip
+# every Python file that can skip — 10 hits, of which conftest.py is the
+# mechanism and not a test, so 9, and the table has 9 rows
 grep -rln 'pytest.skip\|importorskip\|skipif' python/tests/*.py
 # every leg CI makes strict
 grep -rn 'OO_REQUIRE_FIXTURES=1' .github/workflows/
 ```
 
 The three lists have to reconcile against the table above. Last checked against
-`.github/workflows/` on 14 September 2026.
+`.github/workflows/` on 15 September 2026, by running each of the three commands
+and counting.

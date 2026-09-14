@@ -2387,6 +2387,15 @@ impl DlReasoner {
     /// `owl-dl` run now says so in its `budget` block rather than leaving a
     /// reader to infer it from two settings and a phase count.
     ///
+    /// THAT 67s NUMBER CANNOT BE REPRODUCED FROM THIS REPOSITORY and is kept only
+    /// as the reason a route was abandoned. The corpus it was taken over is not
+    /// written down anywhere: it is not the twenty case-study ontologies, which
+    /// run in 0.10s and reach no budget at all, and it is not the ten hard ones,
+    /// of which two reach a budget rather than five. Both of those ARE written
+    /// down, in `tests/reasoner_budget_corpus_bench.rs`, which exists so that the
+    /// next person to change a budget can measure rather than cite this
+    /// paragraph. Cite the bench.
+    ///
     /// `classify_timeout_ms` is now a CEILING over every phase, not a fifth
     /// budget beside them: see `phase_deadline_within`, which is what every
     /// phase inside a run actually calls. A bare `phase_deadline` is for a
@@ -2404,7 +2413,8 @@ impl DlReasoner {
     /// read, no extra branch — while making it impossible for any phase to
     /// outlive the global budget. The expensive half, minting a fresh budget per
     /// TABLEAU so that the global one is what eventually stops the sweep, is what
-    /// took the corpus from 67s to over 600s and is not what this does.
+    /// took the corpus from 67s to over 600s (a number `phase_deadline` flags as
+    /// unreproducible) and is not what this does.
     ///
     /// `None` on either side means "that one imposes nothing", so with the global
     /// budget switched off this is the phase budget unchanged, and with the phase
@@ -3276,7 +3286,9 @@ impl DlReasoner {
         // a worst case of 50 000 ms, so the 180 000 ms ceiling is dead
         // arithmetic and cannot fire. Handing the global budget the run instead
         // means minting a deadline per TABLEAU, which was measured and took a
-        // 20-ontology corpus from 67s to over 600s, and was abandoned.
+        // 20-ontology corpus from 67s to over 600s, and was abandoned. That
+        // number is unreproducible from this tree; `phase_deadline` says why and
+        // names the bench that is.
         //
         // What is left is the thing that was missing: SAYING SO. A knob that
         // reads as a safety limit may not enforce nothing, and the arithmetic
@@ -4510,14 +4522,6 @@ impl DlReasoner {
         self.emit(&tableau, &HashMap::new(), axioms, dir)
     }
 
-    /// Certify that the TBox is consistent.
-    ///
-    /// No `nonempty` line is needed: `Dl.WellFormed` already requires the domain
-    /// to be non-empty, so a model of the axiom set alone is exactly what TBox
-    /// consistency asserts.
-    /// The named classes, in the interner's order, so a caller can certify each
-    /// one. `run` uses it because TBox consistency alone is witnessed by a
-    /// single point with empty extensions, which is honest and uninformative.
     /// The internal id of a named class, by IRI, for callers that hold a name
     /// and need the id `explain_unsatisfiable` takes. Matches the spelling
     /// `named_class_names` returns, angle brackets and all, and also the bare
@@ -4530,6 +4534,9 @@ impl DlReasoner {
             .find(|&id| self.interner.resolve(id).trim_start_matches('<').trim_end_matches('>') == bare)
     }
 
+    /// The named classes, in the interner's order, so a caller can certify each
+    /// one. `run` uses it because TBox consistency alone is witnessed by a
+    /// single point with empty extensions, which is honest and uninformative.
     pub fn named_class_names(&self) -> Vec<String> {
         let mut v: Vec<String> = self
             .named_classes
@@ -4594,6 +4601,18 @@ impl DlReasoner {
         found
     }
 
+    /// Certify that the TBox is consistent.
+    ///
+    /// No `nonempty` line is needed: `Dl.WellFormed` already requires the domain
+    /// to be non-empty, so a model of the axiom set alone is exactly what TBox
+    /// consistency asserts.
+    ///
+    /// This paragraph was stranded: it sat above `named_class_names`, four
+    /// hundred lines from the function it describes and joined to that
+    /// function's own doc comment with no blank line, so `cargo doc` printed a
+    /// block about certification to a reader of a method that returns a list of
+    /// names, and this method was documented nowhere. It is back where it
+    /// belongs.
     pub fn certify_tbox_consistent(&self, dir: &Path) -> anyhow::Result<ModelOutcome> {
         let mut tableau = Tableau::with_deadline(Arc::clone(&self.tbox), self.phase_deadline());
         tableau.capture = true;

@@ -237,6 +237,15 @@ whole extra TSV line; combining characters against their precomposed form; NUL; 
 language tags; typed literals; percent-encoded separators inside IRIs) and adversarial rule tables,
 and then drive the real public entry points.
 
+**Where this runs.** `tests/certificate_boundary_proptest.rs` needs lake, because the TCB-19/TCB-21
+leg puts the adversarial shapes through `oo-horn check` itself. Until 15 September 2026 no CI job
+invoked it: the `build` job ran it with no lake and it skipped, and the `lean` job, which has lake,
+never named it. It is now a strict leg of the `lean` job under `OO_REQUIRE_FIXTURES=1`, so the
+skip is a failure there, and so are `reason_rl_coverage_test`, `rule_syntax_frontend_test` and
+`reason_horn_emit_test`, which were in the same position. `docs/ci-gates.md` is the table of which
+gate runs where, and Kani is still in no job at all, which is why the section below reports its
+results rather than pointing at a build.
+
 ### Bounded model checking
 
 Kani 0.67.0 installed and ran here, on `nightly-2025-11-21-aarch64-apple-darwin`, over the whole
