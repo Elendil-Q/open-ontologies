@@ -64,18 +64,10 @@ flowchart LR
   C -->|forged| X["refused, exit 1"]
 ```
 
-**What this discipline has caught, in one week of running it against this engine.** Five
-description-logic false cleans, each an inconsistent ontology reported consistent with full
-confidence. A rule that could conclude a triple no serialiser can write, reachable from ordinary
-OWL, which left the store non-deterministic: three runs of one input kept 40, 9 and 24 inferences.
-And two independently verified kernels disagreeing on the same certificates, always in the safe
-direction, tracing to a gap in the format that neither proof could see: it did not say what a
-repeated binding key meant, so one kernel refused the shape and the other answered from whatever
-its lookup happened to do. A key bound twice to different values is satisfied by no substitution
-at all, so there were never two readings, only two ways of discarding half the certificate. Closed
-by [decision 0008](docs/decisions/0008-a-binding-is-data-and-evidence-admits-one-reading.md), and
-the differential now reports zero divergent rows over a corpus four times deeper in the property
-its induction rests on. Every one of those had passed every test that existed before.
+The discipline is not free and it has earned its keep: in one week against this engine it caught five
+description-logic false cleans, a rule that could conclude a triple no serialiser can write, and two
+independently verified kernels disagreeing on the same certificates. Every one had passed every test
+that existed before. [What the rules are, and what each has caught](docs/decisions/).
 
 ## What is actually proved
 
