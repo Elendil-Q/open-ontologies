@@ -106,14 +106,37 @@ fn lake_available() -> bool {
         .unwrap_or(false)
 }
 
+/// A Poly/ML library directory is one this test can actually LINK against, which is
+/// three files and not one. Ubuntu's `polyml` package is the reason the distinction is
+/// checked rather than assumed: it installs `/usr/bin/poly` and `libpolymain.a` and no
+/// `libpolyml.a` at all, so a search that stopped at `poly` would report the Isabelle
+/// half available and then fail in the linker with nothing saying what was missing.
+fn poly_usable(dir: &Path) -> bool {
+    dir.join("poly").exists()
+        && dir.join("libpolymain.a").exists()
+        && dir.join("libpolyml.a").exists()
+}
+
 /// The Isabelle side needs Poly/ML to link the exported checker, and the exported
 /// checker itself, which `isabelle/export.sh` writes out of the session and which is
 /// committed so this test does not need a full Isabelle build to run.
 ///
-/// The same search `isabelle/build_native.sh` does, and for the same reason: asking
-/// `isabelle getenv ISABELLE_HOME` is the only answer that is right on a machine that is
-/// not this one, and the macOS app bundle is only the fallback.
+/// The same search `isabelle/build_native.sh` does, in the same order and for the same
+/// reasons. `POLYDIR` wins, because it is the answer that is right on a machine nobody
+/// anticipated and it is how CI points at the Poly/ML component it unpacks. This test
+/// was macOS-only until 15 September 2026, and an `/Applications` scan is not a search
+/// on a Linux runner. Then `isabelle getenv ISABELLE_HOME`, then the macOS app bundle,
+/// then a `poly` on PATH with its libraries beside it.
 fn poly_dir() -> Option<PathBuf> {
+    // Whatever build_native.sh would link against, this test must agree with, or the
+    // skip decision and the build decision are made on different evidence.
+    if let Ok(dir) = std::env::var("POLYDIR")
+        && !dir.is_empty()
+    {
+        let dir = PathBuf::from(dir);
+        return poly_usable(&dir).then_some(dir);
+    }
+
     let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x86_64" };
     let os = if cfg!(target_os = "macos") { "darwin" } else { "linux" };
     let platform = format!("{arch}-{os}");
@@ -138,14 +161,25 @@ fn poly_dir() -> Option<PathBuf> {
         for c in cs.flatten() {
             if c.file_name().to_string_lossy().starts_with("polyml-") {
                 let d = c.path().join(&platform);
-                if d.join("poly").exists() {
+                if poly_usable(&d) {
                     found.push(d);
                 }
             }
         }
     }
     found.sort();
-    found.pop()
+    if let Some(d) = found.pop() {
+        return Some(d);
+    }
+
+    // A from-source Poly/ML keeps its archives next to its binary.
+    let out = Command::new("sh").args(["-c", "command -v poly"]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let exe = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    let dir = exe.parent()?.to_path_buf();
+    poly_usable(&dir).then_some(dir)
 }
 
 fn isabelle_available() -> bool {
@@ -165,10 +199,13 @@ fn skip() -> bool {
     }
     common::skip_unless(
         isabelle_available(),
-        "Poly/ML (bundled with Isabelle) and isabelle/driver/oo_horn_generated.ML, \
-         for the Isabelle half of the differential",
-        "install Isabelle2025-2 from https://isabelle.in.tum.de; the generated ML is \
-         committed, and isabelle/export.sh regenerates it from the session",
+        "Poly/ML and isabelle/driver/oo_horn_generated.ML, for the Isabelle half of the \
+         differential",
+        "the generated ML is committed, so the full Isabelle distribution is NOT needed: \
+         unpack https://isabelle.in.tum.de/components/polyml-5.9.2-2.tar.gz and set \
+         POLYDIR to its platform directory, which is what CI does. Installing \
+         Isabelle2025-2 also works and is what isabelle/export.sh needs to regenerate \
+         the ML from the session",
     )
 }
 
