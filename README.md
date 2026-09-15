@@ -36,6 +36,16 @@
 
 ---
 
+<p align="center">
+  <img src="docs/assets/studio-graph-dense.png" alt="A 3D knowledge graph of ies-core.ttl with grey asserted edges, green certified edges and red rejected ones, and a panel counting each" width="100%">
+</p>
+
+<p align="center">
+  <sub><b>150 asserted, 259 certified, 4 rejected.</b> Green edges the engine derived and a Lean 4
+  checker then <i>proved</i>. Red edges are forged lines the same checker refused, exit 1, with the
+  rule named. Every count is taken from the run, not written into the caption.</sub>
+</p>
+
 **Ask a reasoner why it believes something and it will tell you to trust it.** This one hands you a
 proof, and refuses a forged one.
 
