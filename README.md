@@ -142,7 +142,8 @@ it.
 
 **Governance.** `main` requires the CI, Lean, SHACL-conformance and Python checks to pass, and
 refuses force pushes and deletion. Those rules do not currently apply to repository admins, so
-they are a safety net and not a control. Commits are not signed yet.
+they are a safety net and not a control. Commits from this point are SSH-signed; everything before
+is not, and a signature says who pushed a commit, never that its claims are true.
 
 **The scope is wider than the idea.** The one genuinely new thing here is proof-carrying reasoning:
 an engine that hands you evidence a separate verified checker accepts. The tool count, the Studio,
