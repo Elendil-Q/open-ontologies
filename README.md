@@ -159,15 +159,20 @@ same checker, and not one of those derivations depends on any axiom at all.
 
 One step short of that is still an argument rather than a theorem, and it is labelled as one in the
 file: reading a conforming interpretation as a Lean `Interp` is a bridge written in prose, because
-nothing in core Lean quantifies over the specification's metatheory. The bridge is four lines and
-checkable by hand. It is not machine-checked, and the file says so where a reader will hit it.
+nothing in core Lean quantifies over the specification's metatheory. That bridge also assumes five
+`IP` memberships taken from the RDF and RDFS axiomatic-triple tables rather than from any cell the
+file quotes, and they are listed there as the assumption they are. So
+`certificate_w3c_sound` is not yet the sentence "true in every conforming interpretation", and no
+document here says it is.
 
-The same review found the limit of that result, and it is written down rather than buried.
-Entailment transfers outward and non-entailment does not, so every `¬ Entails` in the repository is
-a statement about this layer's model class and not about the specification's. One of them now has a
-conforming replacement, one of them was nominated as a detector for a condition it cannot detect,
-and the rest carry the obstruction at the point of the assumption. See
-[docs/lean-certificates.md](docs/lean-certificates.md).
+The same review found the limit of that result. Entailment transfers outward and non-entailment does
+not, so a `¬ Entails` here is about this layer's model class unless something restates it over the
+stronger one. Five of the nine now are, four of them with their existing witness interpretations
+unchanged, including the one a report's `entailed_under_supplied_rules` verdict rests on. The four
+that are not carry the field that stops them as a machine-checked theorem. An earlier version of
+this section said every conforming countermodel had to be hand-built; that was wrong, and the
+correction is in [docs/lean-certificates.md](docs/lean-certificates.md) and in the changelog rather
+than edited out of sight.
 
 The discipline matters more than the machinery, and it runs through all of it.
 

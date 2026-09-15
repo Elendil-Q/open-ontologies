@@ -56,18 +56,33 @@ discipline exists to prevent, so the strengthening is quarantined here, where
 it shrinks nothing: `Entails` does not mention this structure.
 
 The theorem that pays for the quarantine is `W3CEntails.of_entails`. It says
-that everything `Entails` already gives is true in every interpretation meeting
-the specification conditions, and the fourteen arms that used to be posited are
-steps inside its proof. `certificate_sound` keeps its exact statement and its
-exact axiom footprint.
+that everything `Entails` already gives is true in every `W3CModel`, and the
+fourteen arms that used to be posited are steps inside its proof.
+`certificate_sound` keeps its exact statement and its exact axiom footprint.
+
+**`W3CModel` is not the same thing as a conforming interpretation, and no
+document in this repository may say that it is.** Two gaps separate them, both
+stated below and both stated again at `certificate_w3c_sound`: the reading of one
+as the other is prose rather than a theorem, and `W3C` omits every table row no
+rule consumes, so its class is strictly larger than the bridge image. Both run in
+the safe direction for THIS theorem and neither runs in the safe direction for a
+non-entailment result.
 
 `IP` is a PARAMETER of this structure rather than a field of `Interp`, which is
-what makes the whole file additive. It stays completely free: not one of the
-fourteen derivations consumes a free-standing `IP` membership, because every
-`IP` fact they use is produced by a forward condition applied to a premise
-triple. The second formalisation in `isabelle/` needs three axiomatic-triple
-consequences (`c_type_IP`, `c_sco_IP`, `c_spo_IP`, `OO_Semantics.thy`) for the
-same table; this file needs none, because `Interp.sat` has no `IP` conjunct.
+what makes the whole file additive. It stays completely free INSIDE the
+derivations: not one of the fourteen consumes a free-standing `IP` membership,
+because every `IP` fact they use is produced by a forward condition applied to a
+premise triple.
+
+That is a fact about the derivations and it is NOT a claim about the layer as a
+whole, which an earlier draft of this paragraph made. It said that the second
+formalisation in `isabelle/` needs three axiomatic-triple consequences
+(`c_type_IP`, `c_sco_IP`, `c_spo_IP`, `OO_Semantics.thy`) for the same table
+while "this file needs none, because `Interp.sat` has no `IP` conjunct". The
+conclusion is inverted. Dropping the `IP` conjunct from `Interp.sat` does not
+remove those obligations, it MOVES them out of the proofs and into the bridge,
+and the bridge needs FIVE of them where Isabelle needs three. They are listed in
+the next section, because a cost that is paid somewhere else is still paid.
 
 ## The bridge to a conforming interpretation, which is prose and not a theorem
 
@@ -109,6 +124,41 @@ silently applied.
 would move `Entails` in two directions at once, making `facts` harder to supply
 and the conclusion harder to use, and it buys nothing the bridge definition
 above does not already buy.
+
+### The five facts the bridge assumes, which are not cells of anything quoted here
+
+Read `iext` that way and a conforming interpretation does NOT satisfy every field
+below for free. `I.sc a b` unfolds to `IP(I(rdfs:subClassOf)) ∧ (a, b) ∈
+IEXT(I(rdfs:subClassOf))`, and the table cell supplies only the second conjunct;
+`I.cext c x` unfolds to `IP(I(rdf:type)) ∧ (x, c) ∈ IEXT(I(rdf:type))`, and the
+same is true there. So five `IP` memberships have to come from somewhere, and
+every one of them comes from the RDF and RDFS AXIOMATIC TRIPLE tables, which this
+file quotes no cell of.
+
+| fact | needed by | source, re-read in the Recommendation on 15 September 2026 |
+|---|---|---|
+| `I(rdf:type) ∈ IP` | every field whose conclusion mentions `cext`, which is all of `sc_fwd`, `dom_fwd`, `rng_fwd`, `eqc_fwd`, `svf_eq`, `avf_eq`, `hv_eq`, `restr_IC`, `svf_typ`, `avf_typ`, `onp_typ`, and the `IC` antecedents of `sc_bwd`, `dom_bwd` and `rng_bwd` | RDF axiomatic triple `rdf:type rdf:type rdf:Property .`, whose truth puts its own predicate in `IP` by the section 5 clause above |
+| `I(rdfs:subClassOf) ∈ IP` | `sc_bwd` | RDFS axiomatic triple `rdfs:subClassOf rdfs:domain rdfs:Class .`, read through Table 5.8 row 3 forward |
+| `I(rdfs:subPropertyOf) ∈ IP` | `sp_bwd` | RDFS axiomatic triple `rdfs:subPropertyOf rdfs:domain rdf:Property .`, same row |
+| `I(rdfs:domain) ∈ IP` | `dom_bwd` | RDFS axiomatic triple `rdfs:domain rdfs:domain rdf:Property .`, whose truth puts its own predicate in `IP` |
+| `I(rdfs:range) ∈ IP` | `rng_bwd` | RDFS axiomatic triple `rdfs:range rdfs:domain rdf:Property .`, same |
+
+Two fields consume one further `IP` membership in their bridge reading, and it is
+NOT a sixth entry because it comes from a cell this file already quotes.
+`svf_eq` and `hv_eq` conclude `I.iext p x y` in their left-to-right direction,
+which under the bridge carries `IP p`, and Table 5.6 gives only the set
+membership; `IP p` comes from Table 5.3's `owl:onProperty` row, quoted above
+`onp_typ`. `avf_eq` needs nothing extra, because there `I.iext p x y` is a
+hypothesis and supplies its own.
+
+All five axiomatic triples were checked against the raw HTML of
+<https://www.w3.org/TR/rdf11-mt/> on 15 September 2026, in the tables of sections
+8 and 9. The second formalisation makes three of the same assumptions explicitly,
+as `c_type_IP`, `c_sco_IP` and `c_spo_IP` in `isabelle/OO_Semantics.thy`, and it
+needs no counterpart to the last two because its conditions are stated over the
+raw `IEXT I (IS I rdfs_domain)` rather than over a bridged relation. On this
+point the second kernel is AHEAD of this one and the earlier draft of this file
+claimed the reverse.
 
 ## Sources, re-fetched from the raw HTML rather than from a rendering
 
@@ -553,7 +603,11 @@ theorem avf_sp (W : W3C I IP) (c1 c2 p1 p2 y : I.D)
 
 end W3C
 
-/-! ## A conforming model of a graph, and the adequacy theorem -/
+/-! ## A `W3CModel` of a graph, and the adequacy theorem
+
+NOT a conforming interpretation: see the module docstring for the two gaps, and
+`certificate_w3c_sound` for them again. The name is `W3CModel` everywhere and
+nothing here abbreviates it to "conforming model". -/
 
 /-- `I` with property set `IP` meets the specification conditions and models
 `G`. The three list rows are stated over `Chain`, which reads the list off the
@@ -601,7 +655,11 @@ structure W3CModel (I : Interp) (IP : I.D → Prop) (G : List Triple) : Prop whe
   oneOf_eq : ∀ c l ms, (⟨c, V.oneOf, l⟩ : Triple) ∈ G → Chain G l ms →
     ∀ x, (I.cext (I.ι c) x ↔ ∃ m ∈ ms, x = I.ι m)
 
-/-- **Every conforming interpretation is a model here.**
+/-- **Every `W3CModel` is a `Model`.**
+
+Not "every conforming interpretation is a model here": that sentence needs the
+prose bridge and the five axiomatic-triple facts in the module docstring, and
+this theorem quantifies over `W3CModel`, which is a Lean structure.
 
 Twelve of the twenty-three `Conditions` fields below are derivations rather than
 projections: `sc_trans`, `sp_trans`, `eqc`, `eqp`, `svf_sc`, `svf_sp`,
@@ -652,16 +710,29 @@ one. -/
 def W3CEntails (G : List Triple) (t : Triple) : Prop :=
   ∀ (I : Interp) (IP : I.D → Prop), W3CModel I IP G → I.sat t
 
-/-- **The sentence the layer can put its name to.** Everything `Entails` gives
-is true in every conforming interpretation of the graph, and the fourteen
-conditions that used to be posited are steps inside the proof of it.
+/-- **The sentence the layer can put its name to**, and it is about `W3CModel`
+and not about a conforming interpretation. Everything `Entails` gives is true in
+every `W3CModel` of the graph, and the fourteen conditions that used to be
+posited are steps inside the proof of it. Reading that outward, to the
+specification's own interpretations, costs the prose bridge and the five
+axiomatic-triple facts in the module docstring; `certificate_w3c_sound` says so
+again where a reader will hit it.
 
 The transfer runs in this direction and only this one. `Conditions` admits more
 interpretations than `W3C` does, so a claim true in all of them is true in all
-of the smaller class. The converse fails, which is why a `¬ Entails` result
-does NOT give `¬ W3CEntails`, and why every non-entailment witness in
-`Witness.lean`, `Refute.lean`, `RefuteWitness.lean` and `Mixed.lean` is a
-statement about the `Conditions` model class alone. -/
+of the smaller class. The converse fails: a `¬ Entails` result does NOT give
+`¬ W3CEntails`, because the model refuting the first need not be a `W3CModel`.
+
+What that does NOT mean is that every non-entailment here is stuck. It says only
+that each one needs its own proof, and four of the seven in this repository got
+one for free, because the interpretations they already used ARE `W3CModel`s once
+`IP` is instantiated to the empty predicate. `IP` is a free parameter of `W3C`
+and `sp_bwd`, `dom_bwd` and `rng_bwd` are the only fields that take an `IP`
+membership as a hypothesis, so `IP := fun _ => False` makes all three vacuous; a
+witness graph with no `rdfs:Class` typing makes `sc_bwd` vacuous too, because
+`I.IC` is then empty. `W3CWitness.lean` and `Mixed.lean` carry the four, and the
+three that do not transfer carry the field that fails, checked rather than
+asserted. -/
 theorem W3CEntails.of_entails {G : List Triple} {t : Triple} (h : Entails G t) :
     W3CEntails G t :=
   fun _ _ W => h _ W.toModel

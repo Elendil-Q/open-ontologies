@@ -1,4 +1,5 @@
 import OOCert.Refute
+import OOCert.W3C
 
 /-!
 # Witnesses for the refutation layer
@@ -489,8 +490,46 @@ private theorem feed_closure_has_no_clash :
       ¬(t.p = RV.disjointWith ∧ u.p = V.type ∧ u.o = t.s ∧
         v.p = V.type ∧ v.o = t.o ∧ v.s = u.s) := by decide
 
+/-! `feed_is_not_refuted` below is about `Semantics.lean`'s `Conditions`, not
+about the OWL 2 RDF-Based Semantics, and this is where that is recorded. Until
+15 September 2026 it was recorded only in `Semantics.lean`'s docstring, with a
+reason that turned out to be wrong; this file was byte-identical to the one that
+predates `W3C.lean` while that docstring said the caveat sat "at the point of the
+assumption".
+
+Two things stop the transfer and they are different in kind.
+
+FIRST, the direction. `Unsat G` is a universal negative over a model class, so a
+SMALLER class makes it EASIER to hold and `¬ Unsat` harder. Positive refutations
+transfer outward for free, because `W3CModel I IP G → Model I G`; `¬ Unsat` does
+not, and would need a `W3CModel` that also satisfies `RefuteConditions`.
+
+SECOND, this particular interpretation is not one. `feed` carries
+`Lion rdfs:subClassOf Carnivore` and types nothing as an `rdfs:Class`, so
+`W3C.sc_fwd`, Table 5.8 row 1 forward, fails: its conclusion demands
+`Lion ∈ IC`. `sc_fwd` mentions no `IP`, so the `IP := fun _ => False` reading
+that carries four other non-entailments in this repository over to the conforming
+class does not help here. -/
+
+/-- The obstruction, checked rather than asserted. The closure has the
+`rdfs:subClassOf` triple that fires `W3C.sc_fwd` and no typing to satisfy the
+`IC` conjunct that field concludes, so no choice of `IP` makes
+`herbrandL feedClosure` a `W3CModel`.
+
+`V.Class` is taken from `W3C.lean` rather than respelled here, which is why this
+file imports it: the IRI is the whole content of the theorem and a second copy of
+it would be a second thing to keep in step. -/
+theorem feed_closure_misses_the_class_typing :
+    ((⟨rLion, V.subClassOf, rCarnivore⟩ : Triple) ∈ feedClosure) ∧
+      (⟨rLion, V.type, V.Class⟩ : Triple) ∉ feedClosure := by decide
+
+
 /-- **A graph with a disjointness axiom that is NOT refutable.** Without this the
-refutation layer would be consistent with a checker that accepts everything. -/
+refutation layer would be consistent with a checker that accepts everything.
+
+Relative to `Conditions` and to `RefuteConditions`, not to the specification's
+model class; the paragraph above says what stops the transfer and
+`feed_closure_misses_the_class_typing` pins it. -/
 theorem feed_is_not_refuted : ¬ Unsat feed := by
   refine not_unsat_of_joint_model (no_violation_means_a_joint_model feed feed_has_no_sameAs ?_)
   intro c1 c2 x h1 h2 h3
@@ -542,6 +581,19 @@ refuted graph checks green and means nothing, and nothing in
 `certificate_sound` reports that. This is why `oo-refute guard` exists. -/
 theorem the_junk_triple_is_not_in_the_closure : rJunk ∉ grazeClosure := by decide
 
+/-- The same obstruction as `feed_closure_misses_the_class_typing`, on the other
+graph this file builds a model of. -/
+theorem graze_closure_misses_the_class_typing :
+    ((⟨rLion, V.subClassOf, rCarnivore⟩ : Triple) ∈ grazeClosure) ∧
+      (⟨rLion, V.type, V.Class⟩ : Triple) ∉ grazeClosure := by decide
+
+/-- About `Semantics.lean`'s `Conditions`, like every other negative result built
+from a Herbrand interpretation here, and it is one of the four that does not
+transfer to `W3CModel`. `grazeClosure` carries `Lion rdfs:subClassOf Carnivore`
+and types nothing as an `rdfs:Class`, so `W3C.sc_fwd` fails on the `IC` conjunct
+it concludes; `graze_closure_misses_the_class_typing` just above pins that, and the
+field mentions no `IP`, so the empty-`IP` reading that carries four other
+non-entailments over does not apply. -/
 theorem and_the_old_verdict_does_not_notice : ¬ Entails graze rJunk := fun h =>
   the_junk_triple_is_not_in_the_closure
     (h (herbrandL grazeClosure) (graze_closure_is_plain.model graze_inside_its_closure))
@@ -567,6 +619,14 @@ theorem and_the_old_verdict_does_not_notice : ¬ Entails graze rJunk := fun h =>
 /-- info: 'OOCert.graze_is_refuted' depends on axioms: [propext, Quot.sound] -/
 #guard_msgs in
 #print axioms graze_is_refuted
+
+/-- info: 'OOCert.feed_closure_misses_the_class_typing' depends on axioms: [propext] -/
+#guard_msgs in
+#print axioms feed_closure_misses_the_class_typing
+
+/-- info: 'OOCert.graze_closure_misses_the_class_typing' depends on axioms: [propext] -/
+#guard_msgs in
+#print axioms graze_closure_misses_the_class_typing
 
 /-- info: 'OOCert.feed_is_not_refuted' depends on axioms: [propext] -/
 #guard_msgs in

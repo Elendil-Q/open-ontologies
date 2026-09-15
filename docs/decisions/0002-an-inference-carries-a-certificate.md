@@ -42,9 +42,12 @@ on the engine's author having thought of the bug.
 4. **The semantic conditions are the weakest the rules need**, with fourteen exceptions that were
    found later and are now discharged; see the correction at the foot of this record. Each of the
    rest is the *if* direction of the corresponding W3C condition or a consequence of it. Weaker
-   conditions admit more interpretations, so soundness here implies soundness under the OWL 2
-   RDF-Based Semantics, and since 15 September 2026 that implication is a theorem
-   (`OOCert.W3CEntails.of_entails`) rather than an argument in a docstring. `Model` reads a list
+   conditions admit more interpretations, so soundness here implies soundness over the
+   conditions `lean/OOCert/W3C.lean` states, and since 15 September 2026 that implication is a
+   theorem (`OOCert.W3CEntails.of_entails`) rather than an argument in a docstring. It is NOT yet
+   the sentence "sound under the OWL 2 RDF-Based Semantics": the reading of a conforming
+   interpretation as a Lean `Interp` is prose, it assumes five `IP` memberships from the axiomatic
+   triple tables, and `W3CModel` omits every table row no rule consumes. `Model` reads a list
    off the asserted graph through `Chain`, which is weaker than the specification's semantic
    sequence relation and so keeps the model class larger.
 5. **The theorem is shown non-vacuous in the same directory.** A soundness result about an
@@ -104,11 +107,21 @@ still the right thing to use, but for the opposite reason to the one given: it f
 fewer lists, so the conditions over it are weaker and the model class is larger.
 
 **Non-entailment never transferred outward and the record did not say so.** A model of the weaker
-conditions need not be a conforming interpretation, so a refutation built from one is a statement
-about this layer's model class alone. That covers every `¬ Entails`, every `¬ Unsat` and every
-exhibited `Model` in the repository. One of them now has a conforming replacement,
-`the_natural_avf2_direction_is_not_w3c_entailed` in `lean/OOCert/W3CWitness.lean`; the rest stay
-open with the obstruction written at each of them.
+conditions need not be a `W3CModel`, so a refutation built from one is a statement about this
+layer's model class unless something restates it. That covered every `¬ Entails`, every `¬ Unsat`
+and every exhibited `Model` in the repository.
 
-Neither finding is a soundness bug. Both are the layer claiming more than it had earned, which by
-this project's own standard is the same category of defect.
+**And the first attempt to say how far that goes overstated it, in the other direction.** The
+branch that added `W3C.lean` claimed that no Herbrand or saturated witness could ever be a
+`W3CModel` and that "every conforming countermodel has to be a hand-built finite structure". Both
+are false. `IP` is a free parameter of `W3C` rather than a field of `Interp`, so the refuter chooses
+it, and `IP := fun _ => False` makes `sp_bwd`, `dom_bwd` and `rng_bwd` vacuous; an empty `IC` makes
+`sc_bwd` vacuous rather than demanding, which is the opposite of what the claim said. Five of the
+eight negative results are now over `W3CModel`, four of them with their witness interpretations
+unchanged, including `mix_not_absolutely_w3c_entailed`, which is what a report's
+`entailed_under_supplied_rules` verdict rests on. The three that are not carry the failing field as
+a `decide`-checked theorem.
+
+Neither finding is a soundness bug. All of them are the layer claiming more than it had earned,
+which by this project's own standard is the same category of defect, and a false claim of rigour is
+worse than the assumption it replaced because the assumption was visible.

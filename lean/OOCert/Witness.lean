@@ -172,12 +172,16 @@ theorem empty_herbrand_is_a_model : Model (herbrand []) [] where
 
 /-- Entailment is not trivial.
 
-This one DOES transfer to the conforming model class, and
+This one transfers to the `W3CModel` class unchanged, and
 `W3CWitness.lean`'s `not_everything_is_w3c_entailed` is the transfer: over the
 empty graph every antecedent of `W3C` is false and `IP := fun _ => False` makes
-the four backward conditions vacuous, so the same interpretation serves. It is
-the only non-entailment in this file that transfers without a new hand-built
-structure. -/
+the four backward conditions vacuous, so the same interpretation serves.
+
+An earlier version of this docstring added that it was "the only non-entailment
+in this file that transfers without a new hand-built structure". It is not. Two
+of the three below transfer the same way, with their own witness graphs
+unchanged, and the proofs are `an_unlisted_individual_is_not_w3c_entailed` and
+`membership_in_one_member_is_not_w3c_enough`. -/
 theorem not_everything_is_entailed :
     ¬ Entails [] ⟨"<http://ex.org/a>", "<http://ex.org/b>", "<http://ex.org/c>"⟩ := by
   intro h
@@ -294,23 +298,27 @@ theorem svf_witness_is_a_model : Model (herbrand svfWitness) svfPremises where
 /-- **The old rule was unsound.** `C ⊑ ∃p.D` together with `x p y` and `y ∈ D` does not entail
 `x ∈ C`. The reasoner derived exactly this until 13 September 2026.
 
-**The claim is about the `Conditions` model class, and `herbrand svfWitness` is
-NOT a `W3CModel`.** Two fields of `W3C.lean`'s structure fail on it outright.
-`svf_typ` is RBS Table 5.3's row `owl:someValuesFrom ⊆ ICEXT(owl:Restriction) ×
-IC`, and `svfWitness` carries `R owl:someValuesFrom D` with no
-`R rdf:type owl:Restriction`, so the antecedent holds and the consequent does
-not. `sc_fwd` is Table 5.8 row 1 forward, and `svfWitness` carries
-`C rdfs:subClassOf R` while `IC` is empty there, because no triple has
-`rdfs:Class` as its object.
+**This is the one non-entailment in this file that does NOT transfer to the
+`W3CModel` class**, and the field that stops it is checked rather than
+argued: `W3CWitness.lean`'s `svf_witness_misses_the_restriction_typing`.
 
-Patching those in does not finish the job. Bridge coherence
-(`W3CWitness.lean`'s `live_is_bridge_coherent`) puts every predicate the witness
-uses into `IP`, which here is `rdf:type`, `rdfs:subClassOf`, `owl:onProperty`,
-`owl:someValuesFrom` and `p`; `sp_bwd` then forces `q rdfs:subPropertyOf q` for
-each of those five, and `svfWitness` contains no `rdfs:subPropertyOf` triple at
-all. Adding them puts `rdfs:subPropertyOf` itself into `IP`, and the tables
-become a mutual fixpoint. A conforming replacement is therefore a hand-built
-finite structure of the kind `W3CWitness.lean` builds, not a patch to this list.
+`onp_typ` is RBS Table 5.3's `owl:onProperty` row, whose first conjunct is
+`z ∈ ICEXT(owl:Restriction)`. `svfWitness` carries `R owl:onProperty p` and types
+`R` as nothing at all, so the antecedent holds and the consequent fails.
+`svf_typ` fails the same way on `R owl:someValuesFrom D`, and `sc_fwd`, Table 5.8
+row 1 forward, fails on `C rdfs:subClassOf R` because `IC` is empty here, no
+triple having `rdfs:Class` as its object.
+
+None of those three fields mentions `IP`, so the escape that works for the other
+three witnesses in this repository, choosing `IP := fun _ => False` to make the
+backward conditions vacuous, does not apply. A conforming replacement is a
+hand-built finite structure of the kind `W3CWitness.lean` builds.
+
+An earlier version of this paragraph gave a different and wrong reason: that
+bridge coherence forces every predicate the witness uses into `IP` and `sp_bwd`
+then demands reflexive `rdfs:subPropertyOf` triples. Bridge coherence is a
+property `W3CWitness.lean`'s model has, not a field of `W3CModel`, and `IP` is
+free.
 
 **The claim itself is not in doubt and must not be withdrawn on the strength of
 this note.** `tests/reason_rl_ext_soundness_test.rs` pins a real defect; what is
@@ -462,20 +470,20 @@ theorem the_avf2_direction_the_table_gives_is_entailed :
 `C1 rdfs:subClassOf C2` here, which is what copying `scm-avf1` gives, would be
 making a claim this model refutes.
 
-**This one has a conforming replacement**, and it is the only non-entailment in
-the repository that does:
-`W3CWitness.lean`'s `the_natural_avf2_direction_is_not_w3c_entailed` refutes the
-same triple from the same premises with a seventeen-element bridge-coherent
-structure that meets the quoted cells of Tables 5.2, 5.3, 5.6, 5.8, 5.9, 5.12
-and 5.13.
+**This one has a conforming replacement built for it**, and it is the only one
+in the repository that needed a new structure rather than a re-reading of the
+one it already had: `W3CWitness.lean`'s
+`the_natural_avf2_direction_is_not_w3c_entailed` refutes the same triple from the
+same premises with a twenty-six-element bridge-coherent structure that meets the
+quoted cells of Tables 5.2, 5.3, 5.6, 5.8, 5.9, 5.12 and 5.13.
 
-`herbrand avfWitness` is not such a structure and cannot be patched into one.
-`avfWitness` contains no `rdf:type` triple at all, so `IC` is empty and every
-class extension is empty; `avf_typ` and `onp_typ` then fail for want of an
-`owl:Restriction` typing. Supply those and `sp_bwd` forces `(p2, p1)` into
-`rdfs:subPropertyOf`, because both properties have empty extensions there, and
-that triple is absent. The replacement escapes by giving `p2` a pair, which is
-also what makes `dom_bwd` and `rng_bwd` fire non-vacuously. -/
+`herbrand avfWitness` is not such a structure. `avfWitness` contains no `rdf:type`
+triple at all, so every class extension is empty, and `avf_typ` and `onp_typ`
+then fail for want of an `owl:Restriction` typing; `onp_typ` fails for a second
+reason, its `IP p` conjunct, which `IP := fun _ => False` cannot supply. The
+replacement gives `p1` and `p2` real pairs, which is what makes `sp_fwd` and
+`sp_bwd` decide the premise `p1 rdfs:subPropertyOf p2` for a reason and what
+makes `dom_bwd` and `rng_bwd` fire non-vacuously. -/
 theorem the_natural_avf2_direction_is_not_entailed :
     ¬ Entails avfPremises ⟨tC1, V.subClassOf, tC2⟩ := fun h =>
   absurd (h (herbrand avfWitness) avf_witness_is_a_model)
@@ -518,7 +526,9 @@ private theorem oo_l0_rest : ∀ t ∈ ooPremises, t.s = oL0 → t.p = V.rest �
 private theorem oo_l1_first : ∀ t ∈ ooPremises, t.s = oL1 → t.p = V.first → t.o = tB := by decide
 private theorem oo_l1_rest : ∀ t ∈ ooPremises, t.s = oL1 → t.p = V.rest → t.o = V.nil := by decide
 private theorem oo_no_nil_subject : ∀ t ∈ ooPremises, t.s ≠ V.nil := by decide
-private theorem oo_only_oneOf :
+/-- Not `private`: `W3CWitness.lean` reads it to transfer
+`an_unlisted_individual_is_not_entailed` to the `W3CModel` class. -/
+theorem oo_only_oneOf :
     ∀ t ∈ ooPremises, t.p = V.oneOf → t.s = tE ∧ t.o = oL0 := by decide
 
 private theorem oo_chain_nil : ∀ ms, Chain ooPremises V.nil ms → ms = [] := by
@@ -536,7 +546,8 @@ private theorem oo_chain_l1 : ∀ ms, Chain ooPremises oL1 ms → ms = [tB] := b
     subst hm; subst hl
     rw [oo_chain_nil _ hr]
 
-private theorem oo_chain_l0 : ∀ ms, Chain ooPremises oL0 ms → ms = [tA, tB] := by
+/-- Not `private`, for the same reason as `oo_only_oneOf`. -/
+theorem oo_chain_l0 : ∀ ms, Chain ooPremises oL0 ms → ms = [tA, tB] := by
   intro ms h
   rcases chain_inv h with ⟨hn, _⟩ | ⟨m, l', ms', rfl, h1, h2, hr⟩
   · exact absurd hn (by decide)
@@ -618,11 +629,17 @@ passes unchanged whether or not the missing `⊆` half is present, so it cannot
 detect that half's absence. That omission is currently undetected by anything in
 this repository.
 
-SECOND, the result is about the `Conditions` model class. Bridge coherence puts
-every predicate `ooWitness` uses into `IP`, which is `rdf:type`, `owl:oneOf`,
-`rdf:first` and `rdf:rest`; `sp_bwd` then forces `q rdfs:subPropertyOf q` for
-each, and `ooWitness` contains no `rdfs:subPropertyOf` triple. A conforming
-replacement is a hand-built finite structure. -/
+SECOND, an earlier version of this docstring said the result was about the
+`Conditions` model class and could not escape it, on the ground that bridge
+coherence puts every predicate `ooWitness` uses into `IP` and `sp_bwd` then forces
+reflexive `rdfs:subPropertyOf` triples the graph lacks. That is wrong twice over:
+bridge coherence is a property one model in `W3CWitness.lean` happens to have and
+not a field of `W3CModel`, and `IP` is a free parameter that the refuter chooses.
+Choose `IP := fun _ => False` and this very interpretation is a `W3CModel`.
+`an_unlisted_individual_is_not_w3c_entailed` is the transfer, and it needs
+`ooWitness` exactly as it stands. Table 5.5's equality is the only field it has to
+earn, and it satisfies it in both directions, which is the first point read the
+other way round. -/
 theorem an_unlisted_individual_is_not_entailed : ¬ Entails ooPremises ⟨tZ, V.type, tE⟩ :=
   fun h =>
     absurd (h (herbrand ooWitness) oo_witness_is_a_model)
@@ -655,7 +672,10 @@ private theorem i_l0_rest : ∀ t ∈ intPremises, t.s = iL0 → t.p = V.rest �
 private theorem i_l1_first : ∀ t ∈ intPremises, t.s = iL1 → t.p = V.first → t.o = tM2 := by decide
 private theorem i_l1_rest : ∀ t ∈ intPremises, t.s = iL1 → t.p = V.rest → t.o = V.nil := by decide
 private theorem i_no_nil_subject : ∀ t ∈ intPremises, t.s ≠ V.nil := by decide
-private theorem i_only_int :
+/-- Not `private`: `W3CWitness.lean` reads it to transfer
+`membership_in_one_member_does_not_give_the_intersection` to the conforming
+model class. -/
+theorem i_only_int :
     ∀ t ∈ intPremises, t.p = V.intersectionOf → t.s = tK ∧ t.o = iL0 := by decide
 
 /-- Anything that is both an `M1` and an `M2` in this graph is already a `K`,
@@ -684,7 +704,8 @@ private theorem i_chain_l1 : ∀ ms, Chain intPremises iL1 ms → ms = [tM2] := 
     subst hm; subst hl
     rw [i_chain_nil _ hr]
 
-private theorem i_chain_l0 : ∀ ms, Chain intPremises iL0 ms → ms = [tM1, tM2] := by
+/-- Not `private`, for the same reason as `i_only_int`. -/
+theorem i_chain_l0 : ∀ ms, Chain intPremises iL0 ms → ms = [tM1, tM2] := by
   intro ms h
   rcases chain_inv h with ⟨hn, _⟩ | ⟨m, l', ms', rfl, h1, h2, hr⟩
   · exact absurd hn (by decide)
@@ -758,11 +779,17 @@ theorem a_member_of_the_intersection_is_entailed : Entails intPremises ⟨tw, V.
 /-- **And the converse still needs every member.** `v` is an `M1` and no model
 has to make it a `K`, so `cls-int1` has lost nothing to `cls-int2`.
 
-About the `Conditions` model class, for the same reason as the `owl:oneOf` pair
-above: bridge coherence puts `rdf:type`, `owl:intersectionOf`, `rdf:first` and
-`rdf:rest` into `IP`, and `sp_bwd` then forces four `rdfs:subPropertyOf` triples
-that `intWitness` does not contain. A conforming replacement is a hand-built
-finite structure. -/
+This transfers to the `W3CModel` class with `intWitness` unchanged, as
+`membership_in_one_member_is_not_w3c_enough`, by the same `IP := fun _ => False`
+reading as the `owl:oneOf` pair above. Table 5.4's equality holds here in both
+directions, because `w` is the only `K` and also the only thing that is both an
+`M1` and an `M2`; `v` is an `M1` and not an `M2`, which is what keeps the equality
+true and the conclusion false at once.
+
+An earlier version of this docstring said the opposite, on the ground that bridge
+coherence forces `rdf:type`, `owl:intersectionOf`, `rdf:first` and `rdf:rest` into
+`IP` and `sp_bwd` then demands four `rdfs:subPropertyOf` triples. `W3CModel` does
+not require bridge coherence and `IP` is free. -/
 theorem membership_in_one_member_does_not_give_the_intersection :
     ¬ Entails intPremises ⟨tv, V.type, tK⟩ := fun h =>
   absurd (h (herbrand intWitness) int_witness_is_a_model)

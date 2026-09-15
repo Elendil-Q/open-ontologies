@@ -111,48 +111,71 @@ non-vacuity witnesses at risk, which is the observable symptom of a condition
 that has gone too far.
 
 **THE ARGUMENT SECURES POSITIVE RESULTS ONLY, AND THIS IS THE SENTENCE THE FILE
-WAS MISSING.** `Conditions` admits MORE interpretations than the specification
-does. A triple true in every one of them is true in every conforming one, so
-`Entails` transfers outward and `W3CEntails.of_entails` proves it. Nothing
-transfers the other way. A model of `Conditions` need not be a conforming
+WAS MISSING.** `Conditions` admits MORE interpretations than `W3C.lean`'s `W3C`
+does. A triple true in every one of them is true in every `W3CModel`, so
+`Entails` transfers outward and `W3CEntails.of_entails` proves it. Reading that
+one step further out, to the specification's own conforming interpretations,
+costs a prose bridge and five axiomatic-triple facts, and `W3C.lean` states both
+rather than folding them into the word "conforming". Nothing transfers the other
+way. A model of `Conditions` need not be a conforming
 interpretation, so `¬ Entails G t` does NOT give `¬ W3CEntails G t`, and neither
 does `¬ Unsat`, and neither does exhibiting a `Model I G`.
 
-Consequently **every `¬ Entails`, every `¬ Unsat` and every `Model I G` in this
-repository is a statement about THIS model class and not about the
-specification's** unless it is stated over `W3CModel`. That covers
-`Witness.lean`'s `not_everything_is_entailed`,
-`the_old_svf_derivation_is_not_entailed`,
-`the_natural_avf2_direction_is_not_entailed`,
-`an_unlisted_individual_is_not_entailed` and
-`membership_in_one_member_does_not_give_the_intersection`; `Mixed.lean`'s
-`mix_not_absolutely_entailed`, which is the machine-checked basis for reporting
-`entailed_under_supplied_rules` rather than `entailed`; `Refute.lean`'s
-`not_unsat_of_joint_model`; and `RefuteWitness.lean`'s `feed_is_not_refuted`,
-`unsatisfiable_means_a_violation` and every `Model` it builds. Each is refuted
-by a Herbrand or a saturated interpretation, and neither kind is a `W3CModel`:
-a Herbrand witness that carries no `rdf:type` triple has `IC` empty, so
-Table 5.8's backward direction forces `rdfs:subClassOf` and `rdfs:subPropertyOf`
-triples the witness does not contain.
+Consequently a `¬ Entails`, a `¬ Unsat` or a `Model I G` here is a statement
+about THIS model class and not about the specification's, unless something
+restates it over `W3CModel`. The state of each is recorded at the theorem itself
+as well as here, because a summary that lives in one file is a summary that goes
+stale, and this one did.
 
-Two of them are closed over the conforming class, both in `W3CWitness.lean`.
-`the_natural_avf2_direction_is_not_w3c_entailed` refutes the reversed `scm-avf2`
-with a seventeen-element model that meets the quoted cells, and it is the only
-one that needed a new structure built for it. `not_everything_is_w3c_entailed`
-is the other, and it came free: over the EMPTY graph every antecedent of `W3C` is
-false and `IP := fun _ => False` makes the four backward conditions vacuous, so
-the same interpretation serves.
+Nine statements in this repository are a `¬ Entails` or a `¬ Unsat`. Five are
+restated over `W3CModel`, four are not, and the four say which field stops them.
 
-The rest are open, and the obstruction is stated rather than worked around:
-`RefuteWitness.lean`'s `Der` cannot carry Table 5.8's backward halves, because a
-constructor whose premise contains `∀ x, Der G ⟨x, type, a⟩ → Der G ⟨x, type, b⟩`
-puts `Der` to the left of an arrow and Lean rejects the strictly negative
-occurrence. The obstruction is mathematical and not a Lean artefact: `sc_bwd` is
-ANTITONE in `ICEXT(a)`, so adding a `rdf:type` triple can un-force a
-`rdfs:subClassOf` triple that `sc_fwd` still demands, and there is no least
-fixed point by monotonicity. Every conforming countermodel must therefore be a
-hand-built finite structure, with no Herbrand shortcut and no
-`closure_is_a_model` shortcut.
+| result | over `W3CModel` | where |
+|---|---|---|
+| `not_everything_is_entailed` | yes | `not_everything_is_w3c_entailed` |
+| `the_natural_avf2_direction_is_not_entailed` | yes | `the_natural_avf2_direction_is_not_w3c_entailed`, the one that needed a structure built for it |
+| `an_unlisted_individual_is_not_entailed` | yes | `an_unlisted_individual_is_not_w3c_entailed`, same witness graph |
+| `membership_in_one_member_does_not_give_the_intersection` | yes | `membership_in_one_member_is_not_w3c_enough`, same witness graph |
+| `mix_not_absolutely_entailed` | yes | `mix_not_absolutely_w3c_entailed`, in `Mixed.lean`, same witness graph |
+| `the_old_svf_derivation_is_not_entailed` | no | `onp_typ` fails; checked at `svf_witness_misses_the_restriction_typing` |
+| `feed_is_not_refuted` | no | `sc_fwd` fails; checked at `feed_closure_misses_the_class_typing`, and `¬ Unsat` runs the wrong way |
+| `and_the_old_verdict_does_not_notice` | no | `sc_fwd` fails on `grazeClosure` for the same reason |
+| `not_unsat_of_joint_model` | no | a lemma with a hypothesis rather than a witness, same direction problem |
+
+Two further negatives, `Mixed.lean`'s `mix_relative_is_not_everything` and
+`HornWitness.lean`'s `demo_not_everything_entailed`, are `¬ EntailsR`: statements
+about the models of a graph that ALSO satisfy a supplied rule table. There is no
+`W3CEntailsR` and this file does not invent one, so nothing is claimed about them
+beyond `Conditions`.
+
+**An earlier version of this paragraph got the reason wrong and the conclusion
+with it**, and the correction is recorded rather than edited away because the
+wrong version is what the project told people. It read: "a Herbrand witness that
+carries no `rdf:type` triple has `IC` empty, so Table 5.8's backward direction
+forces `rdfs:subClassOf` and `rdfs:subPropertyOf` triples the witness does not
+contain", and it concluded that "every conforming countermodel must therefore be
+a hand-built finite structure".
+
+Both halves are false and the first is inverted. An empty `IC` makes `sc_bwd`
+VACUOUS, not demanding: its antecedents are `I.IC a → I.IC b → …` and they have
+no instances. `sp_bwd`, `dom_bwd` and `rng_bwd` are guarded by `IP`, which is a
+free PARAMETER of `W3C` and not a field of `Interp`, so the refuter chooses it;
+`IP := fun _ => False` makes all three vacuous. Four of the results above
+transfer on exactly that, with the existing Herbrand witnesses unchanged and
+nothing hand-built. The mistake was to treat `live_is_bridge_coherent`, which is
+an extra property the `W3CWitness.lean` model happens to have, as though it were
+a requirement of `W3CModel`.
+
+One obstruction in that paragraph survives and it is worth keeping, because it
+says something different from what it was used for. `RefuteWitness.lean`'s `Der`
+cannot carry Table 5.8's backward halves: a constructor whose premise contains
+`∀ x, Der G ⟨x, type, a⟩ → Der G ⟨x, type, b⟩` puts `Der` to the left of an arrow
+and Lean rejects the strictly negative occurrence, and that is mathematical
+rather than a Lean artefact, because `sc_bwd` is ANTITONE in `ICEXT(a)` and there
+is no least fixed point by monotonicity. What follows from it is that there is no
+general CLOSURE OPERATOR taking any graph to a `W3CModel`. What does not
+follow is that no particular Herbrand interpretation is a `W3CModel`, and
+that is the step the old paragraph took.
 
 `scm-dom1` is the one that had to be checked rather than assumed. Under RDF
 Semantics `rdfs:domain` carries only the *if* direction and the rule does NOT

@@ -1,4 +1,5 @@
 import OOCert.Soundness
+import OOCert.W3C
 import OOCert.Witness
 import OOCert.Horn
 import OOCert.HornBuiltin
@@ -461,6 +462,79 @@ theorem mix_not_absolutely_entailed : ¬ Entails mixG ⟨mAcme, mStatus, mCompli
   absurd (h (herbrand mixH) mixH_is_a_model)
     (by decide : (⟨mAcme, mStatus, mCompliant⟩ : Triple) ∉ mixH)
 
+/-! ### The same distinction over the specification's own conditions
+
+`mix_not_absolutely_entailed` is the machine-checked basis for a run reporting
+`entailed_under_supplied_rules` rather than `entailed`, so it is the one
+negative result in this repository with a verdict hanging off it. Until
+15 September 2026 it was a statement about `Semantics.lean`'s `Conditions`
+alone, and it said so nowhere: this file was byte-identical to the one that
+predates `W3C.lean` while `Semantics.lean`'s docstring claimed the caveat was
+recorded "at the point of the assumption". It was not. It is now, and it is a
+discharge rather than a caveat.
+
+`IP` is a free parameter of `W3C`, so `IP := fun _ => False` makes `sp_bwd`,
+`dom_bwd` and `rng_bwd` vacuous; `mixH` types nothing as an `rdfs:Class`, so
+`IC` is empty and `sc_bwd` is vacuous too; and `mixH` uses none of the
+vocabulary the remaining forward fields mention. Table 5.4's `owl:intersectionOf`
+equality is the one field that has to be earned, and `mixH` satisfies it in both
+directions, because acme is the only `Supplier` and also the only thing that is
+both a `Vendor` and an `Approved`. -/
+
+/-- **`mixH` is a `W3CModel` of `mixG`**, not merely a model of the weaker
+`Conditions`. -/
+theorem mixH_is_a_w3c_model : W3CModel (herbrand mixH) (fun _ => False) mixG where
+  conds :=
+    { sc_fwd := fun a b h => absurd h (not_mem_pred mixH V.subClassOf (by decide) a b)
+      sc_bwd := fun a _ ha => absurd ha (not_typed mixH V.Class (by decide) a)
+      sp_fwd := fun a b h => absurd h (not_mem_pred mixH V.subPropertyOf (by decide) a b)
+      sp_bwd := fun _ _ h => absurd h (fun x => x)
+      dom_fwd := fun p c h => absurd h (not_mem_pred mixH V.domain (by decide) p c)
+      dom_bwd := fun _ _ h => absurd h (fun x => x)
+      rng_fwd := fun p c h => absurd h (not_mem_pred mixH V.range (by decide) p c)
+      rng_bwd := fun _ _ h => absurd h (fun x => x)
+      eqc_fwd := fun a b h => absurd h (not_mem_pred mixH V.equivalentClass (by decide) a b)
+      eqp_fwd := fun a b h => absurd h (not_mem_pred mixH V.equivalentProperty (by decide) a b)
+      same_fwd := fun a b h => absurd h (not_mem_pred mixH V.sameAs (by decide) a b)
+      inv_fwd := fun p q h => absurd h (not_mem_pred mixH V.inverseOf (by decide) p q)
+      sym_fwd := fun p h => absurd h (not_typed mixH V.symmetricProperty (by decide) p)
+      trp_fwd := fun p h => absurd h (not_typed mixH V.transitiveProperty (by decide) p)
+      svf_eq := fun z c _ h => absurd h (not_mem_pred mixH V.someValuesFrom (by decide) z c)
+      avf_eq := fun z c _ h => absurd h (not_mem_pred mixH V.allValuesFrom (by decide) z c)
+      hv_eq := fun z a _ h => absurd h (not_mem_pred mixH V.hasValue (by decide) z a)
+      restr_IC := fun x h => absurd h (not_typed mixH V.Restriction (by decide) x)
+      svf_typ := fun z c h => absurd h (not_mem_pred mixH V.someValuesFrom (by decide) z c)
+      avf_typ := fun z c h => absurd h (not_mem_pred mixH V.allValuesFrom (by decide) z c)
+      onp_typ := fun z p h => absurd h (not_mem_pred mixH V.onProperty (by decide) z p) }
+  facts := fun t ht => List.mem_cons_of_mem _ ht
+  int_eq := by
+    intro c l ms hc hchain x
+    obtain ⟨rfl, rfl⟩ := mix_only_int _ hc rfl
+    rw [mix_chain_l0 ms hchain]
+    constructor
+    · intro hx m hm
+      obtain ⟨h1, h2⟩ := mixH_int2_closed ⟨x, V.type, mSupplier⟩ hx rfl rfl
+      rcases List.mem_cons.mp hm with rfl | hm
+      · exact h1
+      · rcases List.mem_cons.mp hm with rfl | hm
+        · exact h2
+        · cases hm
+    · intro hall
+      exact mixH_int_closed ⟨x, V.type, mVendor⟩ (hall mVendor (by simp))
+        ⟨x, V.type, mApproved⟩ (hall mApproved (by simp)) ⟨rfl, rfl, rfl, rfl, rfl⟩
+  uni_eq := fun c l _ hc => absurd hc (not_mem_pred mixG V.unionOf (by decide) c l)
+  oneOf_eq := fun c l _ hc => absurd hc (not_mem_pred mixG V.oneOf (by decide) c l)
+
+/-- **The distinction, over the `W3CModel` class.** acme's compliance is
+not entailed by the asserted graph even when "entailed" quantifies over every
+interpretation meeting the quoted cells of `W3C.lean`. This is the sentence the
+report's `entailed_under_supplied_rules` verdict rests on, and it is now the
+strong one rather than the one about this layer's own conditions. -/
+theorem mix_not_absolutely_w3c_entailed :
+    ¬ W3CEntails mixG ⟨mAcme, mStatus, mCompliant⟩ := fun h =>
+  absurd (h (herbrand mixH) (fun _ => False) mixH_is_a_w3c_model)
+    (by decide : (⟨mAcme, mStatus, mCompliant⟩ : Triple) ∉ mixH)
+
 /-- `mixG` closed under the supplied rule as well. -/
 def mixH2 : List Triple := ⟨mAcme, mStatus, mCompliant⟩ :: mixH
 
@@ -682,6 +756,14 @@ As `Soundness.lean`, `Horn.lean` and `Witness.lean` pin theirs. A `sorry`, or a
 /-- info: 'OOCert.mix_not_absolutely_entailed' depends on axioms: [propext] -/
 #guard_msgs in
 #print axioms mix_not_absolutely_entailed
+
+/-- info: 'OOCert.mixH_is_a_w3c_model' depends on axioms: [propext] -/
+#guard_msgs in
+#print axioms mixH_is_a_w3c_model
+
+/-- info: 'OOCert.mix_not_absolutely_w3c_entailed' depends on axioms: [propext] -/
+#guard_msgs in
+#print axioms mix_not_absolutely_w3c_entailed
 
 /-- info: 'OOCert.mix_relative_is_not_everything' depends on axioms: [propext] -/
 #guard_msgs in
