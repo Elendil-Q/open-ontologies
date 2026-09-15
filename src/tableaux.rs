@@ -4780,8 +4780,14 @@ mod certificate_boundary_tests {
     /// TCB-26 was listed as trusted rather than tested.
     #[test]
     fn tcb_26_only_push_name_writes_a_name() {
+        // Normalise line endings before any of the anchors below are matched.
+        // git on Windows checks this file out with CRLF by default, and the
+        // `fn emit(\n` anchor wants a newline immediately after the paren, so
+        // without this the anchor misses, `expect` fires, and the test fails on
+        // Windows alone while passing on Linux and macOS. It did exactly that.
         let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/tableaux.rs"))
-            .expect("this file is readable");
+            .expect("this file is readable")
+            .replace("\r\n", "\n");
 
         // The two regions that build certificate text: the serialisers, and the
         // emitter that assembles `axioms.tsv` and `model.tsv` out of them.
