@@ -168,7 +168,48 @@ lake exe oo-cert /tmp/oo-demo/forged/asserted.tsv /tmp/oo-demo/forged/derivation
 ```
 
 Exit 1, the offending line numbered, the rule named, and the premises shown so you can see for
-yourself that they do not support it. Showing a green result would prove nothing, since anything can
+yourself that they do not support it.
+
+### What the proof actually looks like
+
+Two tab-separated files, 1.3 KB for the run above. `asserted.tsv` is what you claimed:
+
+```
+<ex:myCup>      <rdf:type>          <ex:Espresso>
+<ex:Coffee>     <rdfs:subClassOf>   <ex:Drink>
+<ex:Espresso>   <rdfs:subClassOf>   <ex:Coffee>
+```
+
+`derivations.tsv` is one line per step: the rule, then the conclusion, then the premises it used.
+
+```
+rdfs9    <ex:myCup> <rdf:type> <ex:Coffee>              <ex:myCup> <rdf:type> <ex:Espresso>        <ex:Espresso> <rdfs:subClassOf> <ex:Coffee>
+rdfs11   <ex:Espresso> <rdfs:subClassOf> <ex:Drink>     <ex:Espresso> <rdfs:subClassOf> <ex:Coffee> <ex:Coffee> <rdfs:subClassOf> <ex:Drink>
+rdfs9    <ex:myCup> <rdf:type> <ex:Drink>               <ex:myCup> <rdf:type> <ex:Coffee>          <ex:Coffee> <rdfs:subClassOf> <ex:Drink>
+```
+
+That is the whole proof. No model, no network, no vendor. A checker walks it, re-derives each
+conclusion from its own premises under the named rule, and confirms every premise is either asserted
+or concluded by an **earlier** line. Anyone can write one; ours is the one with a soundness theorem.
+
+### Who checks it, and when
+
+The certificate is a file, so the answer is whoever holds the file, whenever they like.
+
+| Who | When | What they run |
+| --- | --- | --- |
+| You, in the loop | every run, before trusting an answer | `lake exe oo-cert` alongside the reasoner |
+| A reviewer | when a change lands | the same command in CI, on the artefact the run wrote |
+| An auditor, months later | long after the engine has moved on | the same command, on the archived files |
+| Another agent | on receiving a claim from one it does not trust | the same command, before acting on it |
+
+Nothing is streamed and nothing phones home. The engine and the checker share bytes on disk, not a
+protocol, which is what makes the last two rows possible at all: an auditor re-checking a claim next
+year needs the two files and a Lean build, not a running instance of this software.
+
+What the certificate does **not** carry is which graph it came from. It proves the conclusions follow
+from the assertions listed in it; it cannot tell you those assertions are the ones in your database.
+That gap is [issue #158](https://github.com/fabio-rovai/open-ontologies/issues/158) and it is open. Showing a green result would prove nothing, since anything can
 print `ok`. The point is that it goes red.
 
 Two defaults that will bite you otherwise. Storage is in-memory unless
