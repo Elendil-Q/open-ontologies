@@ -78,10 +78,10 @@ the two kernels now return the same answer on every row of a corpus of 2,075 cer
 which exercise the ordering property both inductions rest on, against 123 before that corpus was
 deepened. Every one of those had passed every test that existed before.
 
-That last sentence was, until 15 September 2026, checked by nothing. No workflow installed the
-second kernel, so the test that requires zero divergence skipped in the one job that ran it and was
-invoked by no job that could have made it strict, and a skipped test reports `ok`. CI runs both
-kernels over the whole corpus on every pull request now, and
+The claim that the two kernels agree was, until 15 September 2026, checked by nothing here. No
+workflow installed the second kernel, so the test that requires zero divergence skipped in the one
+job that ran it and was invoked by no job that could have made it strict, and a skipped test
+reports `ok`. CI runs both kernels over the whole corpus on every pull request now, and
 [docs/ci-gates.md](docs/ci-gates.md) is the table of which other gates do and do not fire.
 
 ## What is actually proved
