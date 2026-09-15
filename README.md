@@ -215,6 +215,70 @@ Intel macOS, native Windows and the rest: [docs/quickstart.md](docs/quickstart.m
 hang while it waits for a client. That is expected. From a terminal, use the CLI subcommands
 instead, such as `open-ontologies validate <file.ttl>`.
 
+## Sixty seconds
+
+Six lines of Turtle, three inferences, and a checker that will not take the engine's word for them.
+
+```bash
+mkdir /tmp/oo-demo && cd /tmp/oo-demo
+cat > coffee.ttl <<'EOF'
+@prefix ex:   <http://example.org/> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+ex:Espresso rdfs:subClassOf ex:Coffee .
+ex:Coffee   rdfs:subClassOf ex:Drink .
+ex:myCup    a               ex:Espresso .
+EOF
+
+export OPEN_ONTOLOGIES_STORAGE_MODE=persistent
+open-ontologies --data-dir /tmp/oo-demo/store load coffee.ttl
+open-ontologies --data-dir /tmp/oo-demo/store reason --profile rdfs --certificate ./cert --pretty
+```
+
+Three triples in, three out: the cup is a Coffee, the cup is a Drink, and Espresso is a subclass of
+Drink. Any RDFS reasoner does that much. The difference is the directory it just wrote.
+
+```bash
+cd <the open-ontologies source tree>/lean && lake build          # once
+lake exe oo-cert /tmp/oo-demo/cert/asserted.tsv /tmp/oo-demo/cert/derivations.tsv
+```
+
+```json
+{"ok":true,"asserted":3,"derivations":3,"theorem":"OOCert.certificate_sound"}
+```
+
+That is not the engine reporting on itself. It is a separate checker, written in Lean 4, whose
+soundness is a machine-checked theorem, reading the certificate and agreeing that every step follows.
+Exit code 0.
+
+Now lie to it. Leave the premises alone and forge one conclusion, claiming the cup is a Beer:
+
+```bash
+cp -r /tmp/oo-demo/cert /tmp/oo-demo/forged
+sed -i '' 's|example.org/Drink>\t<http://example.org/myCup>|example.org/Beer>\t<http://example.org/myCup>|' \
+  /tmp/oo-demo/forged/derivations.tsv     # GNU sed: drop the '' after -i
+lake exe oo-cert /tmp/oo-demo/forged/asserted.tsv /tmp/oo-demo/forged/derivations.tsv
+```
+
+```json
+{"ok":false,"asserted":3,"derivations":3,"first_rejected":2,"rule":"rdfs9",
+ "conclusion":"<http://example.org/myCup> <...#type> <http://example.org/Beer>",
+ "premises":["<http://example.org/myCup> <...#type> <http://example.org/Coffee>",
+             "<http://example.org/Coffee> <...#subClassOf> <http://example.org/Drink>"]}
+```
+
+Exit code 1, the offending line numbered, the rule named, and the premises shown so you can see for
+yourself that they do not support it.
+
+That is the whole idea. A fast engine you do not have to trust proposes; a small checker you can
+read disposes. Everything else in this repository is that pattern applied to more logics.
+
+The example depends on a couple of defaults that will bite you otherwise. Storage is in-memory
+unless you say otherwise, so without `OPEN_ONTOLOGIES_STORAGE_MODE=persistent` the `reason` call
+starts from an empty store and cheerfully certifies nothing; the tool warns, and the warning is easy
+to skim past. `--data-dir` is also a flag rather than an environment variable, so a demo that omits
+it writes into `~/.open-ontologies` alongside real work.
+
 ## Connect it to Claude
 
 Add to `~/.claude/settings.json` for Claude Code, or to
