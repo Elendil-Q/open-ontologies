@@ -136,13 +136,11 @@ condition and is certified; the other sixteen are detected and deliberately carr
 A model is a finite object and can be checked, which is why satisfiability can be certified and
 unsatisfiability cannot.
 
-**The proofs are ahead of the published release.** The verified layer described here is on `main`
-and is newer than the last tagged release. If you installed from a release binary, you do not have
-it.
-
-**Governance.** `main` requires the CI, Lean, SHACL-conformance and Python checks to pass, and
-refuses force pushes and deletion. Those rules do not currently apply to repository admins, so
-they are a safety net and not a control. Commits are not signed yet.
+**Governance.** `main` requires the CI, Lean, SHACL-conformance and Python checks to pass, refuses
+force pushes and deletion, and applies to administrators too. Commits are not signed: a signing key
+was set up and then removed, because a passphrase-less key on a laptop is forgeable by anyone with
+disk access, and a forgeable assurance signal is worse than none in a repository that makes
+verification claims.
 
 **The scope is wider than the idea.** The one genuinely new thing here is proof-carrying reasoning:
 an engine that hands you evidence a separate verified checker accepts. The tool count, the Studio,
