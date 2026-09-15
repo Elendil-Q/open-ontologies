@@ -40,9 +40,16 @@ use open_ontologies::verdict::{
 /// entirely, which this suite discovered by failing. A script written here
 /// runs the same everywhere and covers the non-zero codes too.
 fn exits_with(code: i32) -> PathBuf {
+    // One file per CALL, not one per exit code. `cargo test` runs these in
+    // parallel threads, and a fixed path means one thread rewrites the script
+    // while another is executing it. Linux answers that with ETXTBSY ("Text
+    // file busy") and macOS does not, so the shared path passed locally and
+    // failed only on ubuntu, in the one CI leg that got far enough to run it.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join("oo-verdict-vocabulary");
     std::fs::create_dir_all(&dir).unwrap();
-    let p = dir.join(format!("exit{code}.sh"));
+    let p = dir.join(format!("exit{code}-{}-{n}.sh", std::process::id()));
     std::fs::write(&p, format!("#!/bin/sh\nexit {code}\n")).unwrap();
     #[cfg(unix)]
     {

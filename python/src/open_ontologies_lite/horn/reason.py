@@ -245,7 +245,7 @@ def _facts(store, graphs) -> tuple[list[Fact], list[str]]:
 
     The default is the DEFAULT GRAPH ALONE, which is where `OntologyEngine.load()`
     puts everything, so this package's own users lose nothing by it. The Rust
-    engine flattens every named graph here (`src/reason.rs:2170`,
+    engine flattens every named graph here (`src/reason.rs:2178`,
     `graph.all_triples()`), which is the defect above: a store holding a prior
     materialisation turns derived triples into assertions.
     """
