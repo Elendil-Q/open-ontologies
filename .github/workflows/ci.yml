@@ -247,22 +247,75 @@ jobs:
   # Kept in CI rather than bolted onto the release workflow: a test that only
   # runs at publish time tells you about the defect after the artefact is
   # public.
+  # The job used to install the `dev` extra and nothing else: pytest, and the one
+  # base dependency. No cargo build, so no Rust engine. No elan, so no oo-horn.
+  # The three-way differential — the Rust engine, the Python engine and the Lean
+  # checker over the same documents — ran its preflight, found neither of the two
+  # it needs, and skipped every test in the file. `pytest -q` printed an `s` per
+  # skip and exited 0, so a green tick on this job said nothing whatsoever about
+  # the differential. That is a gate that passes by not running, which is the
+  # failure this repository exists to attack, and it was in this repository's own
+  # CI.
+  #
+  # Two things had to change and both are here. The job now BUILDS what the
+  # tests need, and `python/tests/conftest.py` makes `OO_REQUIRE_FIXTURES=1` mean
+  # on this side what it has meant on the Rust side since `tests/common/mod.rs`:
+  # a skip is a failure. The strict leg below names the files whose dependencies
+  # this job actually provides, exactly as the `lean` job names its nineteen.
   python:
-    timeout-minutes: 15
+    # 15 was enough for `pytest -q` on a pure-Python suite. This job now builds
+    # `lean/` and a release binary, which is what the `lean` job budgets 45 for.
+    timeout-minutes: 45
     name: python (open-ontologies-lite)
     runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: 0
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'   # the floor declared by requires-python
-      - name: Install with dev extras
+      # The Lean checker. Same action and same inputs as the `lean` job; building
+      # `lean/` is itself the proof check, and it is what puts `oo-horn` at
+      # lean/.lake/build/bin/oo-horn, which is where `find_checker` looks.
+      - uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: lean
+          build: true
+          test: false
+          lint: false
+          use-github-cache: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # --release, not debug: tools/horn_differential.py looks for
+      # target/release/open-ontologies and falls back only to PATH.
+      - name: Build the Rust engine the differential compares against
+        run: cargo build --release --bin open-ontologies
+      # shacl and align as well as dev. Those two extras are the whole reason
+      # three more files skipped here, and they are small.
+      - name: Install with the extras the tests need
         working-directory: python
-        run: uv pip install --system -e ".[dev]"
+        run: uv pip install --system -e ".[dev,shacl,align]"
       - name: Test
         working-directory: python
         run: python -m pytest -q
+      # The legs this job now provides the toolchain for. OO_REQUIRE_FIXTURES=1
+      # turns any skip in them into a failure, so the job can no longer go green
+      # by not running them. `fenic` is in no extra and no dependency list, so
+      # test_dataframe.py is deliberately NOT here; it still skips loudly above.
+      - name: The differential legs, where a skip is a failure
+        working-directory: python
+        run: |
+          OO_REQUIRE_FIXTURES=1 python -m pytest -q \
+            tests/test_horn_three_way_differential.py \
+            tests/test_horn_differential.py \
+            tests/test_horn_checked.py \
+            tests/test_horn_rule_table.py \
+            tests/test_shacl.py \
+            tests/test_shacl_vacuous.py \
+            tests/test_align.py \
+            tests/test_vocab_check.py
 
   # Nothing built, type-checked or linted `studio/` before this, so a green tick
   # on a PR that only touched Studio said nothing whatsoever about it (#64 is
@@ -431,6 +484,22 @@ jobs:
         # built to trip it and PRINTS what the tool said, so the evidence is in
         # the job log rather than in a doc.
         run: OO_REQUIRE_FIXTURES=1 cargo test --test gate_demonstration_test -- --nocapture
+      # Four files that need nothing this job does not already have.
+      #
+      # Each of them calls `common::skip_unless` on lake, lake is installed
+      # above, and no leg invoked any of them — so in the only job that could
+      # have run them they were not run, and in every job that ran them
+      # (`build`, with no lake) they skipped. A file that skips wherever it runs
+      # and is not run where it would not skip is a gate in name only.
+      # docs/ci-gates.md is the table this came out of.
+      - name: The certificate boundary, against the real Lean parser
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test certificate_boundary_proptest -- --nocapture
+      - name: OWL RL rule coverage against the checker's own table
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test reason_rl_coverage_test -- --nocapture
+      - name: The SWRL and RIF front ends, through the checker
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test rule_syntax_frontend_test -- --nocapture
+      - name: The emitted Horn rule table, round-tripped through oo-horn
+        run: OO_REQUIRE_FIXTURES=1 cargo test --test reason_horn_emit_test -- --nocapture
 
   # The official W3C SHACL test suite, as a ratchet.
   #

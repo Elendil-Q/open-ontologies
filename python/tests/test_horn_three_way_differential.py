@@ -359,6 +359,9 @@ def test_the_seven_rules_the_corpus_cannot_reach_are_covered_by_fixtures(capsys)
     )
 
 
+# Skipped because it is SLOW, not because anything is missing, which is the one
+# kind of skip `OO_REQUIRE_FIXTURES=1` must leave alone. See python/tests/conftest.py.
+@pytest.mark.oo_opt_in
 @pytest.mark.skipif(
     os.environ.get("HORN_DIFF_FULL") != "1",
     reason="the full corpus takes twelve minutes. HORN_DIFF_FULL=1 to run it here, or run "

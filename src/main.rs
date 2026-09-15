@@ -121,6 +121,16 @@ data_dir = "~/.open-ontologies"
 # tableaux_max_depth = 100
 # tableaux_max_nodes = 10000
 # max_iterations = 64
+# Wall clocks. NOTE the different meaning of 0: for the three caps above 0 means
+# "unset, use the default", and for these two it means NO LIMIT, because a depth
+# cap of zero is not a configuration anybody wants and a timeout of zero is.
+# tableaux_test_timeout_ms = 10000    # one PHASE of a run
+# classify_timeout_ms = 180000        # ceiling for the WHOLE run (ORE's 180s)
+# A run has five phases (consistency, satisfiability, subsumption, ABox,
+# explanation), each opening one phase budget, so at these defaults the ceiling
+# cannot be the bound that fires: 5 x 10000 = 50000, well under 180000. Lower it
+# below that to make it the binding one. Every `owl-dl` run reports which of the
+# two is binding, in `budget.binding_bound`, with a sentence saying why.
 
 # [feedback]
 # Lint / enforce self-calibration thresholds (number of dismissals before
