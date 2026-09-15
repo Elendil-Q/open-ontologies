@@ -108,21 +108,27 @@ is named property by property in [docs/trusted-computing-base.md](docs/trusted-c
 property-tested, and partly bounded-model-checked. It is not verified. This work verified the
 joint, not the machine.
 
-**The Lean assumes eight of the rule-semantic conditions rather than deriving them.** For those
-arms the theorem says the rule is sound because a field of a condition record says so, which is
-close to no machine-checked content at all. The independent Isabelle derives them from the
-specification tables, which is how we know the assumption was avoidable. Being fixed; not fixed yet.
+**The bridge to the specification is prose, not a theorem.** Fourteen rule arms used to be
+assumed rather than derived, and they are now derived, each with an empty axiom footprint, over a
+structure carrying the W3C conditions at full strength. What is still assumed is the reading that
+turns a conforming interpretation into one of ours, and five facts from the axiomatic-triple
+tables that reading needs. Formalising the specification side properly means building its whole
+interpretation structure in core Lean, and that has not been done.
 
-**Two kernels agreeing is weaker than it sounds.** The Lean and Isabelle model classes have not
-been related tightly enough for "both said entailed" to mean what a reader would naturally take it
-to mean. They are theorems over model classes nobody has ordered in either direction. Separately,
-Lean's model class is LARGER than the specification's, so entailment transfers outward and
-NON-entailment does not: the countermodels prove less than they appear to.
+**Two kernels agreeing is weaker than it sounds.** They are theorems over model classes nobody has
+ordered in either direction, so "both said entailed" means less than a reader would naturally take
+it to mean. Lean's class is still larger than the specification's, so entailment transfers outward
+and non-entailment transfers only where it has been shown to: four of the negative results now
+carry over, and three do not, each of those three carrying the field that fails as a checked
+theorem.
 
-**A non-vacuity witness can be vacuous where it matters.** Isabelle's satisfies many of its
-conditions only because the relevant extensions are empty, including every condition its own
-authors call the sharpest trap. A witness that is vacuous exactly where the conditions are
-strongest establishes very little, and it is the failure mode that most resembles success.
+**A non-vacuity witness can be vacuous where it matters**, and ours was. It satisfied nine of
+twenty-one conditions only because the relevant extensions were empty, and six of the fourteen arms
+rested entirely on those, which is the failure mode that most resembles success. It is rebuilt, and
+the gate is now stronger than non-emptiness: every one of the fourteen derivations must fire at a
+concrete instance. Five conditions remain vacuous, they carry no arm, and one of them cannot be
+exercised by any model at all because the specification makes that relation the diagonal. The
+Isabelle witness has not had the same treatment.
 
 **Negative answers are mostly unchecked opinion.** A refutation cannot be replayed in core Lean, so
 an "unsatisfiable" from any prover is testimony, not a certificate. One clash rule has a semantic
