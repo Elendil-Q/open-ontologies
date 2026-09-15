@@ -3,11 +3,33 @@
 over one Horn rule table and every ontology this repository ships.
 
 WHY THIS EXISTS. `src/reason.rs` and `python/src/open_ontologies_lite/horn/` are two
-independent implementations of the same specification, and `lean/` holds a checker
-whose soundness is a machine-checked theorem. Running all three over one corpus finds
-defects none of them finds alone. Agreement on a handful of hand-made files is weak
-evidence, so the corpus is every RDF document tracked in the repository, and the report
-says how many ontologies and how many derived triples the claim rests on.
+implementations of the same specification, and `lean/` holds a checker whose soundness
+is a machine-checked theorem. Running all three over one corpus finds defects none of
+them finds alone. Agreement on a handful of hand-made files is weak evidence, so the
+corpus is every RDF document tracked in the repository, and the report says how many
+ontologies and how many derived triples the claim rests on.
+
+HOW INDEPENDENT THE TWO ENGINES ARE, WHICH IS LESS THAN "INDEPENDENT". This is the
+first thing to know about every number below and it is printed on every run, next to
+the agreement count, so it cannot be quoted without it.
+
+The Rust and Python reasoners are NOT independent implementations. They run the same
+semi-naive forward-chaining algorithm over the same rule table, the Python was written
+with the Rust open, and the Python's comments cite `src/reason.rs` by file and line.
+What their agreement is therefore strong evidence about is a TRANSCRIPTION SLIP: an
+index off by one, a guard dropped, a join in the wrong order, a rule arm that reads the
+subject where it meant the object. Two people copying one design do not make the same
+slip twice.
+
+What it is close to NO evidence about is a SHARED MISREADING. If the design itself
+misreads a W3C rule, both engines implement the misreading and agree perfectly for
+ever. The clean sweep says nothing about that, and this tool must never be quoted as
+"two independent reasoners agree".
+
+The leg of this differential that IS independent is the LEAN CHECKER. It was written
+from the W3C rules, its soundness theorem is machine-checked, and it is the only
+component here whose acceptance means anything on its own. Two engines and a checker,
+and the checker is the one carrying the warrant.
 
 THIS TOOL DOES NOT ADJUDICATE. It is modelled on `tools/shacl_differential.py` and on
 `tools/fol_differential.py`, whose first paragraph is "THE ATP IS AN ORACLE, NOT AN
@@ -41,6 +63,29 @@ WHAT IS COMPARED.
   4. COVERAGE BY RULE. A rule that never fires anywhere in the corpus is a rule this run
      says nothing about. The per-rule histogram is printed for exactly that reason, and
      a reader who skips it will overstate what agreement was shown.
+
+     Measured on 14 September 2026, the repository's own RDF fired 20 of the 27 rules
+     and left seven silent: prp-inv2, eq-sym, cls-avf, cls-hv1, cls-hv2, scm-svf2 and
+     scm-avf2. `tests/fixtures/horn-coverage/` now holds one deliberately constructed
+     graph per silent rule, each the smallest thing that makes exactly that rule fire.
+     They are run as a SEPARATE, LABELLED set and are excluded from `discover()`, so
+     the corpus number stays a number about real ontologies. Two coverage figures are
+     reported and never added together: how many rules fired on the repository's own
+     RDF, and how many fired once the fixtures are included. A rule covered only by a
+     fixture written to cover it has been compared on a graph made for the purpose and
+     on nothing else, which is better than zero and is not the same thing. Re-measured
+     on 15 September 2026 over a corpus that had grown to 291 documents: the same 20,
+     the same seven, and every fixture firing exactly its own rule once. No rule in the
+     table is unreachable.
+
+     WHICH RULE SET THIS COUNTS. The 27 rows of `tests/fixtures/horn/builtin_rules.tsv`,
+     which is what this tool passes to `reason --rules`. It is NOT the `owl-rl-ext`
+     profile, and the two differ on real data: on `benchmark/reference/pizza-reference.owl`
+     the table derives 387 `rdfs11`, 102 `scm-svf1` and 1 `scm-avf1` where the profile
+     derives 357, 101 and 0, and the profile also fires `cls-int2` and `cls-oo`, which
+     this table does not contain. `tests/reason_rl_coverage_test.rs` measures the profile
+     and asserts `scm-avf1` fires nowhere; this tool credits it once. Both are true of
+     their own rule set, and neither may be quoted as "the corpus" without saying which.
 
 BUNDLES, AND WHY THEY ARE NOT OPTIONAL. Run one file at a time and most of the OWL
 rules never fire, because the repository ships a TBox in one directory and the ABox
@@ -86,7 +131,7 @@ Usage:
     python3 tools/horn_differential.py [--bundles] [--json out.json] [--limit N]
                                        [--jobs N] [--timeout S] [--max-bytes N]
                                        [--include SUBSTRING] [--exclude SUBSTRING]
-                                       [--root DIR] [--verbose]
+                                       [--root DIR] [--no-coverage] [--verbose]
 
 Requires the Rust binary and the Lean checker. If either is missing the run SKIPS
 LOUDLY and exits 0, the way the Lean-dependent tests skip on a missing `lake`; set
@@ -134,6 +179,28 @@ AREAS = ("benchmark", "case-studies", "demo", "tests")
 CROSS_BUNDLES = {
     "benchmark/reference + benchmark/data": ("benchmark/reference", "benchmark/data"),
 }
+
+# Deliberate test data: one graph per rule the corpus never fires, each written to make
+# exactly that rule fire. Kept OUT of the corpus by `discover`, reported separately, and
+# never added to the corpus coverage figure. See the directory's README.md.
+COVERAGE_DIR = REPO / "tests" / "fixtures" / "horn-coverage"
+COVERAGE_PREFIX = "coverage "
+
+# The caveat that travels with every agreement number this tool prints. It is here as a
+# constant rather than in the docstring alone because a docstring is not printed, and the
+# agent that built this tool asked that the sweep never be quoted without it.
+INDEPENDENCE_CAVEAT = """\
+  WHAT THE AGREEMENT ABOVE IS WORTH
+    The Rust and Python reasoners are NOT independent implementations. They run the
+    same semi-naive forward-chaining algorithm over the same rule table, and the
+    Python's comments cite src/reason.rs by file and line. Their agreement is STRONG
+    evidence against a transcription slip in one of the two, and it is close to NO
+    evidence against a shared misreading of a W3C rule, because a misreading in the
+    design is copied into both and they then agree for ever.
+    Do not quote this run as "two independent reasoners agree".
+    The independent leg is the LEAN CHECKER: written from the W3C rules, soundness
+    machine-checked, and the only component here whose acceptance means anything on
+    its own."""
 
 BLOCKING = ("DISAGREE", "CHECKER_REJECTED", "VERDICT_DIFFERS", "INPUT_DIFFERS")
 ORDER = (
@@ -512,9 +579,23 @@ def worker(spec_path: str, timeout: int) -> dict:
         return row
 
 
+def is_coverage_fixture(path: pathlib.Path) -> bool:
+    """Is this one of the graphs written to make a silent rule fire?
+
+    The exclusion is by DIRECTORY and is applied in `discover`, so a fixture can never
+    be counted as a corpus document by accident. Mixing the two would inflate the
+    coverage figure with graphs written to hit it, which is measuring the ruler.
+    """
+    try:
+        return COVERAGE_DIR.resolve() in path.resolve().parents
+    except OSError:
+        return False
+
+
 def discover(root: pathlib.Path) -> list:
-    """Every RDF document the repository tracks. `git ls-files` rather than a walk, so
-    build output and scratch files cannot inflate the corpus count."""
+    """Every RDF document the repository tracks, EXCEPT the coverage fixtures.
+    `git ls-files` rather than a walk, so build output and scratch files cannot inflate
+    the corpus count."""
     try:
         out = subprocess.run(
             ["git", "-C", str(root), "ls-files", *(f"*{e}" for e in EXTENSIONS)],
@@ -524,10 +605,63 @@ def discover(root: pathlib.Path) -> list:
         ).stdout.split("\n")
         files = [root / f for f in out if f.strip()]
         if files:
-            return sorted(files)
+            return sorted(f for f in files if not is_coverage_fixture(f))
     except (subprocess.CalledProcessError, FileNotFoundError):
         pass
-    return sorted(p for e in EXTENSIONS for p in root.rglob(f"*{e}"))
+    return sorted(
+        p for e in EXTENSIONS for p in root.rglob(f"*{e}") if not is_coverage_fixture(p)
+    )
+
+
+def coverage_cases() -> list:
+    """One case per file in `tests/fixtures/horn-coverage/`.
+
+    The target rule is read off the FILENAME, so the check below is against what the
+    fixture was named for rather than against whatever it turned out to do. A fixture
+    that fires nothing, or that fires a rule other than its name, is reported and fails
+    the run: in the first case the rule cannot be made to fire and that is a finding
+    about the engine, in the second the fixture is not the minimal graph it claims.
+    """
+    if not COVERAGE_DIR.is_dir():
+        return []
+    return [
+        {"name": COVERAGE_PREFIX + p.name, "files": [str(p)], "rule": p.stem}
+        for p in sorted(COVERAGE_DIR.iterdir())
+        if p.suffix in EXTENSIONS
+    ]
+
+
+def audit_coverage(rows: list) -> tuple:
+    """Did each coverage fixture fire the rule it is named for, and only that rule?
+
+    Returns `(lines, failures)`: one report line per fixture, and the fixtures that did
+    not do what their name says. `by_rule` keys are `name#index`, and two rows of the
+    built-in table share the name `scm-eqc1`, so the comparison is on the NAME half.
+    """
+    lines, failures = [], []
+    for row in sorted(rows, key=lambda r: r["name"]):
+        want = row["name"][len(COVERAGE_PREFIX):].rsplit(".", 1)[0]
+        fired = {k.split("#")[0]: v for k, v in (row.get("by_rule") or {}).items() if v}
+        note = f"{row['verdict']}, derived {row.get('derived_python')}"
+        if row["verdict"] not in COMPARED:
+            state = "NOT COMPARED"
+            failures.append((row["name"], f"{row['verdict']}: {row['detail']}"))
+        elif want not in fired:
+            state = "DID NOT FIRE"
+            failures.append(
+                (row["name"], f"fired {sorted(fired) or 'nothing'}, not {want}. Either the "
+                 f"fixture does not instantiate the rule or the engine cannot reach it")
+            )
+        elif len(fired) > 1:
+            state = "FIRED MORE THAN ITS RULE"
+            failures.append(
+                (row["name"], f"fired {sorted(fired)}; a coverage fixture is supposed to be "
+                 f"the SMALLEST graph that makes {want} fire")
+            )
+        else:
+            state = f"fires {want} x{fired[want]}"
+        lines.append(f"    {row['name']:<28} {state:<26} ({note})")
+    return lines, failures
 
 
 def bundle_cases(files, root: pathlib.Path) -> list:
@@ -624,6 +758,11 @@ def main() -> int:
     ap.add_argument("--exclude", action="append", default=[])
     ap.add_argument("--bundles", action="store_true")
     ap.add_argument("--no-singles", action="store_true")
+    ap.add_argument(
+        "--no-coverage",
+        action="store_true",
+        help="skip tests/fixtures/horn-coverage/, reproducing the corpus-only figure",
+    )
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--one", help=argparse.SUPPRESS)
     args = ap.parse_args()
@@ -648,6 +787,11 @@ def main() -> int:
         cases += bundle_cases(files, root)
     if args.limit:
         cases = cases[: args.limit]
+    # After the limit, deliberately: a `--limit` that silently dropped the coverage
+    # fixtures would print a coverage figure that is about a truncated corpus while
+    # reading like the real one.
+    if not args.no_coverage:
+        cases += coverage_cases()
     if not cases:
         print("no RDF documents found: the differential ran over nothing", flush=True)
         return 2
@@ -715,17 +859,30 @@ def main() -> int:
     counts = {}
     for r in rows:
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
-    compared = [r for r in rows if r["verdict"] in COMPARED]
+    coverage_rows = [r for r in rows if r["name"].startswith(COVERAGE_PREFIX)]
+    compared = [
+        r
+        for r in rows
+        if r["verdict"] in COMPARED and not r["name"].startswith(COVERAGE_PREFIX)
+    ]
     singles = [r for r in compared if not r["name"].startswith("bundle ")]
     bundles = [r for r in compared if r["name"].startswith("bundle ")]
 
     def total(group, field):
         return sum(r.get(field, 0) for r in group)
 
-    by_rule = {}
-    for r in compared:
-        for k, v in (r.get("by_rule") or {}).items():
-            by_rule[k] = by_rule.get(k, 0) + v
+    def histogram(group):
+        out = {}
+        for r in group:
+            for k, v in (r.get("by_rule") or {}).items():
+                out[k] = out.get(k, 0) + v
+        return out
+
+    # Two histograms, never one. `by_rule` is the corpus of real ontologies; the
+    # fixtures are graphs written to make a named rule fire and are counted apart.
+    compared_fixtures = [r for r in coverage_rows if r["verdict"] in COMPARED]
+    by_rule = histogram(compared)
+    by_rule_fixture = histogram(compared_fixtures)
 
     print("\n" + "=" * 74)
     print("THREE-WAY DIFFERENTIAL: rust engine, python engine, lean checker")
@@ -742,22 +899,55 @@ def main() -> int:
     print("                                   (a bundle re-derives much of what its members "
           "derive alone:")
     print("                                    the two rows overlap and must not be summed)")
+    print(f"  coverage fixtures       {len(coverage_rows):>6}   "
+          f"(tests/fixtures/horn-coverage/, deliberate test data, NOT corpus)")
     print(f"  derived sets identical on both engines in every case: "
-          f"{all(r.get('derived_python') == r.get('derived_rust') for r in compared)}")
+          f"{all(r.get('derived_python') == r.get('derived_rust') for r in compared + compared_fixtures)}")
     print(f"  cases not run           {len(not_run):>6}")
     print(f"  wall clock              {time.time() - start:.0f}s")
+    print()
+    print(INDEPENDENCE_CAVEAT)
     print("\n  verdicts")
     for k in ORDER:
         if k in counts:
             print(f"    {k:<22} {counts[k]}")
-    print("\n  coverage by rule (python's credit, summed over every compared case)")
-    silent = [k for k, v in by_rule.items() if not v]
-    for k in sorted(by_rule, key=lambda k: int(k.split("#")[1])):
-        print(f"    {k:<18} {by_rule[k]:>9}{'' if by_rule[k] else '   NEVER FIRED'}")
-    print(f"\n    {len(by_rule) - len(silent)} of {len(by_rule)} rules fired somewhere in the corpus.")
-    if silent:
-        print("    THIS RUN SAYS NOTHING ABOUT: "
-              + ", ".join(sorted(silent, key=lambda k: int(k.split("#")[1]))))
+
+    print("\n  coverage by rule (python's credit; corpus | fixture, counted apart)")
+    every = sorted(set(by_rule) | set(by_rule_fixture), key=lambda k: int(k.split("#")[1]))
+    silent = [k for k in every if not by_rule.get(k)]
+    fixture_only = [k for k in silent if by_rule_fixture.get(k)]
+    still_silent = [k for k in silent if not by_rule_fixture.get(k)]
+    for k in every:
+        corpus, fixture = by_rule.get(k, 0), by_rule_fixture.get(k, 0)
+        if corpus:
+            note = ""
+        elif fixture:
+            note = "   FIXTURE ONLY"
+        else:
+            note = "   NEVER FIRED"
+        print(f"    {k:<18} {corpus:>9} | {fixture:<4}{note}")
+    print(f"\n    {len(every) - len(silent)} of {len(every)} rules fired on the "
+          f"repository's own RDF.")
+    if coverage_rows:
+        print(f"    {len(every) - len(still_silent)} of {len(every)} once "
+              f"tests/fixtures/horn-coverage/ is included.")
+    else:
+        print("    The coverage fixtures did not run (--no-coverage), so there is no second "
+              "figure.")
+    if fixture_only:
+        print("    COVERED ONLY BY A FIXTURE WRITTEN FOR THE PURPOSE, so these rules have "
+              "been compared\n    on a graph made to fire them and on no real ontology: "
+              + ", ".join(fixture_only))
+    if still_silent:
+        print("    THIS RUN SAYS NOTHING WHATEVER ABOUT: " + ", ".join(still_silent))
+
+    coverage_failures = []
+    if coverage_rows:
+        lines, coverage_failures = audit_coverage(coverage_rows)
+        print("\n  coverage fixtures, each against the rule its filename names")
+        for line in lines:
+            print(line)
+
     if not_run:
         print("\n  not run")
         for s in not_run:
@@ -780,6 +970,12 @@ def main() -> int:
                         "bundle_refused": total(bundles, "refused_python"),
                     },
                     "by_rule": by_rule,
+                    "by_rule_coverage_fixtures": by_rule_fixture,
+                    "rules_fired_on_corpus": len(every) - len(silent),
+                    "rules_fired_including_fixtures": len(every) - len(still_silent),
+                    "rules_covered_only_by_a_fixture": fixture_only,
+                    "rules_never_fired": still_silent,
+                    "independence_caveat": INDEPENDENCE_CAVEAT,
                 },
                 fh,
                 indent=1,
@@ -788,6 +984,13 @@ def main() -> int:
     blocking = sum(counts.get(k, 0) for k in BLOCKING)
     if blocking:
         print(f"\n  {blocking} STOP-THE-LINE result(s). One of the three implementations is wrong.")
+        return 1
+    if coverage_failures:
+        print(f"\n  {len(coverage_failures)} coverage fixture(s) did not do what their name says.")
+        for name, why in coverage_failures:
+            print(f"    {name}\n      {why}")
+        print("    A fixture that cannot make its rule fire is a finding about the ENGINE and "
+              "belongs\n    in the report, not in a quiet skip.")
         return 1
     return 0
 

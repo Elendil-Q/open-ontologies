@@ -1,0 +1,34 @@
+# COVERAGE FIXTURE. Deliberate test data, not an ontology about anything.
+#
+# RULE: cls-avf
+# W3C OWL 2 Web Ontology Language Profiles (Second Edition), section 4.3,
+# Table 6: The Semantics of Classes.
+# https://www.w3.org/TR/owl2-profiles/#Reasoning_in_OWL_2_RL_and_RDF_Graphs_using_Rules
+#
+#   T(?x, owl:allValuesFrom, ?y)
+#   T(?x, owl:onProperty, ?p)
+#   T(?u, rdf:type, ?x)
+#   T(?u, ?p, ?v)
+#     ->  T(?v, rdf:type, ?y)
+#
+# WHY IT EXISTS. The repository ships allValuesFrom restrictions in its TBoxes
+# and instance data that uses the restricted properties, but never both in one
+# graph, so tools/horn_differential.py compared the Rust and Python engines on
+# cls-avf zero times and its clean sweep said nothing about it.
+#
+# EXPECTED: exactly one derivation, credited to cls-avf:
+#   :y rdf:type :C
+#
+# The restriction is a NAMED node rather than the blank node OWL would normally
+# use. The rule is a triple pattern and does not care, and a named node keeps
+# the expected derivation writable here without a blank-node label to track.
+
+@prefix : <http://ex.org/cover/cls-avf#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+
+:R a owl:Restriction ;
+   owl:onProperty :p ;
+   owl:allValuesFrom :C .
+
+:x a :R ;
+   :p :y .

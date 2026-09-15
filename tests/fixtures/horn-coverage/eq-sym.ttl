@@ -1,0 +1,28 @@
+# COVERAGE FIXTURE. Deliberate test data, not an ontology about anything.
+#
+# RULE: eq-sym
+# W3C OWL 2 Web Ontology Language Profiles (Second Edition), section 4.3,
+# Table 4: The Semantics of Equality.
+# https://www.w3.org/TR/owl2-profiles/#Reasoning_in_OWL_2_RL_and_RDF_Graphs_using_Rules
+#
+#   T(?x, owl:sameAs, ?y)
+#     ->  T(?y, owl:sameAs, ?x)
+#
+# WHY IT EXISTS. No document in this repository asserts owl:sameAs, so
+# tools/horn_differential.py compared the Rust and Python engines on eq-sym zero
+# times and its clean sweep said nothing about it.
+#
+# EXPECTED: exactly one derivation, credited to eq-sym:
+#   :b owl:sameAs :a
+#
+# eq-sym then fires on its own conclusion and re-derives ":a owl:sameAs :b",
+# which is asserted, so the closure is reached in one round.
+#
+# The table holds eq-sym alone out of the eq-* family: none of eq-ref, eq-trans
+# or the eq-rep-* replacement rules is a built-in here, so nothing in this file
+# propagates the identity into any other triple.
+
+@prefix : <http://ex.org/cover/eq-sym#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+
+:a owl:sameAs :b .

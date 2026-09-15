@@ -68,9 +68,22 @@ loudly (`common::skip_unless`) when either proof assistant is missing, and
 
 ## What the differential found, and what it changed
 
-1,718 certificates: 61 base, 1,291 mutated, 366 fuzzed. **Forty-seven rows disagreed.** Nothing
-was adjusted on either side to make them go away; the FORMAT was changed instead, and the
-divergence is now zero.
+THE NUMBERS ARE NOT WRITTEN HERE ON PURPOSE. This paragraph carried them once and they went
+stale three times in a day: the corpus grew when depth mutations were added, the divergence
+count moved with it, and "in two classes" was simply wrong, since every divergent row was the
+same one. `cargo test --release --test cross_kernel_differential_test -- --nocapture` prints the
+current figures, and it is the only place they should be read from.
+
+What does not drift is the shape. Both kernels run over one corpus of certificates: genuine ones
+the engine produced, hand-built probes, systematic mutations and fuzzed inputs. Each row lands in
+one of four buckets, accepted by both, rejected by both, refused as unparseable by both, or
+divergent, and a divergent row is a finding rather than a nuisance. Nothing has ever been
+adjusted on either side to make one go away.
+
+The one divergence this comparison found was real and its cause was in neither proof: the
+certificate format never said what a repeated binding key means, so the two kernels read the same
+bytes differently and both were defensible. See
+[decision 0008](../docs/decisions/0008-a-binding-is-data-and-evidence-admits-one-reading.md).
 
 Those 47 corpus rows were ALL of class D1 below, which is worth stating precisely rather than
 rounding to "two classes": D2's three certificates are committed probes with their own tests and

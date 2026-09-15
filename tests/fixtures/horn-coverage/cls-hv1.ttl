@@ -1,0 +1,35 @@
+# COVERAGE FIXTURE. Deliberate test data, not an ontology about anything.
+#
+# RULE: cls-hv1
+# W3C OWL 2 Web Ontology Language Profiles (Second Edition), section 4.3,
+# Table 6: The Semantics of Classes.
+# https://www.w3.org/TR/owl2-profiles/#Reasoning_in_OWL_2_RL_and_RDF_Graphs_using_Rules
+#
+#   T(?x, owl:hasValue, ?y)
+#   T(?x, owl:onProperty, ?p)
+#   T(?u, rdf:type, ?x)
+#     ->  T(?u, ?p, ?y)
+#
+# WHY IT EXISTS. No document in this repository asserts owl:hasValue, so
+# tools/horn_differential.py compared the Rust and Python engines on cls-hv1
+# zero times and its clean sweep said nothing about it. That is worth closing
+# for this rule in particular: src/reason.rs records that the arm emitted under
+# this name was once the COMPOSITE of cax-sco and W3C cls-hv1, demanding a
+# subclass step the standard rule does not ask for. A rule that has already been
+# wrong once, and that no corpus document exercises, is the weakest row in the
+# table.
+#
+# EXPECTED: exactly one derivation, credited to cls-hv1:
+#   :x :p :v
+#
+# cls-hv2 then fires on that conclusion and re-derives ":x rdf:type :R", which
+# is asserted, so it adds no step and takes no credit.
+
+@prefix : <http://ex.org/cover/cls-hv1#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+
+:R a owl:Restriction ;
+   owl:onProperty :p ;
+   owl:hasValue :v .
+
+:x a :R .

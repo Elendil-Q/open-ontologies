@@ -328,6 +328,110 @@ fn render_cert(steps: &[Step]) -> String {
     s
 }
 
+// ── how deep a certificate is, and how much rests on prefix visibility ──────
+
+/// The asserted graph as a set of triples, so a premise can be told apart from a
+/// derivation. A premise that is asserted is available to any step in any order; a
+/// premise that is NOT asserted is available only because some other step concluded it,
+/// and THAT is the only place the strict-prefix-visibility discipline does any work.
+fn asserted_triples(path: &Path) -> std::collections::BTreeSet<[String; 3]> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return std::collections::BTreeSet::new();
+    };
+    text.lines()
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            (f.len() == 3).then(|| [f[0].to_string(), f[1].to_string(), f[2].to_string()])
+        })
+        .collect()
+}
+
+/// What a certificate's SHAPE is, as opposed to whether it checks.
+///
+/// The property the whole induction rests on is that a step may cite only what came
+/// strictly before it and never itself. A one-step certificate cannot express a
+/// violation of it and cannot exercise it either: every premise is asserted, and the
+/// checker's ordering logic is never consulted. Counting rows is therefore not a measure
+/// of this corpus at all, and these four numbers are.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Shape {
+    /// The longest derivation chain. A step all of whose premises are asserted has depth
+    /// 0; a step citing a conclusion has one more than the deepest step it cites.
+    depth: usize,
+    /// Steps with a premise that is not asserted and IS the conclusion of a strictly
+    /// earlier step. The discipline is what lets these be accepted.
+    citing_earlier: usize,
+    /// Steps with a premise that is not asserted and is their OWN conclusion or the
+    /// conclusion of a LATER step. The discipline is what makes these rejections, and
+    /// without it each one is a conclusion fabricated out of nothing.
+    citing_self_or_later: usize,
+    /// The most steps that cite one single earlier conclusion. Width rather than depth:
+    /// a shared premise is where an off-by-one in a visibility check would show up on
+    /// one consumer and not the others.
+    fan_out: usize,
+}
+
+fn shape_of(steps: &[Step], asserted: &std::collections::BTreeSet<[String; 3]>) -> Shape {
+    let mut depth = vec![0usize; steps.len()];
+    let mut out = Shape::default();
+    let mut fan: BTreeMap<usize, usize> = BTreeMap::new();
+    for i in 0..steps.len() {
+        let (mut d, mut earlier, mut wrong) = (0usize, false, false);
+        for p in &steps[i].prems {
+            if asserted.contains(p) {
+                continue;
+            }
+            // The deepest strictly-earlier step concluding this premise. Deepest and not
+            // first, because the number being reported is the longest chain the
+            // certificate contains and a shallower producer would understate it.
+            let best = (0..i).filter(|j| &steps[*j].concl == p).max_by_key(|j| depth[*j]);
+            match best {
+                Some(j) => {
+                    earlier = true;
+                    d = d.max(depth[j] + 1);
+                    *fan.entry(j).or_default() += 1;
+                }
+                None => {
+                    if &steps[i].concl == p || steps[i + 1..].iter().any(|s| &s.concl == p) {
+                        wrong = true;
+                    }
+                }
+            }
+        }
+        depth[i] = d;
+        out.depth = out.depth.max(d);
+        out.citing_earlier += usize::from(earlier);
+        out.citing_self_or_later += usize::from(wrong);
+    }
+    out.fan_out = fan.values().copied().max().unwrap_or(0);
+    out
+}
+
+fn shape_of_case(case: &Case) -> Shape {
+    let Ok(text) = std::fs::read_to_string(&case.cert) else { return Shape::default() };
+    let Some(steps) = parse_cert(&text) else { return Shape::default() };
+    shape_of(&steps, &asserted_triples(&case.asserted))
+}
+
+/// The (producer, consumer) pair a mutation needs in order to say anything: the earliest
+/// step whose premise is the conclusion of a step before it. `None` means the
+/// certificate is flat and the deep mutations do not apply to it.
+///
+/// This works from the certificate alone and does not consult the asserted graph, so a
+/// premise that happens to be both asserted and concluded is still a pair. That is the
+/// safe direction: it generates a row rather than skipping one, and the row is only ever
+/// required to produce the SAME answer from both checkers.
+fn first_internal_citation(steps: &[Step]) -> Option<(usize, usize)> {
+    (0..steps.len()).find_map(|i| {
+        steps[i]
+            .prems
+            .iter()
+            .find_map(|p| (0..i).find(|j| &steps[*j].concl == p))
+            .map(|j| (j, i))
+    })
+}
+
 // ── the mutations ───────────────────────────────────────────────────────────
 
 /// A fresh IRI no fixture mentions, so substituting it is always a lie.
@@ -448,6 +552,81 @@ fn mutations() -> Vec<Mutation> {
                 return None;
             }
             c.reverse();
+            Some(render_cert(&c))
+        }),
+        // ── the edits only a DEEP certificate can express ────────────────────
+        //
+        // Each of these returns `None` on a flat certificate, so before the deep cases
+        // existed they produced nothing at all. That is the measure of the hole they
+        // fill: the discipline says a step may cite only what came strictly before it
+        // and never itself, and on a one-step certificate there is no "before" to get
+        // wrong. `the_corpus_exercises_prefix_visibility_at_depth` counts the rows.
+        //
+        // The step is moved to sit BEFORE the step whose conclusion it cites. Nothing
+        // else changes: same rule, same bindings, same premises, same conclusion. The
+        // certificate is now invalid for one reason only.
+        ("move_step_before_its_premise", |t| {
+            let mut c = parse_cert(t)?;
+            let (j, i) = first_internal_citation(&c)?;
+            let step = c.remove(i);
+            c.insert(j, step);
+            Some(render_cert(&c))
+        }),
+        // The same two steps exchanged rather than one moved, which also drags the
+        // producer past its own inputs.
+        ("swap_a_step_with_its_producer", |t| {
+            let mut c = parse_cert(t)?;
+            let (j, i) = first_internal_citation(&c)?;
+            c.swap(i, j);
+            Some(render_cert(&c))
+        }),
+        // A chain cut in the middle. The steps that remain are each individually sound
+        // and correctly ordered; what is gone is the one that produced a premise the
+        // rest stand on. Truncating at the END is an accepting mutation (a prefix of a
+        // valid certificate is valid) and `drop_last_step` covers it; truncating in the
+        // MIDDLE must be a rejection, and the two together are what say the checker is
+        // tracking what was derived rather than counting lines.
+        ("truncate_chain_in_the_middle", |t| {
+            let mut c = parse_cert(t)?;
+            let (j, _) = first_internal_citation(&c)?;
+            c.remove(j);
+            Some(render_cert(&c))
+        }),
+        // Two steps that support each other. The consumer already cites the producer;
+        // this points the producer's first premise at the consumer's conclusion, closing
+        // the loop. A checker that asked only "is this premise concluded SOMEWHERE" —
+        // the obvious and wrong reading of the format — accepts it, and with it accepts
+        // any conclusion whatsoever, because a cycle needs no input.
+        ("two_steps_cite_each_other", |t| {
+            let mut c = parse_cert(t)?;
+            let (j, i) = first_internal_citation(&c)?;
+            if c[j].prems.is_empty() {
+                return None;
+            }
+            c[j].prems[0] = c[i].concl.clone();
+            Some(render_cert(&c))
+        }),
+        // Self-support at a step that is NOT the first, which `step_cites_own_conclusion`
+        // cannot reach: it edits step 0, where a checker that only compared against the
+        // asserted set would reject for the ordinary reason and never consult the
+        // visibility rule at all.
+        ("a_deep_step_cites_itself", |t| {
+            let mut c = parse_cert(t)?;
+            let (_, i) = first_internal_citation(&c)?;
+            let earlier: Vec<[String; 3]> = c[..i].iter().map(|s| s.concl.clone()).collect();
+            let at = c[i].prems.iter().position(|p| earlier.contains(p))?;
+            c[i].prems[at] = c[i].concl.clone();
+            Some(render_cert(&c))
+        }),
+        // The first step reaches FORWARD to the last step's conclusion. Applies to any
+        // certificate with two steps, deep or flat, and is the plainest statement of the
+        // rule: what is cited must already exist.
+        ("a_step_cites_a_later_conclusion", |t| {
+            let mut c = parse_cert(t)?;
+            if c.len() < 2 || c[0].prems.is_empty() {
+                return None;
+            }
+            c[0].prems[0] = c.last()?.concl.clone();
             Some(render_cert(&c))
         }),
         ("swap_first_two_steps", |t| {
@@ -715,6 +894,139 @@ fn probe_cases() -> Vec<Case> {
         .collect()
 }
 
+// ── deep certificates, because the shipped ones are one step tall ───────────
+
+const RDF_TYPE: &str = "<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>";
+const SUBCLASS: &str = "<http://www.w3.org/2000/01/rdf-schema#subClassOf>";
+/// `rdfs9` in `tests/fixtures/horn/builtin_rules.tsv`, zero-based. Every certificate
+/// below cites this one rule, so `deep_cases` checks the row still is what it thinks
+/// before writing anything: a table edit that shifted the indices would otherwise turn
+/// this whole family into certificates about a different rule, which both checkers would
+/// reject in agreement and which would look exactly like a passing test.
+const RDFS9: usize = 4;
+
+fn class(i: usize) -> String {
+    format!("<http://ex.org/deep/C{i}>")
+}
+
+/// One `rdfs9` step: `?x type ?a`, `?a subClassOf ?b` ⊢ `?x type ?b`. The premise ORDER
+/// is the rule's body order and is part of the contract on both sides.
+fn rdfs9_step(x: &str, a: &str, b: &str) -> Step {
+    Step {
+        idx: RDFS9.to_string(),
+        binds: vec![
+            ("x".to_string(), x.to_string()),
+            ("a".to_string(), a.to_string()),
+            ("b".to_string(), b.to_string()),
+        ],
+        concl: [x.to_string(), RDF_TYPE.to_string(), b.to_string()],
+        prems: vec![
+            [x.to_string(), RDF_TYPE.to_string(), a.to_string()],
+            [a.to_string(), SUBCLASS.to_string(), b.to_string()],
+        ],
+    }
+}
+
+/// A chain `d` steps tall over a subclass ladder, then `w` steps fanning out from its
+/// tip. Step 0's premises are all asserted; step k cites step k-1's conclusion and
+/// nothing else that is not asserted; each of the final `w` steps cites the SAME
+/// conclusion, which is where a visibility check that is right for one consumer and
+/// wrong for the rest would show.
+///
+/// Every one of these is a genuine `rdfs9` derivation and both checkers must accept it.
+/// The value is not the acceptance, which is easy; it is that the mutations below then
+/// have something to break.
+fn ladder(d: usize, w: usize) -> (String, String) {
+    let ind = "<http://ex.org/deep/a>";
+    let mut asserted = format!("{ind}\t{RDF_TYPE}\t{}\n", class(0));
+    for k in 0..d {
+        asserted.push_str(&format!("{}\t{SUBCLASS}\t{}\n", class(k), class(k + 1)));
+    }
+    for j in 0..w {
+        asserted.push_str(&format!("{}\t{SUBCLASS}\t<http://ex.org/deep/B{j}>\n", class(d)));
+    }
+    let mut steps: Vec<Step> = (0..d).map(|k| rdfs9_step(ind, &class(k), &class(k + 1))).collect();
+    steps.extend(
+        (0..w).map(|j| rdfs9_step(ind, &class(d), &format!("<http://ex.org/deep/B{j}>"))),
+    );
+    (asserted, render_cert(&steps))
+}
+
+/// The deep half of the corpus: chains, a wide fan, and two of each combined. Written to
+/// scratch rather than committed because they are PARAMETERISED — the point is the
+/// distribution of depths, and a fixture per depth would be twelve files saying one
+/// thing. The hand-built adversarial pair that cannot be generated is committed instead,
+/// under `tests/fixtures/horn/deep/`; see `deep_fixture_cases`.
+fn deep_cases(scratch: &Path) -> Vec<Case> {
+    let rules = horn_fixture("builtin_rules.tsv");
+    let Ok(table) = std::fs::read_to_string(&rules) else { return Vec::new() };
+    let row = table.lines().nth(RDFS9).unwrap_or_default();
+    assert!(
+        row.starts_with("rdfs9\t2\t"),
+        "row {RDFS9} of builtin_rules.tsv is {row:?}, not rdfs9 with a two-atom body. The \
+         deep certificates cite that index by number and would now be about a different \
+         rule, which both kernels would reject together and which would read as a pass"
+    );
+
+    // (name, chain height, fan-out width). Heights chosen so the distribution is not one
+    // number: a two-step cert, a handful, and one long enough that an off-by-one in a
+    // visibility bound has somewhere to hide.
+    let shapes = [
+        ("chain-02", 2, 0),
+        ("chain-04", 4, 0),
+        ("chain-08", 8, 0),
+        ("chain-20", 20, 0),
+        ("wide-12", 1, 12),
+        ("ladder-06x08", 6, 8),
+    ];
+    let mut cases = Vec::new();
+    for (name, d, w) in shapes {
+        let dir = scratch.join("deep").join(name);
+        if std::fs::create_dir_all(&dir).is_err() {
+            continue;
+        }
+        let (asserted, cert) = ladder(d, w);
+        let ap = dir.join("asserted.tsv");
+        let cp = dir.join("cert.tsv");
+        if std::fs::write(&ap, asserted).is_err() || std::fs::write(&cp, cert).is_err() {
+            continue;
+        }
+        cases.push(Case {
+            name: format!("deep-{name}"),
+            kind: "base".to_string(),
+            rules: rules.clone(),
+            asserted: ap,
+            cert: cp,
+        });
+    }
+    cases
+}
+
+/// The two adversarial certificates that no generator produces, because a generator
+/// emits derivations and these are not derivations. Both instantiate their rule
+/// PERFECTLY: every binding covers the rule, every premise matches the body, the
+/// conclusion matches the head. The only thing wrong with either is the order, which is
+/// exactly the property under test, and both are pinned by their own tests below.
+fn deep_fixture_cases() -> Vec<Case> {
+    let d = |n: &str| repo().join("tests").join("fixtures").join("horn").join("deep").join(n);
+    let rules = horn_fixture("builtin_rules.tsv");
+    let rows: Vec<(&str, PathBuf, PathBuf)> = vec![
+        ("deep-self-support", d("self_support_asserted.tsv"), d("self_support_cert.tsv")),
+        ("deep-mutual-support", d("mutual_asserted.tsv"), d("mutual_cert.tsv")),
+        ("deep-mutual-seeded", d("mutual_seeded_asserted.tsv"), d("mutual_cert.tsv")),
+    ];
+    rows.into_iter()
+        .filter(|(_, a, c)| a.exists() && c.exists())
+        .map(|(n, a, c)| Case {
+            name: n.to_string(),
+            kind: "base".to_string(),
+            rules: rules.clone(),
+            asserted: a,
+            cert: c,
+        })
+        .collect()
+}
+
 /// Expand each base case into its mutants.
 fn mutate(bases: &[Case], scratch: &Path) -> Vec<Case> {
     let mut out = Vec::new();
@@ -763,8 +1075,16 @@ fn mutate(bases: &[Case], scratch: &Path) -> Vec<Case> {
     out
 }
 
+/// A directory of this run's own, and a DIFFERENT one on every call.
+///
+/// The process id alone was enough while one test generated a corpus. Three do now, and
+/// `cargo test` runs them in parallel by default, so a shared path would have one test
+/// deleting another's certificates mid-run — a flake that looks like a disagreement,
+/// which is the one failure this file must never report falsely.
 fn scratch_dir() -> PathBuf {
-    let d = std::env::temp_dir().join(format!("oo-cross-kernel-{}", std::process::id()));
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let d = std::env::temp_dir().join(format!("oo-cross-kernel-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).expect("create scratch dir");
     d
@@ -1075,6 +1395,8 @@ fn the_two_kernels_agree_on_the_whole_corpus() {
     let scratch = scratch_dir();
     let mut bases = fixture_cases();
     bases.extend(probe_cases());
+    bases.extend(deep_fixture_cases());
+    bases.extend(deep_cases(&scratch));
     bases.extend(generate_base_certificates(&scratch));
     let mutants = mutate(&bases, &scratch);
     let fuzzed = fuzz(&bases, &scratch);
@@ -1147,9 +1469,23 @@ fn the_two_kernels_agree_on_the_whole_corpus() {
     }
 
     let refused_total: usize = refused.values().sum();
+    // The corpus measured by SHAPE and not only by row count, printed next to the
+    // agreement number so the two are read together. A row count says how many files
+    // were compared; these say how many of them could express the ordering property the
+    // checker's induction rests on. See
+    // `the_corpus_exercises_prefix_visibility_at_depth`, which holds the floor.
+    let shapes: Vec<Shape> =
+        bases.iter().chain(mutants.iter()).chain(fuzzed.iter()).map(shape_of_case).collect();
+    let deepest = shapes.iter().map(|s| s.depth).max().unwrap_or(0);
+    let widest = shapes.iter().map(|s| s.fan_out).max().unwrap_or(0);
+    let uses = shapes.iter().filter(|s| s.citing_earlier > 0).count();
+    let violates = shapes.iter().filter(|s| s.citing_self_or_later > 0).count();
+
     println!(
         "cross-kernel differential\n  \
          certificates:     {total} ({} base, {} mutated, {} fuzzed, seed {FUZZ_SEED:#x})\n  \
+         prefix visibility: {} rows exercise it ({uses} rest on it to be accepted, \
+         {violates} must be rejected by it); deepest chain {deepest}, widest fan-out {widest}\n  \
          both accept:      {agree_accept}\n  \
          both reject:      {agree_reject}\n  \
          both exit 2:      {agree_unreadable}\n  \
@@ -1158,6 +1494,7 @@ fn the_two_kernels_agree_on_the_whole_corpus() {
         bases.len(),
         mutants.len(),
         fuzzed.len(),
+        uses + violates,
         divergent.len()
     );
     for (kind, n) in &refused {
@@ -1756,4 +2093,232 @@ fn agreement_is_about_the_definitions_and_is_not_itself_a_proof() {
             "a run over a user table must say the rules are assumed: {json}"
         );
     }
+}
+
+/// **The measure, not the claim.** How deep the corpus actually is.
+///
+/// A differential over 1,718 certificates sounds like a lot until you ask how many of
+/// them can express the property the checker's induction rests on. A step may cite only
+/// what came strictly before it and never itself; a ONE-STEP certificate cannot violate
+/// that and cannot exercise it either, because every premise it has is asserted and the
+/// ordering logic is never reached. Before the deep cases were added, exactly one base
+/// certificate in the corpus contained a step citing an earlier step's conclusion, so
+/// the discipline was differentially tested by a single two-step fixture.
+///
+/// This test prints the distribution and holds a floor under it. It deliberately does
+/// NOT require either proof assistant: the shape of the corpus is a fact about the
+/// files, and it should still be measurable on a machine that cannot run the kernels.
+#[test]
+fn the_corpus_exercises_prefix_visibility_at_depth() {
+    let scratch = scratch_dir();
+    let mut bases = fixture_cases();
+    bases.extend(probe_cases());
+    bases.extend(deep_fixture_cases());
+    bases.extend(deep_cases(&scratch));
+    bases.extend(generate_base_certificates(&scratch));
+    let mutants = mutate(&bases, &scratch);
+    let fuzzed = fuzz(&bases, &scratch);
+
+    let report = |label: &str, cases: &[Case]| -> (usize, usize) {
+        let shapes: Vec<Shape> = cases.iter().map(shape_of_case).collect();
+        let mut hist: BTreeMap<usize, usize> = BTreeMap::new();
+        for s in &shapes {
+            *hist.entry(s.depth).or_default() += 1;
+        }
+        let uses = shapes.iter().filter(|s| s.citing_earlier > 0).count();
+        let violates = shapes.iter().filter(|s| s.citing_self_or_later > 0).count();
+        println!(
+            "  {label:<10} {:>5} certificates   depth {}   max fan-out {}\n    \
+             {uses:>5} cite an earlier conclusion, {violates:>5} cite themselves or a later step",
+            cases.len(),
+            hist.iter().map(|(d, n)| format!("{d}:{n}")).collect::<Vec<_>>().join(" "),
+            shapes.iter().map(|s| s.fan_out).max().unwrap_or(0),
+        );
+        (uses, violates)
+    };
+
+    println!("prefix-visibility coverage (depth d:count, d = longest derivation chain)");
+    let (base_uses, base_violates) = report("base", &bases);
+    let (mut_uses, mut_violates) = report("mutated", &mutants);
+    let (fuzz_uses, fuzz_violates) = report("fuzzed", &fuzzed);
+    let uses = base_uses + mut_uses + fuzz_uses;
+    let violates = base_violates + mut_violates + fuzz_violates;
+    println!(
+        "  TOTAL      {} rows exercise the discipline: {uses} rest on it to be accepted, \
+         {violates} must be rejected by it",
+        uses + violates
+    );
+
+    let deepest = bases.iter().map(|c| shape_of_case(c).depth).max().unwrap_or(0);
+    let widest = bases.iter().map(|c| shape_of_case(c).fan_out).max().unwrap_or(0);
+    assert!(
+        deepest >= 15,
+        "the deepest base certificate is {deepest} steps of chaining. A shallow corpus \
+         tests the checker's ordering logic on one or two links, which is where an \
+         off-by-one hides"
+    );
+    assert!(widest >= 10, "no base certificate has {widest} or more steps citing one conclusion");
+    assert!(
+        base_uses >= 8,
+        "only {base_uses} base certificates cite an earlier conclusion at all; the corpus \
+         has gone flat again and the discipline is back to being tested by one fixture"
+    );
+    assert!(
+        violates >= 40,
+        "only {violates} rows in the whole corpus cite themselves or a later step, so the \
+         REJECTING half of the discipline is barely exercised"
+    );
+
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Self-support, in the one form that isolates it.** A step whose only non-asserted
+/// premise is its OWN conclusion, and which is otherwise perfect.
+///
+/// `tests/fixtures/horn/deep/self_support_cert.tsv` cites `rdfs9` with `a` and `b` bound
+/// to the SAME class, so the rule's body is `<a> type <A>`, `<A> subClassOf <A>` and its
+/// head is `<a> type <A>`. The head and the first premise are then the same triple. The
+/// binding covers every variable of the rule, has no repeated key, and instantiates the
+/// body into exactly the premises the step lists: nothing a duplicate-key or
+/// coverage check would catch is wrong with it.
+///
+/// `self_support_asserted.tsv` supplies `<A> subClassOf <A>` and NOTHING else, so the
+/// remaining premise is unavailable unless a step may cite itself. Both checkers reject,
+/// and Isabelle names the reason: `premise_unknown:0`.
+///
+/// Why it is worth committing rather than mutating into existence: this is the case the
+/// induction in both formalisations is FOR. A checker that resolved premises against
+/// "the asserted graph plus every conclusion in the file" rather than "plus every
+/// conclusion strictly before this one" accepts it, and having accepted it accepts the
+/// derivation of anything at all, since a self-supporting step needs no input. The
+/// shipped fixture set could not express it: `bad_self.tsv` swaps a premise for the
+/// conclusion under a binding that no longer instantiates the body, so it is rejected
+/// for two reasons at once and says nothing about which.
+#[test]
+fn a_step_may_not_cite_its_own_conclusion() {
+    if skip() {
+        return;
+    }
+    let dir = repo().join("tests").join("fixtures").join("horn").join("deep");
+    let rules = horn_fixture("builtin_rules.tsv");
+    let asserted = dir.join("self_support_asserted.tsv");
+    let cert = dir.join("self_support_cert.tsv");
+    if common::skip_unless(
+        asserted.exists() && cert.exists(),
+        "tests/fixtures/horn/deep/self_support_*.tsv",
+        "they are committed",
+    ) {
+        return;
+    }
+
+    // The shape is asserted from the file, not assumed, or a later edit could turn this
+    // into a test of an ordinary rejection without anyone noticing.
+    let steps = parse_cert(&std::fs::read_to_string(&cert).unwrap()).expect("it must parse");
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].prems[0], steps[0].concl, "premise 0 must BE the conclusion");
+    let known = asserted_triples(&asserted);
+    assert!(!known.contains(&steps[0].concl), "and it must not be asserted, or nothing is proved");
+    assert!(known.contains(&steps[0].prems[1]), "while the other premise must be asserted");
+
+    let lean = run_lean(&rules, &asserted, &cert);
+    let isa = run_isabelle(&rules, &asserted, &cert);
+    assert_eq!(lean, isa, "the two kernels disagree about self-support: {lean:?} vs {isa:?}");
+    assert_eq!(lean.exit, 1, "a self-supporting step must be REJECTED, not accepted and not a parse error");
+}
+
+/// **Mutual support.** Two steps, each citing the other's conclusion, and a control that
+/// shows the rejection is about the ordering and about nothing else in the three files.
+///
+/// `mutual_cert.tsv` is two `rdfs9` steps over `<A> subClassOf <B>` and
+/// `<B> subClassOf <A>`: step 0 concludes `<a> type <B>` from `<a> type <A>`, and step 1
+/// concludes `<a> type <A>` from `<a> type <B>`. Each premise the other step supplies.
+/// `mutual_asserted.tsv` asserts only the two subclass axioms, so `<a>` is never said to
+/// be of any type at all, and the pair manufactures both conclusions out of each other.
+///
+/// The control is the SAME certificate against `mutual_seeded_asserted.tsv`, which adds
+/// the single triple `<a> type <A>`. Now step 0's first premise is asserted, step 1's is
+/// step 0's conclusion, the order is legal, and both checkers accept with the ABSOLUTE
+/// verdict. One triple is the whole difference between a cycle and a derivation, and the
+/// discipline is the only thing that tells them apart.
+#[test]
+fn two_steps_may_not_support_each_other() {
+    if skip() {
+        return;
+    }
+    let dir = repo().join("tests").join("fixtures").join("horn").join("deep");
+    let rules = horn_fixture("builtin_rules.tsv");
+    let cert = dir.join("mutual_cert.tsv");
+    let cycle = dir.join("mutual_asserted.tsv");
+    let seeded = dir.join("mutual_seeded_asserted.tsv");
+    if common::skip_unless(
+        cert.exists() && cycle.exists() && seeded.exists(),
+        "tests/fixtures/horn/deep/mutual_*.tsv",
+        "they are committed",
+    ) {
+        return;
+    }
+
+    let steps = parse_cert(&std::fs::read_to_string(&cert).unwrap()).expect("it must parse");
+    assert_eq!(steps.len(), 2);
+    assert_eq!(steps[0].prems[0], steps[1].concl, "step 0 must cite step 1's conclusion");
+    assert_eq!(steps[1].prems[0], steps[0].concl, "and step 1 must cite step 0's");
+    let unseeded = asserted_triples(&cycle);
+    assert!(
+        !unseeded.contains(&steps[0].concl) && !unseeded.contains(&steps[1].concl),
+        "neither conclusion may be asserted, or the cycle is not load-bearing"
+    );
+    assert_eq!(
+        asserted_triples(&seeded).difference(&unseeded).count(),
+        1,
+        "the control must differ by exactly ONE triple"
+    );
+
+    let lean = run_lean(&rules, &cycle, &cert);
+    let isa = run_isabelle(&rules, &cycle, &cert);
+    assert_eq!(lean, isa, "the two kernels disagree about mutual support: {lean:?} vs {isa:?}");
+    assert_eq!(lean.exit, 1, "a pair of steps supporting each other must be REJECTED");
+
+    let lean = run_lean(&rules, &seeded, &cert);
+    let isa = run_isabelle(&rules, &seeded, &cert);
+    assert_eq!(lean, isa, "the two kernels disagree on the control: {lean:?} vs {isa:?}");
+    assert_eq!(
+        lean.exit, 0,
+        "the SAME certificate, with one triple asserted, must be accepted; if it is not, \
+         the rejection above was about something other than the ordering and this pair \
+         proves nothing"
+    );
+    assert_eq!(lean.verdict.as_deref(), Some("entailed"));
+}
+
+/// The deep certificates are accepted, and are deep. Two separate claims: a generator
+/// that quietly emitted flat certificates would still pass the differential, because
+/// both kernels agree on flat certificates too.
+#[test]
+fn the_generated_deep_certificates_check_and_are_deep() {
+    if skip() {
+        return;
+    }
+    let scratch = scratch_dir();
+    let cases = deep_cases(&scratch);
+    assert!(!cases.is_empty(), "the deep generator produced nothing");
+    for case in &cases {
+        let shape = shape_of_case(case);
+        assert!(
+            shape.depth >= 1 && shape.citing_earlier >= 1,
+            "{} is flat: {shape:?}. A base case that cites nothing exercises no ordering",
+            case.name
+        );
+        let lean = run_lean(&case.rules, &case.asserted, &case.cert);
+        let isa = run_isabelle(&case.rules, &case.asserted, &case.cert);
+        assert_eq!(lean, isa, "the two kernels disagree on {}: {lean:?} vs {isa:?}", case.name);
+        assert_eq!(
+            lean.exit, 0,
+            "{} is a real rdfs9 derivation in a legal order and must be ACCEPTED (depth \
+             {}, fan-out {}); if it is rejected the generator is wrong and every deep \
+             mutation below is mutating rubbish",
+            case.name, shape.depth, shape.fan_out
+        );
+        assert_eq!(lean.verdict.as_deref(), Some("entailed"), "{} over the built-in table", case.name);
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
 }

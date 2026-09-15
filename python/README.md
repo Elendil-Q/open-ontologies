@@ -174,10 +174,22 @@ table holds only in models that satisfy that table, so writing it back in beside
 the assertions is how one run's output becomes the next run's axiom. Only the
 default graph is asserted, for the same reason.
 
-Because this engine and the Rust one are independent implementations of one
-specification, running both over a corpus and checking both certificates gives a
-three-way differential. `tests/test_horn_differential.py` does exactly that, and
-reports disagreement rather than adjudicating it.
+Running this engine and the Rust one over a corpus and checking both certificates
+gives a three-way differential. `tests/test_horn_differential.py` and
+`tests/test_horn_three_way_differential.py` do exactly that, and report
+disagreement rather than adjudicating it.
+
+**How much the agreement is worth.** This engine and the Rust one are NOT
+independent implementations. They run the same semi-naive forward-chaining
+algorithm over the same rule table, this one was written with `src/reason.rs`
+open, and its comments cite that file by line. Agreement between them is strong
+evidence against a TRANSCRIPTION slip — an index off by one, a guard dropped, a
+join in the wrong order — and close to no evidence against a SHARED MISREADING
+of a W3C rule, which both would implement and agree on for ever. The independent
+leg is the Lean checker, written from the W3C rules with a machine-checked
+soundness theorem. `tools/horn_differential.py` prints that caveat next to its
+agreement count on every run. Never quote the sweep as "two independent
+reasoners agree".
 
 ### Closed-world checking
 

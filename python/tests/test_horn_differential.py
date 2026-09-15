@@ -1,12 +1,23 @@
-"""Three independent implementations over one corpus, and what a difference means.
+"""Three implementations over one corpus, and what a difference means.
 
 This is the reason a second reasoner is worth writing at all. The Rust engine,
-this Python engine and the Lean checker are three separate implementations of one
-specification, so running all three over the same graphs finds defects that none
-of them finds alone. What this file does NOT do is adjudicate: it is modelled on
+this Python engine and the Lean checker are three separate implementations, so
+running all three over the same graphs finds defects that none of them finds
+alone. What this file does NOT do is adjudicate: it is modelled on
 `tools/fol_differential.py`, whose first paragraph is "THE ATP IS AN ORACLE, NOT
 AN AUTHORITY", and the same discipline applies here. A disagreement is a defect in
 ONE OF THE THREE and the job is to report it, not to decide which.
+
+SEPARATE IS NOT INDEPENDENT, AND THIS FILE ONCE SAID IT WAS. The two ENGINES are
+not independent implementations: they run the same semi-naive forward-chaining
+algorithm over the same rule table, this one was written with `src/reason.rs`
+open, and the comments below cite that file by line. Their agreement is strong
+evidence against a TRANSCRIPTION slip in one of the two and close to no evidence
+against a SHARED MISREADING of a W3C rule, which both would implement and agree
+on for ever. The independent leg is the LEAN CHECKER, written from the W3C rules
+with a machine-checked soundness theorem. Nothing here may be quoted as "two
+independent reasoners agree"; `tools/horn_differential.py` prints that sentence
+next to its agreement count on every run.
 
 GATED on both binaries and skips loudly wherever it cannot run. CI has neither.
 
@@ -15,7 +26,7 @@ WHAT IS COMPARED, AND WHAT IS NOT.
 The assertion is SET EQUALITY OF DERIVED TRIPLES against the Rust `run_horn`, over
 the same `builtin_rules.tsv`. Byte identity of the two `horn.tsv` files is NOT a
 goal and must not be asserted: the Rust emitter sorts interned `u32` triples
-(`src/reason.rs:1513`, `all.sort_unstable()` over `Vec<(u32,u32,u32)>`), so its
+(`src/reason.rs:2240`, `all.sort_unstable()` over `Vec<(u32,u32,u32)>`), so its
 line order is first-appearance order in the store, not lexicographic order.
 Reproducing it from Python would mean reimplementing the interner and betting on
 identical store-iteration order across two bindings, to buy nothing the set

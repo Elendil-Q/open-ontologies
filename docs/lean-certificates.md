@@ -592,6 +592,29 @@ Stated rather than discovered later.
   blank node in predicate position.
 - **The rule table is this engine's, not W3C's.** `by_rule` describes what this engine did. It is
   not an OWL 2 RL conformance claim, and the engine does not implement every rule in the profile.
+- **The Rust and Python reasoners are NOT independent, so their agreement is worth less than it
+  reads.** `tools/horn_differential.py` runs `src/reason.rs`, the pure-Python engine in
+  `python/src/open_ontologies_lite/horn/` and `oo-horn` over every RDF document the repository
+  tracks, and reports a clean sweep. The two ENGINES run the same semi-naive forward-chaining
+  algorithm over the same rule table; the Python was written with the Rust open and its comments
+  cite `src/reason.rs` by file and line. That makes their agreement STRONG evidence against a
+  transcription slip in one of the two — an index off by one, a guard dropped, a join in the wrong
+  order — and CLOSE TO NO evidence against a shared misreading of a W3C rule, which both would
+  implement and agree on for ever. The independent leg is the Lean checker, written from the W3C
+  rules with a machine-checked soundness theorem. The tool prints this caveat next to its agreement
+  count on every run. Never quote the sweep as "two independent reasoners agree".
+- **Seven of the twenty-seven rules fire nowhere in the repository's own RDF.** Measured on 14
+  September 2026: the corpus exercises 20 of 27, and `prp-inv2`, `eq-sym`, `cls-avf`, `cls-hv1`,
+  `cls-hv2`, `scm-svf2` and `scm-avf2` never fire in it, so the differential compared the two
+  engines on them zero times. `tests/fixtures/horn-coverage/` holds one deliberately built graph
+  per silent rule, each the smallest thing that makes exactly that rule fire, and the differential
+  runs them as a separate labelled set. The two figures are reported apart and must not be added:
+  20 of 27 on real ontologies, 27 of 27 once fixtures written for the purpose are included. A rule
+  covered only by its own fixture has been compared on one graph made to fire it and on no real
+  data. Re-measured on 15 September 2026 over a corpus that had meanwhile grown to 291 documents
+  and 203,825 asserted triples: the same 20, the same seven silent, and all seven fixtures firing
+  exactly their own rule once. No rule in the table is unreachable, so the seven were a gap in the
+  corpus and not a defect in the engine.
 - **`asserted.tsv` is the store, not your file.** Quads are flattened, so a triple present in two
   named graphs appears on two lines. Literals are in the store's post-parse canonical spelling, so
   `"01"^^xsd:integer` is written `"1"^^xsd:integer`. The guarantee is relative to that file.

@@ -7,6 +7,15 @@ keeps a bounded slice of that run inside the test suite, so the tool cannot rot
 unnoticed between full runs, and it does the thing a differential is worthless without:
 it breaks one engine on purpose and shows each gate firing.
 
+HOW INDEPENDENT THE TWO ENGINES ARE, WHICH IS LESS THAN THE WORD SUGGESTS. They are not
+independent implementations. Both run the same semi-naive forward-chaining algorithm
+over the same rule table, and this engine's comments cite `src/reason.rs` by file and
+line. Agreement is therefore STRONG evidence against a transcription slip in one of the
+two and CLOSE TO NO evidence against a shared misreading of a W3C rule, which both would
+implement and agree on for ever. The independent leg is the Lean checker. Nothing in
+this file may be quoted as "two independent reasoners agree"; the tool prints that
+sentence next to its agreement count on every run.
+
 WHY THE GATE TESTS MATTER MORE THAN THE AGREEMENT TESTS. A comparison that cannot fail
 is worse than no comparison, because it reports agreement for ever. Three deliberate
 defects are injected below, each of which a careless differential would pass:
@@ -28,18 +37,31 @@ THE FULL RUN, which this file does not reproduce because it takes twelve minutes
 
     python3 tools/horn_differential.py --bundles --json out.json
 
-Measured there: 286 single documents carrying 203,717 asserted triples and deriving
-19,624, plus 24 bundles of those same documents deriving 59,115 (the two derived counts
-overlap and must not be added, because a bundle re-derives most of what its members
-derive alone). Identical sets on both engines in every one of the 310 cases, every
-certificate accepted, no disagreement. Seven rules the corpus cannot exercise at all:
-prp-inv2, eq-sym, cls-avf, cls-hv1, cls-hv2, scm-svf2 and scm-avf2. Those seven are not
-covered here either, and nothing in this file should be read as saying anything about
-them. Set HORN_DIFF_FULL=1 to run every tracked document here too.
+Measured there on 15 September 2026: 291 single documents carrying 203,825 asserted
+triples and deriving 19,624, plus 24 bundles of those same documents deriving 59,115
+(the two derived counts overlap and must not be added, because a bundle re-derives most
+of what its members derive alone), plus the 7 coverage fixtures, which are test data and
+are counted apart from all of it. Identical sets on both engines in every one of the 322
+cases, every certificate accepted, no disagreement. Fifteen cases did not run and each is
+listed with its reason: four bundles over the 8.4 MB cap, nine documents that do not
+parse or parse to nothing, and the two OAEI anatomy OWL files, which time out at 900s.
+Set HORN_DIFF_FULL=1 to run every tracked document here too.
+
+THE SEVEN RULES THE CORPUS CANNOT EXERCISE. `prp-inv2`, `eq-sym`, `cls-avf`, `cls-hv1`,
+`cls-hv2`, `scm-svf2` and `scm-avf2` fire in no document this repository tracks, so the
+corpus run compared the two engines on them zero times and said nothing whatever about
+them. `tests/fixtures/horn-coverage/` now holds one deliberately constructed graph per
+silent rule, each the smallest thing that makes exactly that rule fire, and
+`test_the_seven_rules_the_corpus_cannot_reach_are_covered_by_fixtures` runs all seven
+here. The two coverage figures are reported apart and must never be added: 20 of 27 on
+the repository's own RDF, 27 of 27 once graphs written for the purpose are included. A
+rule covered only by its own fixture has been compared on one graph made to fire it and
+on no real ontology, which is a great deal better than zero and is not the same claim.
 """
 
 import importlib.util
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -182,7 +204,13 @@ def test_the_slice_is_not_vacuous(slice_rows):
     fired = set()
     for r in rows:
         fired |= {k for k, v in r["by_rule"].items() if v}
-    assert len(fired) >= 20, f"only {len(fired)} of 27 rules fired: {sorted(fired)}"
+    # 20 and not 27: seven rules fire in no document this repository ships, and the
+    # slice is made of documents. The other seven are covered by
+    # `test_the_seven_rules_the_corpus_cannot_reach_are_covered_by_fixtures`, from
+    # graphs written for the purpose, and the two counts are never added together.
+    assert len(fired) >= 20, (
+        f"only {len(fired)} of the 20 corpus-reachable rules fired: {sorted(fired)}"
+    )
 
 
 def test_a_silently_dropped_derivation_is_caught():
@@ -260,6 +288,77 @@ def test_the_corpus_the_tool_would_run_is_not_empty():
     assert len(files) > 100, f"only {len(files)} RDF documents discovered under {REPO}"
 
 
+def test_the_coverage_fixtures_are_not_part_of_the_corpus():
+    """The corpus figure must stay a number about real ontologies.
+
+    `tests/fixtures/horn-coverage/` holds graphs written to make one named rule fire.
+    Counting them as corpus documents would inflate the coverage figure with data
+    constructed to hit it, which is measuring the ruler, so `discover` excludes the
+    directory and this is the test that says so.
+    """
+    module = tool()
+    files = module.discover(REPO)
+    leaked = [f for f in files if module.is_coverage_fixture(f)]
+    assert not leaked, f"coverage fixtures reached the corpus: {leaked}"
+    assert module.coverage_cases(), (
+        "no coverage fixtures were found at all. The seven rules the corpus cannot reach "
+        "are then uncovered again and the headline is back to 20 of 27"
+    )
+
+
+# The rules no document in this repository fires. Measured from the per-rule histogram of
+# the full run on 14 September 2026, and the reason `tests/fixtures/horn-coverage/` exists.
+CORPUS_CANNOT_REACH = (
+    "prp-inv2", "eq-sym", "cls-avf", "cls-hv1", "cls-hv2", "scm-svf2", "scm-avf2",
+)
+
+
+def test_the_seven_rules_the_corpus_cannot_reach_are_covered_by_fixtures(capsys):
+    """Each fixture fires the rule its filename names, and only that rule.
+
+    This is the whole of what moves the headline from 20 of 27 to 27 of 27, so it is
+    checked rather than asserted: every fixture goes through both engines and the Lean
+    checker like any other case, and the per-rule credit is read out of the run.
+
+    A fixture that fires NOTHING would be a finding about the engine rather than about
+    the fixture, and it fails here loudly instead of quietly leaving the rule uncovered.
+    """
+    module = tool()
+    cases = {c["name"]: c for c in module.coverage_cases()}
+    assert len(cases) == len(CORPUS_CANNOT_REACH), (
+        f"{len(cases)} fixtures for {len(CORPUS_CANNOT_REACH)} uncovered rules: {sorted(cases)}"
+    )
+
+    covered, problems = {}, []
+    for name, case in sorted(cases.items()):
+        with tempfile.TemporaryDirectory(prefix="horndiff-cov-") as d:
+            row = module.run_case(case, Path(d), 600)
+        want = case["rule"]
+        fired = {k.split("#")[0]: v for k, v in (row.get("by_rule") or {}).items() if v}
+        with capsys.disabled():
+            print(f"\n  {name}: {row['verdict']}, {row.get('asserted')} asserted, "
+                  f"{row.get('derived_python')} derived, fired {fired}")
+        if row["verdict"] != "AGREE":
+            problems.append(f"{name}: {row['verdict']} {row['detail']}")
+        elif want not in fired:
+            problems.append(
+                f"{name}: fired {sorted(fired) or 'nothing'} and not {want}. If no graph can "
+                f"make {want} fire, that is a finding about the engine and belongs in the report"
+            )
+        elif len(fired) > 1:
+            problems.append(
+                f"{name}: fired {sorted(fired)}; a coverage fixture is meant to be the SMALLEST "
+                f"graph that makes {want} fire, so anything else firing means it is not minimal"
+            )
+        else:
+            covered[want] = fired[want]
+
+    assert not problems, "\n".join(problems)
+    assert sorted(covered) == sorted(CORPUS_CANNOT_REACH), (
+        f"covered {sorted(covered)}, expected {sorted(CORPUS_CANNOT_REACH)}"
+    )
+
+
 @pytest.mark.skipif(
     os.environ.get("HORN_DIFF_FULL") != "1",
     reason="the full corpus takes twelve minutes. HORN_DIFF_FULL=1 to run it here, or run "
@@ -278,3 +377,56 @@ def test_every_tracked_document_agrees():
         if row["verdict"] in module.BLOCKING:
             blocking.append(row)
     assert not blocking, "\n".join(f"{r['verdict']} {r['name']}: {r['detail']}" for r in blocking)
+
+
+# The form every citation of the Rust engine takes in this package: a backticked
+# `src/reason.rs:N`, then a comma, then the backticked token that line is supposed to
+# contain. Anything else is not matched and fails the test below rather than being
+# skipped, because a citation this cannot read is a citation nobody is checking.
+RUST_CITATION = re.compile(r"`src/reason\.rs:(\d+)`,\s*\n?\s*`([^`]+)`")
+
+
+def test_the_python_engine_cites_the_rust_by_a_line_that_still_says_what_it_claims():
+    """The evidence for the independence caveat, checked rather than asserted.
+
+    The caveat at the top of this file says the two engines are not independent, and the
+    reason given is that this package's comments cite `src/reason.rs` BY LINE. That is
+    the load-bearing fact, and it was measured once and then went stale: three citations
+    pointed roughly 700 lines short of their target, because `src/reason.rs` grew
+    underneath them. A stale line number is worse than none, since a reader who follows
+    it lands on unrelated code and concludes the claim was invented.
+
+    So every citation is resolved here: the line must exist and must contain the token
+    the citation names. A citation this regex cannot read is a FAILURE, not a skip, or
+    the next one written in a new shape would be silently unguarded.
+    """
+    root = REPO / "python"
+    sources = sorted(p for p in root.rglob("*.py") if "__pycache__" not in p.parts)
+    assert sources, f"no Python sources found under {root}"
+    rust = (REPO / "src" / "reason.rs").read_text().splitlines()
+
+    cited, bad = 0, []
+    for path in sources:
+        text = path.read_text()
+        rel = path.relative_to(REPO)
+        for raw in re.findall(r"`src/reason\.rs:\d+`[^`]*`[^`]*`", text):
+            m = RUST_CITATION.search(raw)
+            if not m:
+                bad.append(f"{rel}: {raw!r} does not name a token after the line number")
+                continue
+            cited += 1
+            line, token = int(m.group(1)), m.group(2)
+            if not 1 <= line <= len(rust):
+                bad.append(f"{rel}: src/reason.rs:{line} is past the end ({len(rust)} lines)")
+            elif token.rstrip("()") not in rust[line - 1]:
+                where = [i + 1 for i, l in enumerate(rust) if token.rstrip("()") in l]
+                bad.append(
+                    f"{rel}: src/reason.rs:{line} does not contain {token!r}. "
+                    f"It is at {where or 'no line at all'}. The file moved under the comment"
+                )
+    assert not bad, "\n".join(bad)
+    assert cited >= 3, (
+        f"only {cited} citations of src/reason.rs found in {root}. The independence caveat "
+        "rests on this package citing the Rust by line; if that stopped being true the "
+        "caveat's stated reason needs rewriting, not this floor lowering"
+    )
