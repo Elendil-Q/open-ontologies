@@ -33,8 +33,14 @@ repeated binding key meant, so one kernel refused the shape and the other answer
 lookup happened to do. The sharper fact came out of the second implementation rather than the first:
 a key bound twice to different values is satisfied by no substitution at all, so there were never two
 readings, only two ways of discarding half the certificate. Closed by
-[decision 0008](0008-a-binding-is-data-and-evidence-admits-one-reading.md), and the differential now
-reports zero divergent rows over a corpus four times deeper in the property its induction rests on.
+[decision 0008](0008-a-binding-is-data-and-evidence-admits-one-reading.md), and the two kernels now
+return the same answer on every row of a corpus of 2,075 certificates, 484 of which exercise the
+ordering property both inductions rest on, against 123 before that corpus was deepened.
+
+That agreement was, until 15 September 2026, checked by nothing. No workflow installed the second
+kernel, so the test requiring zero divergence skipped, and a skipped test reports `ok`. CI runs both
+kernels over the whole corpus on every pull request now, and [docs/ci-gates.md](../ci-gates.md) is
+the table of which other gates do and do not fire.
 
 Every one of those had passed every test that existed before.
 
