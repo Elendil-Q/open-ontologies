@@ -38,7 +38,25 @@ jobs:
       - name: Build
         run: cargo build
       - name: Test
-        run: cargo test -- --nocapture 2>&1 | tee cargo-test.log
+        # `shell: bash` and `set -o pipefail`, and neither is decoration.
+        #
+        # This step was `cargo test ... | tee cargo-test.log` with no shell named.
+        # On Linux a `run:` block is `bash -e`, which does NOT set pipefail, so the
+        # step's exit status was TEE's and never cargo's, and the whole suite could
+        # report `test result: FAILED` under a green tick. Measured, not reasoned:
+        # on the first run of this branch the Linux leg passed with a failing test
+        # in its own log while the Windows leg, whose default shell is PowerShell
+        # and which therefore keeps cargo's exit code, failed on the same test.
+        # A job that runs every test and cannot fail on one is the same defect this
+        # repository keeps finding elsewhere, in the job that runs the most tests.
+        #
+        # Naming bash makes both legs of the matrix behave the same way, which is
+        # the point of running a matrix, and the skip-counter step below already
+        # names it for the same reason.
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test -- --nocapture 2>&1 | tee cargo-test.log
       - name: Report tests that skipped for a missing fixture
         # Some tests need data this repository does not carry, so they skip
         # rather than fail. A skip reports `ok`, which means a green run can

@@ -38,6 +38,20 @@ fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// This file, by name, so the scans below can leave it out.
+///
+/// Both of them look for a fragment of source text, and this file has to CONTAIN those
+/// fragments in order to look for them. Without this it matches itself: the first run in
+/// CI reported that `ci_gate_coverage_test.rs` can skip and has no row in the table, on
+/// the strength of the string literal `"skip_unless("` three functions down. `file!()`
+/// rather than a written-out name, so a rename cannot reintroduce it.
+fn this_file() -> &'static str {
+    std::path::Path::new(file!())
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("file!() always has a file name")
+}
+
 /// Files that can skip and are not run strictly anywhere, each with the reason. A file
 /// belongs here when the thing it needs is one CI deliberately does not provide; it does
 /// NOT belong here because wiring it up looked like work.
@@ -78,12 +92,16 @@ fn files_that_can_skip() -> BTreeSet<String> {
         if path.extension().and_then(|e| e.to_str()) != Some("rs") {
             continue;
         }
+        let name = path.file_name().expect("file name").to_string_lossy().into_owned();
+        if name == this_file() {
+            continue;
+        }
         let text = std::fs::read_to_string(&path).expect("test file must be readable");
         // The CALL and not the identifier. This file names `skip_unless` a dozen times in
         // prose and calls it never, so a bare substring match would put the gate on the
         // gates into its own list of things to worry about.
         if text.contains("skip_unless(") {
-            out.insert(path.file_name().expect("file name").to_string_lossy().into_owned());
+            out.insert(name);
         }
     }
     out
@@ -211,6 +229,9 @@ fn only_the_helper_emits_the_skip_marker() {
     for entry in std::fs::read_dir(repo().join("tests")).expect("tests/ must be readable") {
         let path = entry.expect("readable dir entry").path();
         if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        if path.file_name().map(|n| n.to_string_lossy() == this_file()) == Some(true) {
             continue;
         }
         let text = std::fs::read_to_string(&path).expect("test file must be readable");

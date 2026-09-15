@@ -2145,6 +2145,12 @@ fn agreement_is_about_the_definitions_and_is_not_itself_a_proof() {
 /// This test prints the distribution and holds a floor under it. It deliberately does
 /// NOT require either proof assistant: the shape of the corpus is a fact about the
 /// files, and it should still be measurable on a machine that cannot run the kernels.
+///
+/// It also CHECKS THE DOCUMENTS that quote these figures against the figures, at the
+/// bottom, rather than in a test of its own. Generating this corpus means running the
+/// engine over every ontology the repository ships, three tests in this file already pay
+/// for that, and a fourth copy of the cost to compare two strings is not worth it. The
+/// reason the check exists at all is in the comment where it is made.
 #[test]
 fn the_corpus_exercises_prefix_visibility_at_depth() {
     let scratch = scratch_dir();
@@ -2206,7 +2212,92 @@ fn the_corpus_exercises_prefix_visibility_at_depth() {
          REJECTING half of the discipline is barely exercised"
     );
 
+    // ── the documents, against the corpus that was just counted ──────────────
+    //
+    // The house rule is that a figure next to the thing it describes must be DERIVED and
+    // never typed, and this corpus is the case that made the rule. Three documents quoted
+    // it, two different versions of it were measured on two branches eleven minutes apart
+    // and merged separately, and what landed on main was a README sentence reporting zero
+    // divergent rows next to an inventory reporting fifty-four, neither of them measured
+    // against the tree they were committed to. `isabelle/README.md` said so about itself
+    // and was left stale on purpose, because the work that found it was not allowed to
+    // touch that directory.
+    //
+    // The corpus TOTAL is the wrong thing to pin on its own: it moves whenever a Turtle
+    // file lands in one of the ten directories `source_graphs` reads, and a growing
+    // corpus is not a regression. What is checked instead is that every document quoting
+    // it quotes THIS measurement, so a corpus that grows fails until the prose is
+    // corrected, and a correction that reaches one document out of two fails as well.
+    // That is the shape `tests/readme_claims_test.rs` uses for the tool count.
+    //
+    // The divergence count is deliberately NOT here. It cannot be measured without both
+    // kernels, and `the_two_kernels_agree_on_the_whole_corpus` asserts it directly rather
+    // than in prose: the documents say the two agree, and that sentence is true exactly
+    // when that test passes.
+    let total = bases.len() + mutants.len() + fuzzed.len();
+    let exercising = uses + violates;
+    let claims: [(&str, &str, String); 2] = [
+        (
+            "README.md",
+            "the paragraph on what the discipline has caught",
+            format!(
+                "a corpus of {} certificates, {exercising} of which exercise the ordering \
+                 property",
+                commas(total)
+            ),
+        ),
+        (
+            "docs/reasoning-systems-inventory.md",
+            "the paragraph on corpus depth",
+            format!(
+                "{} rows reaching depth {deepest} and fan-out {widest}, of which \
+                 {exercising} exercise the ordering discipline",
+                commas(total)
+            ),
+        ),
+    ];
+
+    // Whitespace is collapsed on both sides before comparing. These documents are hard
+    // wrapped at about a hundred columns, so any phrase long enough to be worth checking
+    // straddles a line break, and a literal `contains` would fail on prose that is
+    // correct and pass on nothing. It is the claim being checked, not its typesetting.
+    let flatten = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    let mut wrong = Vec::new();
+    for (file, where_, claim) in &claims {
+        let text = std::fs::read_to_string(repo().join(file))
+            .unwrap_or_else(|_| panic!("{file} must exist: a claim is checked against it"));
+        if !flatten(&text).contains(&flatten(claim)) {
+            wrong.push(format!("{file}, {where_}:\n    expected to find {claim:?}"));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "The corpus this file generates is {} certificates, {exercising} of them \
+         exercising prefix visibility, deepest base chain {deepest} and widest fan-out \
+         {widest}, and a document says otherwise.\n\n{}\n\nCorrect the document rather \
+         than this test: the corpus is the measurement and the prose is the claim. If a \
+         sentence was deliberately reworded, change the expected phrase here in the same \
+         commit and say why.",
+        commas(total),
+        wrong.join("\n\n")
+    );
+
     let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// Thousands separators, because the documents are written for people and a claim checked
+/// against `2075` would pass over prose that says `2,075`.
+fn commas(n: usize) -> String {
+    let s = n.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.char_indices() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// **Self-support, in the one form that isolates it.** A step whose only non-asserted
