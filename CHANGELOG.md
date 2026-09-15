@@ -191,6 +191,179 @@ All notable changes to Open Ontologies are documented here.
   now resolves every such citation in `python/` against the current file and
   fails when a line stops containing the token it names. A citation written in a
   shape the test cannot read fails too, rather than going quietly unguarded.
+
+- **Fourteen arms of the OWL 2 RL soundness proof were assumed, and are now
+  derived.** A second formalisation in Isabelle/HOL, written from the W3C
+  specifications with the Lean deliberately unread, found that fourteen arms
+  across twelve of the twenty-nine rules were sound because a field of
+  `Conditions` said the rule holds. Twelve of those arms are stated by no cell
+  of any specification table: `scm-eqc1` and `scm-eqp1` with two conclusions
+  each, `scm-svf1`, `scm-svf2`, `scm-avf1`, `scm-avf2`, `scm-dom1`, `scm-dom2`,
+  `scm-rng1`, `scm-rng2`. The other two, `rdfs5` and `rdfs11`, were licensed by
+  RDF 1.1 Semantics but redundant once the stronger cell is present. For those
+  arms the machine-checked content was close to nothing, while the proofs passed
+  and the axiom footprints were clean.
+
+  `lean/OOCert/W3C.lean` now states the OWL 2 RDF-Based Semantics conditions at
+  full strength, one field per table row with the cell quoted above it, and
+  derives all fourteen. `OOCert.W3CModel.toModel` and every one of the twelve
+  derivation theorems depend on no axiom at all. `OOCert.W3CEntails.of_entails`
+  proves that everything `Entails` already gave is true in every `W3CModel`, and
+  `OOCert.certificate_w3c_sound` restates the checker's verdict over that class.
+
+  **That is not the sentence "true in every conforming interpretation" and this
+  entry does not claim it is.** Two things separate them, both recorded in the
+  Lean file itself. Reading a conforming interpretation as a Lean `Interp` is a
+  bridge written in prose, because core Lean has nothing to quantify over on the
+  specification's side; and the bridge assumes five `IP` memberships that are
+  cells of no table the file quotes, taken instead from the RDF and RDFS
+  axiomatic-triple tables of RDF 1.1 Semantics sections 8 and 9.
+  `W3CModel` is also strictly weaker than conformance, because `W3C` omits every
+  table row no rule consumes.
+
+  `Conditions`, `Interp`, `Entails` and `certificate_sound` are untouched and
+  `certificate_sound` keeps its exact axiom footprint, because strengthening
+  `Conditions` in place would have shrunk the model class and weakened the
+  headline theorem with every proof still passing. The cell that makes the
+  twelve derivable is Table 5.8's connective, which carries `rowspan="4"` in the
+  specification's HTML and therefore states an `iff` where RDFS alone gives only
+  `if-then`. It was re-fetched from the raw HTML and not from a rendering: a
+  markdown conversion of that table drops the `rowspan` and shows `if`, which
+  would make the result unprovable and the mistake invisible.
+
+- **A live, non-degenerate model of those conditions, with its liveness compiled
+  into the build.** `lean/OOCert/W3CWitness.lean` builds a twenty-six-element
+  interpretation meeting the quoted cells of Tables 5.2, 5.3, 5.6, 5.8, 5.9,
+  5.12 and 5.13, with every condition settled by the kernel's `decide`. A
+  soundness theorem over a degenerate model class would prove less than the
+  assumption it replaced while looking better, so three theorems pin what the
+  model actually does. `live_is_live`: `IC` is not the carrier, one class
+  extension is the whole carrier, another is a proper subset witnessed on both
+  sides, the filler extension is non-empty and proper,
+  `ICEXT(owl:Restriction)` is a proper subset of `IC`, and `IEXT(p1)` is
+  non-empty and a proper subset of `IEXT(p2)`. `live_exercises_every_arm`: all
+  fourteen derivations fire at concrete instances of this model, which is
+  stronger than any field having something in its extension.
+  `live_fires_the_other_sixteen` and
+  `live_leaves_exactly_these_five_vacuous`: a satisfied antecedent for each of
+  the other sixteen fields of `W3C`, and the five that are not exercised, named,
+  none of which carries any of the fourteen arms. Sixteen plus five is the
+  twenty-one fields, so neither number can drift from the tables. `dom_bwd`
+  and `rng_bwd` are discharged over real pairs rather than vacuously, which the
+  second kernel's own witness does not manage.
+
+  **The first version of this model was vacuous exactly where its conditions
+  bite, and the rebuild is recorded rather than quietly substituted.** It had
+  seventeen elements, `IEXT(p1)` and `ICEXT(Y)` were both empty, nine of the
+  twenty-one fields held because nothing was in the extension their antecedent
+  reads, and six of the fourteen arms rested entirely on those nine. Worse, the
+  refutation the file exists to deliver was vacuous at its own load-bearing
+  premise: `avfPremises` asserts `p1 rdfs:subPropertyOf p2`, which held only
+  because `IEXT(p1)` was empty, and that emptiness was written into the liveness
+  gate as though it were a feature.
+
+- **Two more English claims turned into theorems, one of which was wrong.**
+  `Witness.lean` asserted in prose that `saturated` also satisfies the new
+  specification conditions. It does, and `saturated_meets_the_w3c_conditions`
+  now proves it, which matters only because it shows how little that is worth:
+  a model in which every relation is total distinguishes no condition from any
+  other. The claim does **not** extend from the conditions to the models, and
+  `saturated_is_not_a_w3c_model_of_an_empty_enumeration` proves the gap on the
+  one-triple graph `E owl:oneOf rdf:nil`. Table 5.5's equality forces an empty
+  enumeration to denote the empty class, and `saturated` makes every class the
+  whole universe. `Conditions.oneOf` carries only the `⊇` half and so models the
+  same graph without complaint, which is the cost of that omission stated as a
+  pair of theorems rather than as a remark.
+
+### Fixed
+- **Four claims the certificate layer made and had not earned, withdrawn rather
+  than edited away.** (1) Soundness here does **not** carry over to the OWL 2
+  Direct Semantics read through triples; nobody verified it, and it is false as
+  written for the twelve arms that need Table 5.8's backward direction. (2) The
+  W3C tables do **not** read a list off the graph. The sequence notation
+  quantifies over `IEXT(I(rdf:first))` and `IEXT(I(rdf:rest))`, and the
+  specification says explicitly that no semantic constraint enforces well-formed
+  sequence structures. `Chain` is still right, for the opposite reason to the one
+  given: it fires on fewer lists, so the model class stays larger. (3)
+  `an_unlisted_individual_is_not_entailed` was nominated as the check that the
+  `⊆` half of `owl:oneOf` was really left out, and it cannot detect that half's
+  absence: its witness already satisfies the full equality and passes unchanged
+  either way. That omission is undetected by anything in this repository. (4)
+  Non-entailment never transferred outward: a `¬ Entails`, a `¬ Unsat` or an
+  exhibited `Model` is a statement about this layer's model class unless
+  something restates it over `W3CModel`. `docs/decisions/0002` carries a dated
+  correction.
+
+- **A quote that was not a quote.** The RDF 1.1 truth clause cited in the new
+  bridge argument was the RDF 1.0 (2004) wording. RDF 1.1 replaced the
+  definedness phrasing with an explicit `I(p) is in IP` conjunct, which makes the
+  argument stronger, not weaker. Corrected against the raw HTML, with the
+  substitution recorded in the file.
+
+- `docs/lean-certificates.md` said the semantics was "the RDF-based reading of
+  the twenty rules' vocabulary". There are twenty-nine rule ids, as
+  `tests/certificate_boundary_proptest.rs` has asserted since it landed.
+
+- **The limitation claim above was itself overstated, and four adversarial
+  reviews of this branch took it apart. The corrections are here because the
+  overstatement shipped in five places.**
+
+  (1) **"Every conforming countermodel has to be a hand-built finite structure"
+  was false, and the argument for it was logically inverted.** It ran: a Herbrand
+  witness with no `rdf:type` triple has `IC` empty, so Table 5.8's backward
+  direction forces `rdfs:subClassOf` and `rdfs:subPropertyOf` triples the witness
+  lacks. An empty `IC` makes `sc_bwd` *vacuous*: its antecedents are
+  `I.IC a → I.IC b → …` and they have no instances. `sp_bwd`, `dom_bwd` and
+  `rng_bwd` are guarded by `IP`, which is a free parameter of `W3C` and not a
+  field of `Interp`, so the refuter chooses it. Four of the seven results listed
+  as open transfer with their witness graphs unchanged, on
+  `IP := fun _ => False`: `an_unlisted_individual_is_not_w3c_entailed`,
+  `membership_in_one_member_is_not_w3c_enough`, `Mixed.lean`'s
+  `mix_not_absolutely_w3c_entailed`, and `not_everything_is_w3c_entailed`, which
+  was already proved in the same file that listed it as open. The three that do
+  not transfer, and a fourth nothing had listed at all
+  (`and_the_old_verdict_does_not_notice`), now carry the field that fails as a
+  `decide`-checked theorem: `svf_witness_misses_the_restriction_typing`,
+  `feed_closure_misses_the_class_typing` and
+  `graze_closure_misses_the_class_typing`. Nine statements in the repository are
+  a `¬ Entails` or a `¬ Unsat`; five are now over `W3CModel` and four are not,
+  and `Semantics.lean` carries the complete table. The two `¬ EntailsR` results
+  are about a rule-relative relation with no `W3CModel` counterpart, nothing is
+  claimed about them, and that is said rather than left to inference. The obstruction about `Der` and strictly
+  negative occurrences survives, and says only that there is no general *closure
+  operator* taking any graph to a `W3CModel`, which is not what it was used
+  for.
+
+  `mix_not_absolutely_w3c_entailed` is the one that matters commercially. It is
+  the machine-checked basis for a run reporting `entailed_under_supplied_rules`
+  rather than `entailed`, and that sentence is now about the specification's
+  conditions rather than about this layer's own.
+
+  (2) **"Each now carries its obstruction at the point of the assumption" was
+  false.** `Mixed.lean`, `Refute.lean` and `RefuteWitness.lean` were byte-identical
+  to the versions that predate `W3C.lean`, and `mix_not_absolutely_entailed` sat
+  in an unchanged file with no caveat while `Semantics.lean` said otherwise. All
+  three now carry their own status at the theorem, `Mixed.lean` as a discharge and
+  the other two as a checked obstruction.
+
+  (3) **The bridge understated what it assumes, while claiming superiority over
+  the second kernel on exactly that point.** `W3C.lean` said the Isabelle needs
+  three axiomatic-triple consequences for the same table "while this file needs
+  none, because `Interp.sat` has no `IP` conjunct". Dropping that conjunct moves
+  the obligation into the bridge rather than removing it, and the bridge needs
+  five: `I(rdf:type)`, `I(rdfs:subClassOf)`, `I(rdfs:subPropertyOf)`,
+  `I(rdfs:domain)` and `I(rdfs:range)` in `IP`, the first for every field whose
+  conclusion mentions `cext` and the rest for the four backward fields. All five
+  are listed in the file with their axiomatic triples, re-read in the raw HTML of
+  <https://www.w3.org/TR/rdf11-mt/> on 15 September 2026. On this point the second
+  kernel was ahead and the claim was backwards.
+
+  (4) **The `W3CEntails.of_entails` sentence.** This changelog said it proves
+  everything `Entails` gave is true in every conforming interpretation, while the
+  Lean file's own docstring says that is not yet the sentence. The Lean is right;
+  the entry above now says what the theorem says.
+
+### Added
 - **The refutation checker has a producer.** `lean/OOCert/Refute.lean` has
   checked refutations since it landed and nothing in `src/` could write one: a
   checker with no producer, which is the same shape of defect as a gate that

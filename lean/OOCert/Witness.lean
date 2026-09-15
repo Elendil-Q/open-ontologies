@@ -58,7 +58,15 @@ def saturated : Interp where
   iext := fun _ _ _ => True
 
 /-- Every graph has a model, so `Entails` is never the "anything follows" of an inconsistent
-premise set. -/
+premise set.
+
+`saturated` also satisfies `W3C.lean`'s specification conditions, with
+`IP := fun _ => True`, because both sides of every equality there are all of
+`Unit`. That is worth knowing and worth NOT reporting as a result: a model that
+makes every relation total distinguishes no condition from any other and refutes
+nothing, so bare satisfiability of the stronger structure says exactly as little
+as bare satisfiability of this one. The non-degenerate witness is
+`W3CWitness.lean`'s `live`, and `live_is_live` is what makes it non-degenerate. -/
 theorem saturated_is_a_model (G : List Triple) : Model saturated G where
   conds :=
     { sc_sub := fun _ _ _ _ _ => trivial
@@ -162,7 +170,18 @@ theorem empty_herbrand_is_a_model : Model (herbrand []) [] where
   uni := by intro c l _ hc; exact absurd hc (not_mem_pred [] V.unionOf (by simp) c l)
   oneOf := by intro c l _ hc; exact absurd hc (not_mem_pred [] V.oneOf (by simp) c l)
 
-/-- Entailment is not trivial. -/
+/-- Entailment is not trivial.
+
+This one transfers to the `W3CModel` class unchanged, and
+`W3CWitness.lean`'s `not_everything_is_w3c_entailed` is the transfer: over the
+empty graph every antecedent of `W3C` is false and `IP := fun _ => False` makes
+the four backward conditions vacuous, so the same interpretation serves.
+
+An earlier version of this docstring added that it was "the only non-entailment
+in this file that transfers without a new hand-built structure". It is not. Two
+of the three below transfer the same way, with their own witness graphs
+unchanged, and the proofs are `an_unlisted_individual_is_not_w3c_entailed` and
+`membership_in_one_member_is_not_w3c_enough`. -/
 theorem not_everything_is_entailed :
     ¬ Entails [] ⟨"<http://ex.org/a>", "<http://ex.org/b>", "<http://ex.org/c>"⟩ := by
   intro h
@@ -277,7 +296,34 @@ theorem svf_witness_is_a_model : Model (herbrand svfWitness) svfPremises where
   oneOf := by intro c l _ hc; exact absurd hc (not_mem_pred svfPremises V.oneOf (by decide) c l)
 
 /-- **The old rule was unsound.** `C ⊑ ∃p.D` together with `x p y` and `y ∈ D` does not entail
-`x ∈ C`. The reasoner derived exactly this until 13 September 2026. -/
+`x ∈ C`. The reasoner derived exactly this until 13 September 2026.
+
+**This is the one non-entailment in this file that does NOT transfer to the
+`W3CModel` class**, and the field that stops it is checked rather than
+argued: `W3CWitness.lean`'s `svf_witness_misses_the_restriction_typing`.
+
+`onp_typ` is RBS Table 5.3's `owl:onProperty` row, whose first conjunct is
+`z ∈ ICEXT(owl:Restriction)`. `svfWitness` carries `R owl:onProperty p` and types
+`R` as nothing at all, so the antecedent holds and the consequent fails.
+`svf_typ` fails the same way on `R owl:someValuesFrom D`, and `sc_fwd`, Table 5.8
+row 1 forward, fails on `C rdfs:subClassOf R` because `IC` is empty here, no
+triple having `rdfs:Class` as its object.
+
+None of those three fields mentions `IP`, so the escape that works for the other
+three witnesses in this repository, choosing `IP := fun _ => False` to make the
+backward conditions vacuous, does not apply. A conforming replacement is a
+hand-built finite structure of the kind `W3CWitness.lean` builds.
+
+An earlier version of this paragraph gave a different and wrong reason: that
+bridge coherence forces every predicate the witness uses into `IP` and `sp_bwd`
+then demands reflexive `rdfs:subPropertyOf` triples. Bridge coherence is a
+property `W3CWitness.lean`'s model has, not a field of `W3CModel`, and `IP` is
+free.
+
+**The claim itself is not in doubt and must not be withdrawn on the strength of
+this note.** `tests/reason_rl_ext_soundness_test.rs` pins a real defect; what is
+open is whether a conforming interpretation also refutes it, and nothing here
+suggests it does not. -/
 theorem the_old_svf_derivation_is_not_entailed :
     ¬ Entails svfPremises ⟨tx, V.type, tC⟩ := fun h =>
   absurd (h (herbrand svfWitness) svf_witness_is_a_model)
@@ -422,7 +468,22 @@ theorem the_avf2_direction_the_table_gives_is_entailed :
 
 /-- **And the other direction is unsound.** A rule that concluded
 `C1 rdfs:subClassOf C2` here, which is what copying `scm-avf1` gives, would be
-making a claim this model refutes. -/
+making a claim this model refutes.
+
+**This one has a conforming replacement built for it**, and it is the only one
+in the repository that needed a new structure rather than a re-reading of the
+one it already had: `W3CWitness.lean`'s
+`the_natural_avf2_direction_is_not_w3c_entailed` refutes the same triple from the
+same premises with a twenty-six-element bridge-coherent structure that meets the
+quoted cells of Tables 5.2, 5.3, 5.6, 5.8, 5.9, 5.12 and 5.13.
+
+`herbrand avfWitness` is not such a structure. `avfWitness` contains no `rdf:type`
+triple at all, so every class extension is empty, and `avf_typ` and `onp_typ`
+then fail for want of an `owl:Restriction` typing; `onp_typ` fails for a second
+reason, its `IP p` conjunct, which `IP := fun _ => False` cannot supply. The
+replacement gives `p1` and `p2` real pairs, which is what makes `sp_fwd` and
+`sp_bwd` decide the premise `p1 rdfs:subPropertyOf p2` for a reason and what
+makes `dom_bwd` and `rng_bwd` fire non-vacuously. -/
 theorem the_natural_avf2_direction_is_not_entailed :
     ¬ Entails avfPremises ⟨tC1, V.subClassOf, tC2⟩ := fun h =>
   absurd (h (herbrand avfWitness) avf_witness_is_a_model)
@@ -465,7 +526,9 @@ private theorem oo_l0_rest : ∀ t ∈ ooPremises, t.s = oL0 → t.p = V.rest �
 private theorem oo_l1_first : ∀ t ∈ ooPremises, t.s = oL1 → t.p = V.first → t.o = tB := by decide
 private theorem oo_l1_rest : ∀ t ∈ ooPremises, t.s = oL1 → t.p = V.rest → t.o = V.nil := by decide
 private theorem oo_no_nil_subject : ∀ t ∈ ooPremises, t.s ≠ V.nil := by decide
-private theorem oo_only_oneOf :
+/-- Not `private`: `W3CWitness.lean` reads it to transfer
+`an_unlisted_individual_is_not_entailed` to the `W3CModel` class. -/
+theorem oo_only_oneOf :
     ∀ t ∈ ooPremises, t.p = V.oneOf → t.s = tE ∧ t.o = oL0 := by decide
 
 private theorem oo_chain_nil : ∀ ms, Chain ooPremises V.nil ms → ms = [] := by
@@ -483,7 +546,8 @@ private theorem oo_chain_l1 : ∀ ms, Chain ooPremises oL1 ms → ms = [tB] := b
     subst hm; subst hl
     rw [oo_chain_nil _ hr]
 
-private theorem oo_chain_l0 : ∀ ms, Chain ooPremises oL0 ms → ms = [tA, tB] := by
+/-- Not `private`, for the same reason as `oo_only_oneOf`. -/
+theorem oo_chain_l0 : ∀ ms, Chain ooPremises oL0 ms → ms = [tA, tB] := by
   intro ms h
   rcases chain_inv h with ⟨hn, _⟩ | ⟨m, l', ms', rfl, h1, h2, hr⟩
   · exact absurd hn (by decide)
@@ -553,7 +617,29 @@ theorem an_enumerated_member_is_entailed : Entails ooPremises ⟨tA, V.type, tE�
 
 /-- **And it stops at the members.** The condition says the class holds at
 least the listed members; it does not say it holds no others, so an individual
-the list never mentions is not entailed to be one. -/
+the list never mentions is not entailed to be one.
+
+Two separate things are wrong with the old reading of this theorem, and both are
+recorded rather than repaired.
+
+FIRST, it is not the detector `Semantics.lean` used to nominate it as. `ooWitness`
+is `[a rdf:type E, b rdf:type E] ++ ooPremises`, so `ICEXT(E)` is exactly the two
+listed members and already satisfies Table 5.5's full equality. The witness
+passes unchanged whether or not the missing `⊆` half is present, so it cannot
+detect that half's absence. That omission is currently undetected by anything in
+this repository.
+
+SECOND, an earlier version of this docstring said the result was about the
+`Conditions` model class and could not escape it, on the ground that bridge
+coherence puts every predicate `ooWitness` uses into `IP` and `sp_bwd` then forces
+reflexive `rdfs:subPropertyOf` triples the graph lacks. That is wrong twice over:
+bridge coherence is a property one model in `W3CWitness.lean` happens to have and
+not a field of `W3CModel`, and `IP` is a free parameter that the refuter chooses.
+Choose `IP := fun _ => False` and this very interpretation is a `W3CModel`.
+`an_unlisted_individual_is_not_w3c_entailed` is the transfer, and it needs
+`ooWitness` exactly as it stands. Table 5.5's equality is the only field it has to
+earn, and it satisfies it in both directions, which is the first point read the
+other way round. -/
 theorem an_unlisted_individual_is_not_entailed : ¬ Entails ooPremises ⟨tZ, V.type, tE⟩ :=
   fun h =>
     absurd (h (herbrand ooWitness) oo_witness_is_a_model)
@@ -586,7 +672,10 @@ private theorem i_l0_rest : ∀ t ∈ intPremises, t.s = iL0 → t.p = V.rest �
 private theorem i_l1_first : ∀ t ∈ intPremises, t.s = iL1 → t.p = V.first → t.o = tM2 := by decide
 private theorem i_l1_rest : ∀ t ∈ intPremises, t.s = iL1 → t.p = V.rest → t.o = V.nil := by decide
 private theorem i_no_nil_subject : ∀ t ∈ intPremises, t.s ≠ V.nil := by decide
-private theorem i_only_int :
+/-- Not `private`: `W3CWitness.lean` reads it to transfer
+`membership_in_one_member_does_not_give_the_intersection` to the conforming
+model class. -/
+theorem i_only_int :
     ∀ t ∈ intPremises, t.p = V.intersectionOf → t.s = tK ∧ t.o = iL0 := by decide
 
 /-- Anything that is both an `M1` and an `M2` in this graph is already a `K`,
@@ -615,7 +704,8 @@ private theorem i_chain_l1 : ∀ ms, Chain intPremises iL1 ms → ms = [tM2] := 
     subst hm; subst hl
     rw [i_chain_nil _ hr]
 
-private theorem i_chain_l0 : ∀ ms, Chain intPremises iL0 ms → ms = [tM1, tM2] := by
+/-- Not `private`, for the same reason as `i_only_int`. -/
+theorem i_chain_l0 : ∀ ms, Chain intPremises iL0 ms → ms = [tM1, tM2] := by
   intro ms h
   rcases chain_inv h with ⟨hn, _⟩ | ⟨m, l', ms', rfl, h1, h2, hr⟩
   · exact absurd hn (by decide)
@@ -687,7 +777,19 @@ theorem a_member_of_the_intersection_is_entailed : Entails intPremises ⟨tw, V.
     (M.facts ⟨tw, V.type, tK⟩ (by simp [intPremises])) tM1 (by simp)
 
 /-- **And the converse still needs every member.** `v` is an `M1` and no model
-has to make it a `K`, so `cls-int1` has lost nothing to `cls-int2`. -/
+has to make it a `K`, so `cls-int1` has lost nothing to `cls-int2`.
+
+This transfers to the `W3CModel` class with `intWitness` unchanged, as
+`membership_in_one_member_is_not_w3c_enough`, by the same `IP := fun _ => False`
+reading as the `owl:oneOf` pair above. Table 5.4's equality holds here in both
+directions, because `w` is the only `K` and also the only thing that is both an
+`M1` and an `M2`; `v` is an `M1` and not an `M2`, which is what keeps the equality
+true and the conclusion false at once.
+
+An earlier version of this docstring said the opposite, on the ground that bridge
+coherence forces `rdf:type`, `owl:intersectionOf`, `rdf:first` and `rdf:rest` into
+`IP` and `sp_bwd` then demands four `rdfs:subPropertyOf` triples. `W3CModel` does
+not require bridge coherence and `IP` is free. -/
 theorem membership_in_one_member_does_not_give_the_intersection :
     ¬ Entails intPremises ⟨tv, V.type, tK⟩ := fun h =>
   absurd (h (herbrand intWitness) int_witness_is_a_model)

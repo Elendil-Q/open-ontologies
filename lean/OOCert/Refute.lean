@@ -406,7 +406,24 @@ theorem joint_model_of_closure {G : List Triple} {D : Triple → Prop}
   ⟨herbrandP D, hD, ⟨fun a b hab x h1 h2 => hdw a b x hab h1 h2⟩⟩
 
 /-- A graph with a joint model is not refutable, so `refutation_sound` is not a
-theorem about an empty model class. -/
+theorem about an empty model class.
+
+**Relative to `Conditions` and `RefuteConditions`, and it does not transfer to
+the OWL 2 RDF-Based Semantics.** This note is here rather than only in
+`Semantics.lean` because a caveat that lives in one file is a caveat that goes
+stale; until 15 September 2026 this one did, and this file was byte-identical to
+the version that predates `lean/OOCert/W3C.lean`.
+
+The direction is what stops it. `Unsat G` quantifies negatively over a model
+class, so shrinking the class to `W3CModel` makes `Unsat` EASIER and `¬ Unsat`
+HARDER. The consequence runs the useful way for the positive result and the
+useless way for this one: `refutation_sound`'s `Unsat G` does transfer, because
+every `W3CModel` of `G` is a `Model` of `G`, so an accepted refutation rules out
+conforming interpretations too. A `¬ Unsat` needs a `W3CModel` that also
+satisfies `RefuteConditions`, and neither this lemma nor
+`RefuteWitness.lean`'s `feed_is_not_refuted` supplies one. The obstruction for
+`feed` in particular is checked at
+`RefuteWitness.lean`'s `feed_closure_misses_the_class_typing`. -/
 theorem not_unsat_of_joint_model {G : List Triple}
     (h : ∃ I : Interp, Model I G ∧ RefuteConditions I) : ¬ Unsat G := by
   obtain ⟨I, hM, hR⟩ := h

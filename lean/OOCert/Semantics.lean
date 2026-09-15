@@ -27,17 +27,44 @@ Each condition is the *if* direction of the corresponding W3C semantic
 condition, or a consequence of it, never more. Where the W3C table states an
 *iff* (subClassOf, for instance, is extensional in the RDF-based semantics)
 only the half the rules use is assumed, plus transitivity where a rule
-concludes a schema triple. Weaker assumptions mean more interpretations, so a
-rule proved sound here is sound under the W3C semantics and under the OWL 2
-Direct Semantics translated to triples, since every model of those satisfies
-these conditions.
+concludes a schema triple.
+
+Weaker assumptions mean more interpretations, so a rule proved sound here is
+sound under the OWL 2 RDF-Based Semantics. That transfer is now a theorem and
+not a claim: `W3C.lean` states the specification conditions at full strength and
+`W3CEntails.of_entails` proves that everything `Entails` gives is true in every
+interpretation meeting them.
+
+The claim this paragraph USED to make about the OWL 2 Direct Semantics
+translated to triples is withdrawn. Nobody verified it, and it is false as
+written for the twelve fields below that need the BACKWARD direction of
+RDF-Based Semantics Table 5.8: RDFS gives `rdfs:domain`, `rdfs:range`,
+`rdfs:subClassOf` and `rdfs:subPropertyOf` only the `if-then` direction, and the
+Direct Semantics has no `rdfs:subClassOf` triples at all. Do not reinstate it
+without a formalisation of that translation.
 
 The list constructors are the exception to "conditions on the interpretation
 alone". `owl:intersectionOf`, `owl:unionOf` and `owl:oneOf` point at an RDF
-list, and a list is a syntactic object: the W3C tables read it off the graph
-with the sequence notation. `Model` therefore reads the list off the graph
-too, through `Chain`, and states the class condition relative to the graph
-being interpreted.
+list, and `Model` reads that list off the ASSERTED GRAPH, through `Chain`.
+
+**The reason once given for that is false and is replaced here.** The W3C tables
+do NOT read the list off the graph. RDF-Based Semantics defines "`s` sequence of
+`a₁ , … , aₙ ∈ S`" over the interpretation: "`s` = `I(rdf:nil)` for `n = 0`; and
+for `n > 0` there exist `z₁ ∈ IR , … , zₙ ∈ IR`, such that `s = z₁`, `a₁ ∈ S`,
+`( z₁ , a₁ ) ∈ IEXT(I(rdf:first))`, `( z₁ , z₂ ) ∈ IEXT(I(rdf:rest))`, … ", and
+it adds that "there are no semantic constraints that enforce "well-formed"
+sequence structures", so one head may denote more than one sequence. The
+quantifier is over `IEXT(I(rdf:first))` and `IEXT(I(rdf:rest))`, never over `G`.
+
+The real justification is that the error runs in the safe direction. Any model
+of `G` satisfies `G`'s own `rdf:first` and `rdf:rest` triples, so every `Chain G`
+list is a semantic sequence, while a semantic sequence assembled from pairs the
+graph never asserts is not a `Chain G` list. `Chain` therefore fires on strictly
+fewer lists, the conditions stated over it are WEAKER than Tables 5.4 and 5.5,
+the model class is larger, and entailment still transfers outward. What does not
+follow is the converse, and `W3CModel` records that gap at its list fields
+rather than closing it: no rule in this checker consumes `rdf:first` or
+`rdf:rest` semantically, so nothing here needs a sequence relation.
 
 ## Conditions that let a rule CONCLUDE a schema triple
 
@@ -48,12 +75,28 @@ rules use is assumed. A rule whose CONCLUSION is a schema triple therefore
 needs its own condition, and `sc_trans` is the first of them: it is what lets
 `rdfs11` conclude `a rdfs:subClassOf c`.
 
-Eight more of that kind arrive with the restriction-ordering and the
-domain-and-range rules (`scm-svf1`, `scm-svf2`, `scm-avf1`, `scm-avf2`,
-`scm-dom1`, `scm-dom2`, `scm-rng1`, `scm-rng2`). Each is stated as exactly the
-W3C rule and nothing wider, and each field below carries the verbatim rule from
-OWL 2 Profiles Table 9 together with the derivation that makes it a CONSEQUENCE
-of the OWL 2 RDF-Based Semantics rather than an independent assumption.
+**There are FOURTEEN arms of that kind, not nine, and this paragraph used to say
+nine.** The undercount was real: it named the eight restriction-ordering and
+domain-and-range fields (`scm-svf1`, `scm-svf2`, `scm-avf1`, `scm-avf2`,
+`scm-dom1`, `scm-dom2`, `scm-rng1`, `scm-rng2`) plus `sc_trans`, and left out
+`sp_trans` (`rdfs5`) and the two conclusions each that `eqc` (`scm-eqc1`) and
+`eqp` (`scm-eqp1`) license. Those four conclude a schema triple by exactly the
+same criterion.
+
+`eqc` and `eqp` belong on the list for a reason worth keeping in view: RBS
+Table 5.9 gives `owl:equivalentClass` an extension EQUALITY and never a
+`rdfs:subClassOf` triple, so a field handing back two such triples is a
+restatement of the rule and not a reading of a table. `sc_trans` is NOT of that
+kind on its own, because RDF 1.1 Semantics section 9 states transitivity of
+`rdfs:subClassOf` as a condition in its own right; it is on the list because
+Table 5.8 makes it redundant.
+
+**All fourteen are now DERIVED, in `W3C.lean`, from quoted specification
+cells**, and `W3CModel.toModel` supplies each of them as a proof term rather
+than a projection. The English derivations that follow each field below are kept
+because they say what the machine-checked proof does, but they are no longer the
+only thing standing behind these fields. Every field below still carries the
+verbatim rule from OWL 2 Profiles Table 9.
 
 ## Why the direction of that argument is the only one that is safe
 
@@ -66,6 +109,73 @@ holds under the W3C semantics. Assuming the `iff`s themselves instead would be
 strictly stronger, would buy nothing any rule needs, and would put the
 non-vacuity witnesses at risk, which is the observable symptom of a condition
 that has gone too far.
+
+**THE ARGUMENT SECURES POSITIVE RESULTS ONLY, AND THIS IS THE SENTENCE THE FILE
+WAS MISSING.** `Conditions` admits MORE interpretations than `W3C.lean`'s `W3C`
+does. A triple true in every one of them is true in every `W3CModel`, so
+`Entails` transfers outward and `W3CEntails.of_entails` proves it. Reading that
+one step further out, to the specification's own conforming interpretations,
+costs a prose bridge and five axiomatic-triple facts, and `W3C.lean` states both
+rather than folding them into the word "conforming". Nothing transfers the other
+way. A model of `Conditions` need not be a conforming
+interpretation, so `¬ Entails G t` does NOT give `¬ W3CEntails G t`, and neither
+does `¬ Unsat`, and neither does exhibiting a `Model I G`.
+
+Consequently a `¬ Entails`, a `¬ Unsat` or a `Model I G` here is a statement
+about THIS model class and not about the specification's, unless something
+restates it over `W3CModel`. The state of each is recorded at the theorem itself
+as well as here, because a summary that lives in one file is a summary that goes
+stale, and this one did.
+
+Nine statements in this repository are a `¬ Entails` or a `¬ Unsat`. Five are
+restated over `W3CModel`, four are not, and the four say which field stops them.
+
+| result | over `W3CModel` | where |
+|---|---|---|
+| `not_everything_is_entailed` | yes | `not_everything_is_w3c_entailed` |
+| `the_natural_avf2_direction_is_not_entailed` | yes | `the_natural_avf2_direction_is_not_w3c_entailed`, the one that needed a structure built for it |
+| `an_unlisted_individual_is_not_entailed` | yes | `an_unlisted_individual_is_not_w3c_entailed`, same witness graph |
+| `membership_in_one_member_does_not_give_the_intersection` | yes | `membership_in_one_member_is_not_w3c_enough`, same witness graph |
+| `mix_not_absolutely_entailed` | yes | `mix_not_absolutely_w3c_entailed`, in `Mixed.lean`, same witness graph |
+| `the_old_svf_derivation_is_not_entailed` | no | `onp_typ` fails; checked at `svf_witness_misses_the_restriction_typing` |
+| `feed_is_not_refuted` | no | `sc_fwd` fails; checked at `feed_closure_misses_the_class_typing`, and `¬ Unsat` runs the wrong way |
+| `and_the_old_verdict_does_not_notice` | no | `sc_fwd` fails on `grazeClosure` for the same reason |
+| `not_unsat_of_joint_model` | no | a lemma with a hypothesis rather than a witness, same direction problem |
+
+Two further negatives, `Mixed.lean`'s `mix_relative_is_not_everything` and
+`HornWitness.lean`'s `demo_not_everything_entailed`, are `¬ EntailsR`: statements
+about the models of a graph that ALSO satisfy a supplied rule table. There is no
+`W3CEntailsR` and this file does not invent one, so nothing is claimed about them
+beyond `Conditions`.
+
+**An earlier version of this paragraph got the reason wrong and the conclusion
+with it**, and the correction is recorded rather than edited away because the
+wrong version is what the project told people. It read: "a Herbrand witness that
+carries no `rdf:type` triple has `IC` empty, so Table 5.8's backward direction
+forces `rdfs:subClassOf` and `rdfs:subPropertyOf` triples the witness does not
+contain", and it concluded that "every conforming countermodel must therefore be
+a hand-built finite structure".
+
+Both halves are false and the first is inverted. An empty `IC` makes `sc_bwd`
+VACUOUS, not demanding: its antecedents are `I.IC a → I.IC b → …` and they have
+no instances. `sp_bwd`, `dom_bwd` and `rng_bwd` are guarded by `IP`, which is a
+free PARAMETER of `W3C` and not a field of `Interp`, so the refuter chooses it;
+`IP := fun _ => False` makes all three vacuous. Four of the results above
+transfer on exactly that, with the existing Herbrand witnesses unchanged and
+nothing hand-built. The mistake was to treat `live_is_bridge_coherent`, which is
+an extra property the `W3CWitness.lean` model happens to have, as though it were
+a requirement of `W3CModel`.
+
+One obstruction in that paragraph survives and it is worth keeping, because it
+says something different from what it was used for. `RefuteWitness.lean`'s `Der`
+cannot carry Table 5.8's backward halves: a constructor whose premise contains
+`∀ x, Der G ⟨x, type, a⟩ → Der G ⟨x, type, b⟩` puts `Der` to the left of an arrow
+and Lean rejects the strictly negative occurrence, and that is mathematical
+rather than a Lean artefact, because `sc_bwd` is ANTITONE in `ICEXT(a)` and there
+is no least fixed point by monotonicity. What follows from it is that there is no
+general CLOSURE OPERATOR taking any graph to a `W3CModel`. What does not
+follow is that no particular Herbrand interpretation is a `W3CModel`, and
+that is the step the old paragraph took.
 
 `scm-dom1` is the one that had to be checked rather than assumed. Under RDF
 Semantics `rdfs:domain` carries only the *if* direction and the rule does NOT
@@ -322,8 +432,21 @@ structure Model (I : Interp) (G : List Triple) : Prop where
   AT LEAST the listed members. The ⊆ half, that it holds no others, is what a
   rule concluding `owl:sameAs` or a clash would need, and no rule here
   concludes either, so assuming it would shrink the model class for nothing.
-  `Witness.lean`'s `an_unlisted_individual_is_not_entailed` is the check that
-  it really was left out. -/
+
+  **The claim that `Witness.lean`'s `an_unlisted_individual_is_not_entailed` is
+  "the check that it really was left out" is FALSE and is withdrawn here.** That
+  witness is `ooWitness`, which is `[a rdf:type E, b rdf:type E] ++ ooPremises`,
+  so its `ICEXT(E)` is exactly `{a, b}`, exactly the listed members, and it
+  already satisfies Table 5.5's full equality. Adding the `⊆` half changes
+  nothing about it: the witness still models the premises and still does not
+  type `z`. A witness that passes unchanged whether or not the condition is
+  present cannot detect the condition's absence.
+
+  So the omission of the `⊆` half is UNDETECTED. Detecting it needs a model in
+  which some `z` outside the list IS in `ICEXT(E)` while the premises hold,
+  which the Herbrand construction cannot give, because a Herbrand interpretation
+  contains only the triples written down. Nothing else in the repository tests
+  it either. -/
   oneOf : ∀ c l ms, (⟨c, V.oneOf, l⟩ : Triple) ∈ G → Chain G l ms →
     ∀ m ∈ ms, I.cext (I.ι c) (I.ι m)
 
