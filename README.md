@@ -29,12 +29,70 @@
   <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
 </p>
 
+<p align="center">
+  <a href="https://tesseractsemantics.com"><b>Building this into a platform &rarr; tesseractsemantics.com</b></a><br>
+  <sub>The engine is MIT and stays that way. The platform is the hosted, governed version of it.</sub>
+</p>
+
 ---
 
-Ask a reasoner why it believes something and it will tell you to trust it.
+**Ask a reasoner why it believes something and it will tell you to trust it.** This one hands you a
+proof, and refuses a forged one.
 
-This one hands you the proof, and refuses a fake one. Run it yourself; the three files are in
-the repository and the output below is what the checker printed, trimmed to the fields that matter.
+Open Ontologies builds, changes and operates ontologies and knowledge graphs with Terraform-style
+lifecycle management, and reasons over them with proof-carrying inference. Every conclusion comes
+with a certificate that a separate checker, written in Lean 4 and proved sound, will either accept
+or reject. Written in Rust, ships as a single binary, speaks MCP to Claude, Cursor and anything else
+that talks to it.
+
+## See it in action
+
+<p align="center">
+  <img src="docs/assets/certified-inference.svg" alt="A supplier ontology with asserted and derived edges, and the certificate the run produced" width="100%">
+</p>
+
+Four triples in, three out. `ex:Northwind` was only ever asserted to be in a sanctioned
+jurisdiction; that it needs enhanced due diligence was *derived*, and the derivation is checkable by
+someone who does not trust you, your engine, or the model that wrote the ontology.
+
+## With a proof, and without one
+
+The same query, answered by an ordinary reasoner and by this one.
+
+| | An ordinary reasoner | Open Ontologies |
+| --- | --- | --- |
+| The answer | `Northwind needs enhanced due diligence` | the same answer |
+| Why it holds | "the reasoner said so" | a certificate naming every rule and premise |
+| Who can check it | nobody, short of rerunning the same engine | anyone, with a checker that shares no code with the engine |
+| If the engine has a bug | you get a wrong answer, confidently | the checker rejects it, exit 1 |
+| If someone edits the output | undetectable | rejected, with the line and rule named |
+| If a rule was yours, not the standard's | reported identically | a different verdict word, enforced by a test |
+| What an auditor receives | a screenshot | a file they can re-verify themselves |
+| Guarantee on an unsatisfiability answer | asserted | **none, and it says so** |
+
+That last row is the point of the whole project. Where something is measured rather than proved, the
+tool says measured; where a prover's opinion is an opinion, it never borrows the checker's
+vocabulary. [What is proved, and what is not](#what-is-actually-proved).
+
+## What it does
+
+| Capability | What you get |
+| --- | --- |
+| Reason over OWL and RDFS | Materialised inferences **and** a derivation certificate a proved checker accepts |
+| Bring your own rules | SWRL, RIF Core or a Horn table, evaluated, with a verdict word that says they were yours |
+| Validate against SHACL | A report from an evaluator measured against the W3C suite, not just asserted to pass |
+| Ask if something is satisfiable | A finite model, replayed and checked, rather than a yes |
+| Ask if something is inconsistent | A refutation where one is certifiable, and an honest engine opinion where it is not |
+| Retrieve a slice for RAG | Per-claim entailment preservation, because 99% coverage can still drop the one triple that mattered |
+| Change an ontology in production | Plan, blast radius, risk score, locked IRIs, apply, monitor, drift, rollback |
+| Load real data | CSV, JSON, XML, YAML, XLSX, Parquet, PostgreSQL and DuckDB into RDF |
+| Hand it to a prover | TPTP, CLIF, SMT-LIB and LADR from one translation, with what it cannot export named and counted |
+| Work from an assistant | An MCP server, so Claude or Cursor drives all of it in conversation |
+
+## Try the checker itself
+
+The three files are in the repository, and the output below is what the checker printed, trimmed to
+the fields that matter.
 
 ```bash
 $ cd lean && lake build            # builds the checkers, core Lean 4, no Mathlib
@@ -235,6 +293,7 @@ is written down rather than left implied.
 The reasoning behind each of those rules is in [docs/decisions/](docs/decisions/), one file per
 rule, each naming the failure it exists to prevent.
 
+
 ## Install
 
 ```bash
@@ -327,6 +386,20 @@ a Protégé-style inspector. No JVM. No Protégé.
 | Determinism and corrected results | [docs/determinism.md](docs/determinism.md) |
 | Windows | [docs/windows.md](docs/windows.md) |
 | Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
+
+## Open Ontologies for teams
+
+The engine in this repository is MIT licensed and will stay that way. What it does not give you is
+somewhere to put the evidence: a place where certificates are kept, where a change to an ontology is
+reviewed before it ships, and where an auditor can re-verify an answer months later without
+installing anything.
+
+That is what [**tesseractsemantics.com**](https://tesseractsemantics.com) is being built for. If you
+are running ontologies where a wrong answer costs something, it is worth a conversation.
+
+<p align="center">
+  <a href="https://tesseractsemantics.com"><b>tesseractsemantics.com &rarr;</b></a>
+</p>
 
 ## Stack
 
