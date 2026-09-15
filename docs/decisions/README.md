@@ -34,7 +34,7 @@ lookup happened to do. The sharper fact came out of the second implementation ra
 a key bound twice to different values is satisfied by no substitution at all, so there were never two
 readings, only two ways of discarding half the certificate. Closed by
 [decision 0008](0008-a-binding-is-data-and-evidence-admits-one-reading.md), and the two kernels now
-return the same answer on every row of a corpus of 2,405 certificates, 505 of which exercise the
+return the same answer on every row of a corpus of 2,075 certificates, 484 of which exercise the
 ordering property both inductions rest on, against 123 before that corpus was deepened.
 
 That agreement was, until 15 September 2026, checked by nothing. No workflow installed the second
