@@ -39,24 +39,60 @@ use open_ontologies::verdict::{
 /// Not `/bin/true`: that is `/usr/bin/true` on macOS and absent from `/bin`
 /// entirely, which this suite discovered by failing. A script written here
 /// runs the same everywhere and covers the non-zero codes too.
-fn exits_with(code: i32) -> PathBuf {
-    // One file per CALL, not one per exit code. `cargo test` runs these in
-    // parallel threads, and a fixed path means one thread rewrites the script
-    // while another is executing it. Linux answers that with ETXTBSY ("Text
-    // file busy") and macOS does not, so the shared path passed locally and
-    // failed only on ubuntu, in the one CI leg that got far enough to run it.
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join("oo-verdict-vocabulary");
-    std::fs::create_dir_all(&dir).unwrap();
-    let p = dir.join(format!("exit{code}-{}-{n}.sh", std::process::id()));
-    std::fs::write(&p, format!("#!/bin/sh\nexit {code}\n")).unwrap();
+/// A real executable on disk, for the call sites that hand `run_checker` a
+/// PATH rather than a command.
+///
+/// Every script is written ONCE, on first use, for every exit code the suite
+/// needs. That matters: `cargo test` runs these in parallel, and on Linux a
+/// thread that forks while another holds a write fd open makes the child
+/// inherit it, so a later exec of that file fails with ETXTBSY however unique
+/// its name is. CI failed that way twice. Writing before the parallel phase
+/// begins means there is no open write fd left to inherit.
+fn script_exiting(code: i32) -> PathBuf {
+    static SCRIPTS: std::sync::OnceLock<std::collections::HashMap<i32, PathBuf>> =
+        std::sync::OnceLock::new();
+    SCRIPTS
+        .get_or_init(|| {
+            let dir = std::env::temp_dir().join("oo-verdict-vocabulary-scripts");
+            std::fs::create_dir_all(&dir).unwrap();
+            let ext = if cfg!(windows) { "cmd" } else { "sh" };
+            (0..=3)
+                .map(|c| {
+                    let p = dir.join(format!("exit{c}.{ext}"));
+                    let body = if cfg!(windows) {
+                        format!("@echo off\r\nexit /b {c}\r\n")
+                    } else {
+                        format!("#!/bin/sh\nexit {c}\n")
+                    };
+                    std::fs::write(&p, body).unwrap();
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt as _;
+                        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755))
+                            .unwrap();
+                    }
+                    (c, p)
+                })
+                .collect()
+        })
+        .get(&code)
+        .expect("only exit codes 0 to 3 are used")
+        .clone()
+}
+
+fn shell_exiting(code: i32) -> (CheckerBinary, std::process::Command) {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut c = std::process::Command::new("/bin/sh");
+        c.arg("-c").arg(format!("exit {code}"));
+        (CheckerBinary::found_at(PathBuf::from("/bin/sh")), c)
     }
-    p
+    #[cfg(windows)]
+    {
+        let mut c = std::process::Command::new("cmd");
+        c.arg("/C").arg(format!("exit {code}"));
+        (CheckerBinary::found_at(PathBuf::from("cmd")), c)
+    }
 }
 
 /// A `Certified`, obtained the only way anything can obtain one: by running
@@ -67,10 +103,8 @@ fn exits_with(code: i32) -> PathBuf {
 /// ran and exited zero, and that is exactly what this borrows in order to name
 /// the certified variants below.
 fn earned(theorem: &'static str) -> Certified {
-    let script = exits_with(0);
-    let bin = CheckerBinary::found_at(script.clone());
-    let run = CheckerRun::spawn(&bin, std::process::Command::new(&script))
-        .expect("a script this test just wrote must be runnable");
+    let (bin, cmd) = shell_exiting(0);
+    let run = CheckerRun::spawn(&bin, cmd).expect("the system shell must be runnable");
     assert_eq!(run.exit(), 0);
     run.accepted(theorem).expect("exit 0 mints the token")
 }
@@ -275,7 +309,7 @@ fn only_a_zero_exit_produces_an_acceptance() {
     std::fs::write(&d, "").unwrap();
 
     let run = |code: i32| {
-        let script = exits_with(code);
+        let script = script_exiting(code);
         pe::run_checker(CertKind::OoCert, Some(script.as_path()), &a, &d, None)
     };
 
@@ -295,7 +329,7 @@ fn only_a_zero_exit_produces_an_acceptance() {
 
     // And the acceptance carries the theorem the KIND names, not one the
     // caller chose afterwards.
-    let script = exits_with(0);
+    let script = script_exiting(0);
     match pe::run_checker(CertKind::OoHorn, Some(script.as_path()), &a, &d, Some(a.as_path())) {
         CheckerStatus::Accepted(acc) => {
             assert_eq!(acc.theorem(), "OOCert.horn_certificate_sound");

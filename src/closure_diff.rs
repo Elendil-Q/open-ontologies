@@ -918,9 +918,11 @@ mod tests {
         std::fs::write(&a, "").unwrap();
         std::fs::write(&d, "").unwrap();
         // A script rather than `/bin/true`, which is `/usr/bin/true` on macOS
-        // and absent from `/bin` entirely. The suite found that itself.
-        let ok = dir.join("exit0.sh");
-        std::fs::write(&ok, "#!/bin/sh\nexit 0\n").unwrap();
+        // and absent from `/bin` entirely. The suite found that itself. A `.sh`
+        // is not executable on Windows either, which CI then found.
+        let ok = dir.join(if cfg!(windows) { "exit0.cmd" } else { "exit0.sh" });
+        let body = if cfg!(windows) { "@echo off\r\nexit /b 0\r\n" } else { "#!/bin/sh\nexit 0\n" };
+        std::fs::write(&ok, body).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;

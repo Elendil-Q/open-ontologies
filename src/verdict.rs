@@ -445,23 +445,40 @@ mod tests {
         }
     }
 
+    /// A shell invoked with an inline command, rather than a script this test
+    /// writes and then executes. Writing one costs both portability and
+    /// reliability: a `.sh` is not executable on Windows, and on Linux a thread
+    /// that forks while another holds a write fd open makes the child inherit
+    /// it, so the exec fails with ETXTBSY no matter how unique the filename is.
+    /// Both were observed in CI. `/bin/sh` and `cmd` are already there.
+    fn shell_exiting(code: i32) -> (CheckerBinary, Command) {
+        #[cfg(unix)]
+        {
+            let mut c = Command::new("/bin/sh");
+            c.arg("-c").arg(format!("exit {code}"));
+            (CheckerBinary::found_at(PathBuf::from("/bin/sh")), c)
+        }
+        #[cfg(windows)]
+        {
+            let mut c = Command::new("cmd");
+            c.arg("/C").arg(format!("exit {code}"));
+            (CheckerBinary::found_at(PathBuf::from("cmd")), c)
+        }
+    }
+
     /// A non-zero exit mints nothing, and there is no other route to a token.
     #[test]
     fn a_non_zero_exit_yields_no_certificate() {
-        let bin = CheckerBinary::found_at(PathBuf::from("/bin/sh"));
-        let mut c = Command::new("/bin/sh");
-        c.arg("-c").arg("exit 1");
-        let run = CheckerRun::spawn(&bin, c).expect("sh runs");
+        let (bin, c) = shell_exiting(1);
+        let run = CheckerRun::spawn(&bin, c).expect("the system shell runs");
         assert_eq!(run.exit(), 1);
         assert!(run.accepted("OOCert.certificate_sound").is_none());
     }
 
     #[test]
     fn a_zero_exit_mints_the_theorem_it_was_given() {
-        let bin = CheckerBinary::found_at(PathBuf::from("/bin/sh"));
-        let mut c = Command::new("/bin/sh");
-        c.arg("-c").arg("exit 0");
-        let run = CheckerRun::spawn(&bin, c).expect("sh runs");
+        let (bin, c) = shell_exiting(0);
+        let run = CheckerRun::spawn(&bin, c).expect("the system shell runs");
         let cert = run.accepted("OOCert.certificate_sound").expect("exit 0");
         assert_eq!(cert.theorem(), "OOCert.certificate_sound");
         assert_eq!(FolVerdict::ModelChecked(cert).word(), "model_checked");
