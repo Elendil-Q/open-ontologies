@@ -980,14 +980,14 @@ impl Default for ModuleOptions {
 }
 
 /// An axiom taken into the module because this file could not classify it.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct UnclassifiedAxiom {
     pub root_triple: String,
     pub why: String,
     pub triples: usize,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct ModuleReport {
     pub format: &'static str,
     /// One sentence the reader cannot miss, first after `format`.
@@ -1242,7 +1242,7 @@ pub fn extract_module(
 
 /// What the closure diff said about a module, filtered to the signature the
 /// module is supposed to cover.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct ModuleVerification {
     pub format: &'static str,
     pub headline: String,

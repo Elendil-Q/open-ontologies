@@ -165,7 +165,12 @@ impl Default for ConservativityOptions {
 // ───────────────────────────────────────────────────────────────────────────
 
 /// A conclusion the extended ontology reaches and the base does not.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Serialise only. `Warrant` deliberately has no `Deserialize` (decision in
+/// `src/verdict.rs`): parsing the word "checked" out of somebody's JSON is not
+/// the same act as earning it, and a derive here would be a public constructor
+/// for a certified state. Nothing reads this struct back; the server parses
+/// into `serde_json::Value`.
+#[derive(Clone, Debug, Serialize)]
 pub struct NewConsequence {
     pub triple: NtTriple,
     /// True when every name in the triple is one the base already used, so this
@@ -186,7 +191,7 @@ pub struct NewConsequence {
     pub premises_the_base_lacked: Vec<NtTriple>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct ConservativityReport {
     pub format: &'static str,
     /// One sentence the reader cannot miss, first after `format`.
