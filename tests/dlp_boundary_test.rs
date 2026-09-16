@@ -166,16 +166,34 @@ fn the_evaluated_rule_list_is_the_rules_this_file_emits() {
     let source = std::fs::read_to_string(repo().join("src").join("reason.rs"))
         .expect("src/reason.rs must be readable");
 
+    // Two sources, because the engine names a rule in two places. Most rows
+    // live in the `BUILTIN_RULES` table and fire as `Fired::Bound`; the four
+    // that chain their own premises name themselves at the call site as
+    // `Fired::Chained`. Reading only one of the two would silently under-count,
+    // which is the failure this gate exists to prevent.
+    //
+    // This used to split on `emit((`, which stopped matching anything when the
+    // emit closure was changed to take a `Fired`. The assertion below caught
+    // that rather than letting the list quietly become empty.
     let mut emitted: BTreeSet<String> = BTreeSet::new();
-    for chunk in source.split("emit((").skip(1) {
-        // `emit((conclusion), "rule-name", &[premises])`: the first quoted
-        // string after the conclusion is the rule.
-        let Some(open) = chunk.find('"') else { continue };
-        let rest = &chunk[open + 1..];
-        let Some(close) = rest.find('"') else { continue };
-        emitted.insert(rest[..close].to_string());
+    for chunk in source.split("BuiltinRule { name: \"").skip(1) {
+        let Some(close) = chunk.find('"') else { continue };
+        emitted.insert(chunk[..close].to_string());
     }
-    assert!(!emitted.is_empty(), "the grep itself is broken: no emit call found");
+    let table_rows = emitted.len();
+    for chunk in source.split("Fired::Chained(\"").skip(1) {
+        let Some(close) = chunk.find('"') else { continue };
+        emitted.insert(chunk[..close].to_string());
+    }
+    assert!(
+        table_rows > 0,
+        "the grep itself is broken: no BUILTIN_RULES row found"
+    );
+    assert!(
+        emitted.len() > table_rows,
+        "the grep itself is broken: no Fired::Chained call site found, and the \
+         engine has four of them"
+    );
 
     let declared: BTreeSet<String> = open_ontologies::reason::RULES_EVALUATED
         .iter()
