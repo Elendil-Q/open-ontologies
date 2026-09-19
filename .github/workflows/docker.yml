@@ -22,20 +22,37 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # jobs.<id>.if is evaluated BEFORE the matrix is expanded, so the matrix
+  # context cannot gate the build job. Generate the matrix dynamically
+  # instead: PRs get amd64 only, manual releases get amd64 + arm64.
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.value }}
+    steps:
+      - id: matrix
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          MATRIX=$(jq -nc '{
+            include: [
+              {arch:"amd64",platform:"linux/amd64",
+               runner:"ubuntu-latest"},
+              {arch:"arm64",platform:"linux/arm64",
+               runner:"ubuntu-24.04-arm"}
+            ]}')
+          if [ "$EVENT" != "workflow_dispatch" ]; then
+            MATRIX=$(jq -c 'del(.include[] | select(.arch != "amd64"))' \
+              <<< "$MATRIX")
+          fi
+          echo "value=$MATRIX" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: prepare
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            platform: linux/amd64
-            runner: ubuntu-latest
-          - arch: arm64
-            platform: linux/arm64
-            runner: ubuntu-24.04-arm
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
-    # arm64 runs on manual releases only; PRs stay amd64-only.
-    if: matrix.arch == 'amd64' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       packages: write
