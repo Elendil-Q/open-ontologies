@@ -1,9 +1,14 @@
 name: Docker
 
 on:
-  push:
-    branches: [main]
-    tags: ['v*']
+  # Manual release: Actions tab → Docker → Run workflow, enter the version.
+  # Builds amd64 + arm64 natively and pushes a multi-arch manifest to GHCR.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 1.2.3 — pushed as :1.2.3 and :1.2)'
+        required: true
+        type: string
   pull_request:
     paths:
       - 'Dockerfile'
@@ -18,7 +23,19 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    # arm64 runs on manual releases only; PRs stay amd64-only.
+    if: matrix.arch == 'amd64' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       packages: write
@@ -30,7 +47,9 @@ jobs:
 
       - name: Free disk space
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/local/share/chromium /usr/local/share/edge
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo rm -rf /usr/local/share/powershell \
+            /usr/local/share/chromium /usr/local/share/edge
           sudo apt-get clean
           df -h
 
@@ -42,20 +61,23 @@ jobs:
       # assemble; running the binary proves the dynamic linker can resolve
       # every shared library, which is exactly what was missing in issue #59
       # (libz.so.1). Nothing validated the published image before this.
+      # Each arch builds natively on its own runner (ubuntu-24.04-arm for
+      # arm64), so the smoke test executes the real target binary — no QEMU.
       - name: Build image
         uses: docker/build-push-action@v6
         with:
           context: .
+          platforms: ${{ matrix.platform }}
           load: true
           tags: open-ontologies:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
 
       - name: Smoke test (binary starts, all shared libs resolve)
         run: docker run --rm open-ontologies:ci --help
 
       - name: Log in to GHCR
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'workflow_dispatch'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -63,22 +85,102 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'workflow_dispatch'
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=${{ inputs.version }}
+            type=raw,value=${{ inputs.version }},pattern=/^(\d+\.\d+).*$//${1}
             type=sha
 
-      - name: Push image
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: docker/build-push-action@v6
+      # Push each arch by digest (no tag). Tagging per-arch here would race
+      # the other arch's push; the merge job below creates the multi-arch
+      # manifest and applies all tags atomically.
+      - name: Push image by digest
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          OUT="type=image,name=$IMAGE,push-by-digest=true"
+          OUT+=",name-canonical=true,push=true"
+          ARGS=()
+          while IFS= read -r label; do
+            [ -n "$label" ] && ARGS+=(--label "$label")
+          done <<< "${{ steps.meta.outputs.labels }}"
+          docker buildx build . \
+            --platform "${{ matrix.platform }}" \
+            --cache-from "type=gha,scope=${{ matrix.arch }}" \
+            --metadata-file /tmp/buildx-meta.json \
+            --output "$OUT" \
+            "${ARGS[@]}"
+
+      - name: Export digest
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          mkdir -p /tmp/digests
+          digest=$(jq -r '."containerimage.digest"' \
+            /tmp/buildx-meta.json)
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
         with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Merge the per-arch digests into one multi-arch manifest list so that
+  # ghcr.io/<repo>:<tag> resolves to the native image on both amd64 and arm64.
+  merge:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ inputs.version }}
+            type=raw,value=${{ inputs.version }},pattern=/^(\d+\.\d+).*$//${1}
+            type=sha
+
+      - name: Create multi-arch manifest
+        working-directory: /tmp/digests
+        env:
+          DOCKER_METADATA_OUTPUT_JSON: ${{ steps.meta.outputs.json }}
+        run: |
+          TAGS=$(jq -cr '.tags | map("-t " + .) | join(" ")' \
+            <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          DIGESTS=$(printf \
+            '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+          docker buildx imagetools create $TAGS $DIGESTS
+
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.version }}
